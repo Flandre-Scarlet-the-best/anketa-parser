@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AnketaParser.Tests</RootNamespace>
+    <AssemblyName>AnketaParser.Tests</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <!-- Enables `dotnet test` through Microsoft.Testing.Platform, the supported path for .NET 10. -->
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\AnketaParser.Core\AnketaParser.Core.csproj" />
+    <ProjectReference Include="..\..\src\AnketaParser.Infrastructure\AnketaParser.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\AnketaParser.Host\AnketaParser.Host.csproj" />
+    <ProjectReference Include="..\..\src\AnketaParser.Cli\AnketaParser.Cli.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>
