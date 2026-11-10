@@ -1,0 +1,13 @@
+# Explicitly enabled local-debugging override.
+# Publishes the PostgreSQL port on the loopback interface only, so that psql or a local tool can
+# connect while the database stays unreachable from other machines.
+#
+#   docker compose -f compose.yaml -f compose.debug.yaml up -d postgres
+#
+# Stop with:
+#   docker compose -f compose.yaml -f compose.debug.yaml stop postgres
+
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${ANKETAPARSER_DB_DEBUG_PORT:-55432}:5432"

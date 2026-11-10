@@ -1,0 +1,62 @@
+# anketa-parser: infrastructure host and its PostgreSQL boundary.
+#
+# No service publishes ports by default. PostgreSQL is reachable only through the compose network,
+# and the host exposes no HTTP or administrative API. For local debugging of the database use the
+# explicit loopback override:
+#
+#   docker compose -f compose.yaml -f compose.debug.yaml up -d
+#
+# The fallback password below is a local-development placeholder, not a secret. Override it through
+# .env (excluded from Git) before running this anywhere except the owner machine.
+
+name: anketa-parser
+
+services:
+  postgres:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-anketa_parser}
+      POSTGRES_USER: ${POSTGRES_USER:-anketa_parser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-password}
+    volumes:
+      # PostgreSQL 18 keeps PGDATA under /var/lib/postgresql/18/docker, so the volume is mounted
+      # at the parent directory that the image declares.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - backend
+
+  host:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: anketa-parser-host:local
+    restart: unless-stopped
+    init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DOTNET_ENVIRONMENT: ${DOTNET_ENVIRONMENT:-Production}
+      ANKETAPARSER_Host__InstanceName: ${ANKETAPARSER_INSTANCE_NAME:-anketa-parser}
+      ANKETAPARSER_Host__ShutdownTimeoutSeconds: "20"
+      ANKETAPARSER_Database__ConnectionString: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-anketa_parser};Username=${POSTGRES_USER:-anketa_parser};Password=${POSTGRES_PASSWORD:-local-development-password};Timeout=5;Command Timeout=5"
+      ANKETAPARSER_Database__Required: "true"
+      ANKETAPARSER_Logging__Console__FormatterName: json
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+    networks:
+      - backend
+
+volumes:
+  postgres-data:
+
+networks:
+  backend:

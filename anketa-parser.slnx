@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AnketaParser.Cli/AnketaParser.Cli.csproj" />
+    <Project Path="src/AnketaParser.Core/AnketaParser.Core.csproj" />
+    <Project Path="src/AnketaParser.Host/AnketaParser.Host.csproj" />
+    <Project Path="src/AnketaParser.Infrastructure/AnketaParser.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AnketaParser.DockerTests/AnketaParser.DockerTests.csproj" />
+    <Project Path="tests/AnketaParser.Tests/AnketaParser.Tests.csproj" />
+  </Folder>
+</Solution>

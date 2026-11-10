@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AnketaParser.Core</RootNamespace>
+    <AssemblyName>AnketaParser.Core</AssemblyName>
+  </PropertyGroup>
+
+  <!--
+    Core deliberately has no PackageReference: it contains infrastructure-neutral contracts
+    (exit codes, readiness probe contract, diagnostics aggregation) and must stay free of
+    Telegram, HTTP, PostgreSQL and hosting dependencies.
+  -->
+
+</Project>

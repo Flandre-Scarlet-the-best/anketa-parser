@@ -1,0 +1,20 @@
+# Нормализация окончаний строк: исходники одинаковы на Windows, WSL2 и Linux.
+* text=auto eol=lf
+
+*.cs        text eol=lf
+*.csproj    text eol=lf
+*.props     text eol=lf
+*.slnx      text eol=lf
+*.json      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.md        text eol=lf
+*.config    text eol=lf
+Dockerfile  text eol=lf
+.dockerignore text eol=lf
+.gitignore  text eol=lf
+.env.example text eol=lf
+LICENSE     text eol=lf
+
+# Lock files are generated but reviewed: they must stay readable in diffs.
+packages.lock.json text eol=lf

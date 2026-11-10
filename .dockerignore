@@ -1,0 +1,15 @@
+# Build inputs only. Everything else (bin/obj, tests, local secrets) stays out of the image context.
+**/bin/
+**/obj/
+.git/
+.github/
+tests/
+.vs/
+.idea/
+.env
+.env.*
+appsettings.Local.json
+*.user
+*.log
+README.md
+compose*.yaml
