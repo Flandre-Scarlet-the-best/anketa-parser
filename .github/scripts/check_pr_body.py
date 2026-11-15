@@ -237,12 +237,49 @@ def mask_raw_html(lines: list[str]) -> list[str]:
     return result
 
 
+def _strip_comments_in_line(line: str, inside: bool) -> tuple[str, bool]:
+    """Снять комментарии строки, не задевая inline-код.
+
+    Возвращает видимый текст и состояние «внутри комментария» для следующей
+    строки. Код-спан имеет приоритет над разметкой HTML, поэтому `<!--`
+    внутри него остаётся литералом.
+    """
+    visible: list[str] = []
+    index = 0
+    while index < len(line):
+        if inside:
+            end = line.find("-->", index)
+            if end < 0:
+                return "".join(visible), True
+            inside = False
+            index = end + 3
+            continue
+        char = line[index]
+        if char == "`":
+            run = len(line) - len(line[index:].lstrip("`"))
+            closing = line.find("`" * run, index + run)
+            if closing < 0:
+                visible.append(line[index:index + run])
+                index += run
+                continue
+            visible.append(line[index:closing + run])
+            index = closing + run
+            continue
+        if line.startswith("<!--", index):
+            inside = True
+            index += 4
+            continue
+        visible.append(char)
+        index += 1
+    return "".join(visible), inside
+
+
 def strip_comments(lines: list[str]) -> list[str]:
     """Убрать HTML-комментарии и содержимое raw HTML-блоков построчно.
 
-    Fenced-код сохраняется как литерал: его содержимое не разбирается ни как
-    HTML, ни как Markdown, поэтому `<!--` внутри примера не открывает
-    комментарий и не скрывает последующие настоящие разделы.
+    Литералы сохраняются: fenced-код и inline-код не разбираются ни как HTML,
+    ни как Markdown, поэтому `<!--` внутри примера не открывает комментарий и
+    не скрывает последующие настоящие разделы.
     """
     result: list[str] = []
     inside = False
@@ -257,25 +294,7 @@ def strip_comments(lines: list[str]) -> list[str]:
             fence = opened
             result.append(line)
             continue
-        visible = ""
-        rest = line
-        while rest:
-            if inside:
-                end = rest.find("-->")
-                if end < 0:
-                    rest = ""
-                    continue
-                inside = False
-                rest = rest[end + 3:]
-                continue
-            start = rest.find("<!--")
-            if start < 0:
-                visible += rest
-                rest = ""
-                continue
-            visible += rest[:start]
-            inside = True
-            rest = rest[start + 4:]
+        visible, inside = _strip_comments_in_line(line, inside)
         result.append(visible)
     return result
 

@@ -134,6 +134,25 @@ class PrBodyContractTests(unittest.TestCase):
                 self.assertEqual(validate(body), [])
                 self.assertEqual([heading for heading, _ in sections(body)], list(HEADINGS))
 
+    def test_comment_marker_inside_inline_code_is_literal(self):
+        # Код-спан имеет приоритет над разметкой HTML, поэтому маркер
+        # комментария внутри него — литерал, а не начало комментария.
+        for snippet in (
+            "Маркер `<!--` в inline-коде.",
+            "Закрывающий `-->` тоже литерал.",
+            "Двойные кавычки `` `<!--` `` вокруг маркера.",
+        ):
+            with self.subTest(snippet=snippet):
+                body = valid_body().replace(
+                    "Фактическая информация для раздела CI.", snippet
+                )
+                self.assertEqual(validate(body), [])
+        # Вне литерала тот же маркер действительно открывает комментарий.
+        body = valid_body().replace(
+            "Фактическая информация для раздела CI.", "Обычный текст <!-- без закрытия."
+        )
+        self.assertTrue(any("Готовность" in error for error in validate(body)))
+
     def test_raw_html_block_ends_only_with_its_own_close_tag(self):
         # `</style>` не закрывает `<pre>`: блок продолжается, поэтому разделы
         # остаются невидимыми, а не дают ложный успех.
