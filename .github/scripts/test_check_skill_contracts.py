@@ -77,6 +77,54 @@ class SkillContractTests(unittest.TestCase):
         reference.write_text("[Вход](../SKILL.md)", encoding="utf-8")
         self.assertEqual(validate_tree(self.root), [])
 
+    def test_supported_link_forms_resolve_existing_targets(self):
+        # Допустимые формы Markdown: вложенные скобки, title, угловая форма и
+        # ссылочные определения. Проверка не должна давать ложных ошибок.
+        (self.folder / "references").mkdir()
+        (self.folder / "references/a_(b).md").write_text("x", encoding="utf-8")
+        (self.folder / "references/plain.md").write_text("x", encoding="utf-8")
+        bodies = (
+            "[d](references/a_(b).md)",
+            '[d](references/plain.md "Заголовок")',
+            "[d](references/plain.md 'Заголовок')",
+            "[d](<references/a_(b).md>)",
+            "[d][id]\n\n[id]: references/plain.md",
+            "[id][]\n\n[id]: references/plain.md",
+            "[id]\n\n[id]: references/plain.md",
+            "[d](https://example.com/a_(b))",
+            "[d](#якорь)",
+        )
+        for body in bodies:
+            with self.subTest(body=body):
+                self.write_skill(body=body)
+                self.assertEqual(validate_skill(self.file), [])
+
+    def test_broken_link_forms_are_rejected(self):
+        bodies = (
+            "[d](references/missing.md)",
+            "[d](<references/missing.md>)",
+            '[d](references/missing.md "Заголовок")',
+            "[d][id]\n\n[id]: references/missing.md",
+        )
+        for body in bodies:
+            with self.subTest(body=body):
+                self.write_skill(body=body)
+                self.assertTrue(any("missing.md" in error for error in validate_skill(self.file)))
+
+    def test_literal_contexts_are_not_link_destinations(self):
+        # Пример в коде или комментарии — не назначение документа.
+        bodies = (
+            "`[d](references/missing.md)`",
+            "```\n[d](references/missing.md)\n```",
+            "~~~\n[d](references/missing.md)\n~~~",
+            "<!-- [d](references/missing.md) -->",
+            "Экранировано: \\[d](references/missing.md) — это литерал.",
+        )
+        for body in bodies:
+            with self.subTest(body=body):
+                self.write_skill(body=body)
+                self.assertEqual(validate_skill(self.file), [])
+
     def test_escape_and_root_map_links_are_checked(self):
         self.write_skill(body="[Выход](../../outside.md)")
         (self.root / ".agents/outside.md").write_text("Текст", encoding="utf-8")

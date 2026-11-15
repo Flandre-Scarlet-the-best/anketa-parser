@@ -36,17 +36,17 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Restore (locked mode)
+      - name: Восстановить зависимости в locked mode
         run: dotnet restore --locked-mode
 
-      - name: Verify formatting and style
+      - name: Проверить форматирование и стиль
         run: dotnet format anketa-parser.slnx --verify-no-changes --no-restore
 
-      - name: Build
+      - name: Собрать решение
         run: dotnet build --no-restore -c Release
 
-      - name: Test
+      - name: Запустить тесты
         run: dotnet test --no-build -c Release
 
-      - name: Validate container definition
+      - name: Проверить контейнерное описание
         run: docker compose config --quiet

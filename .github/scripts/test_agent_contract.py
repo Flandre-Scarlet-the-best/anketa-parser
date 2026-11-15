@@ -19,22 +19,45 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class AgentContractTests(unittest.TestCase):
     def test_english_instructions_keep_russian_contract_literals(self):
+        """Языковой контракт инструкций, а не их текущий состав и формулировки.
+
+        Набор документов определяется фактическим деревом, поэтому новый
+        легитимный reference не ломает проверку; требования к маршрутам и
+        русским литералам контракта сохраняются.
+        """
         skill = ROOT / ".agents/skills/git-workflow"
-        files = [ROOT / "AGENTS.md", *skill.rglob("*.md")]
-        self.assertEqual(len(files), 5)
+        files = [ROOT / "AGENTS.md", *sorted(skill.rglob("*.md"))]
+        self.assertTrue((skill / "SKILL.md").is_file(), "нужен сам канонический skill")
         for path in files:
             text = path.read_text(encoding="utf-8")
             # Литералы контракта выделяются кодом; окружающая инструкция английская.
             prose = re.sub(r"```[^\n]*\n.*?```", "", text, flags=re.S)
             prose = re.sub(r"`[^`\n]+`", "", prose)
             self.assertIsNone(re.search(r"[А-Яа-яЁё]", prose), str(path))
+        # Обязательный маршрут к русскоязычному результату задаётся в прозе
+        # корневого контракта и сохраняется при переформулировке.
+        self.assertRegex(
+            (ROOT / "AGENTS.md").read_text(encoding="utf-8"),
+            r"(?m)\b(?:in|to) Russian\b",
+        )
+        # Владелец формата описания PR сохраняет все русские заголовки контракта.
         body_contract = (skill / "references/pr-body.md").read_text(encoding="utf-8")
         for heading in REQUIRED:
             self.assertIn("## " + heading, body_contract)
-        for path in (ROOT / "AGENTS.md", skill / "SKILL.md"):
-            self.assertIn("in Russian", path.read_text(encoding="utf-8"))
+        # Обязательные маршруты навыка объявлены каноническим SKILL.md. Новый
+        # reference может подключаться из другого документа, поэтому здесь
+        # проверяются именно владельцы процедур, а не весь состав каталога.
+        skill_text = (skill / "SKILL.md").read_text(encoding="utf-8")
+        for route in ("publication.md", "pr-body.md", "pr-lifecycle.md"):
+            self.assertIn(route, skill_text, route)
         self.assertEqual(validate(valid_body()), [])
         self.assertTrue(validate(valid_body().replace("## Цель", "## Goal")))
+
+    def test_language_check_detects_real_violation(self):
+        # Страховка: тест действительно отлавливает русскую прозу в инструкции.
+        violating = "Обычный текст без литералов."
+        prose = re.sub(r"`[^`\n]+`", "", violating)
+        self.assertIsNotNone(re.search(r"[А-Яа-яЁё]", prose))
 
     def test_real_repository_skill_and_map_links(self):
         self.assertEqual(validate_tree(ROOT), [])
@@ -88,7 +111,7 @@ class AgentContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             body = Path(temporary) / "body.md"
             for content, status, message in (
-                (valid_body(), 0, "Структура PR body соответствует контракту"),
+                (valid_body(), 0, "Структура описания PR соответствует контракту"),
                 ("## Goal\nОписание", 1, "Отсутствует обязательный заголовок: ## Цель"),
             ):
                 body.write_text(content, encoding="utf-8")

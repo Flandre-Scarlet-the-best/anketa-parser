@@ -106,6 +106,33 @@ class PrBodyContractTests(unittest.TestCase):
         # GitHub скрывает HTML-комментарии, поэтому шаблон внутри них не является телом PR.
         self.assertEqual(len(validate(f"<!--\n{valid_body()}\n-->")), len(HEADINGS))
 
+    def test_headings_in_raw_html_block_are_not_real(self):
+        # Внутри raw HTML-блока GitHub показывает разметку дословно, поэтому такие
+        # строки не являются видимыми разделами. `<pre>` длится до закрывающего тега
+        # и может содержать пустые строки.
+        for tag in ("pre", "script", "style", "textarea"):
+            with self.subTest(tag=tag):
+                body = f"<{tag}>\n{valid_body()}\n</{tag}>"
+                self.assertEqual(len(validate(body)), len(HEADINGS))
+        # Блочный тег без пустых строк поглощает заголовки до первой пустой строки.
+        tight = "\n".join(f"## {name}" for name in HEADINGS)
+        self.assertEqual(len(validate(f"<div>\n{tight}\n</div>")), len(HEADINGS))
+        # Закрытый raw HTML-блок не прячет последующие настоящие разделы.
+        documented = valid_body().replace(
+            "Фактическая информация для раздела CI.",
+            "<pre>\nпример вывода\n</pre>\nФактическая информация для CI.",
+        )
+        self.assertEqual(validate(documented), [])
+
+    def test_performance_scenario_heading_allows_up_to_three_spaces(self):
+        # ATX-заголовок допускает отступ 0-3 пробела; четыре пробела — код-блок.
+        for indent in range(4):
+            with self.subTest(indent=indent):
+                sub = MEASURED.replace("### ", " " * indent + "### ")
+                self.assertEqual(validate(body_with(sub)), [])
+        indented = MEASURED.replace("### ", "    ### ")
+        self.assertTrue(any("подразделе" in error for error in validate(body_with(indented))))
+
     def test_unterminated_comment_hides_rest(self):
         body = f"## Цель\nИнформация.\n<!-- {chr(10)}" + "\n\n".join(f"## {n}\nИнформация." for n in HEADINGS[1:])
         self.assertTrue(any("Область изменений" in e for e in validate(body)))

@@ -19,11 +19,23 @@ REQUIRED = (
 )
 BOT_BRANCHES = {"renovate[bot]": "renovate/", "dependabot[bot]": "dependabot/"}
 # ATX-заголовок: закрывающие `#` — часть оформления, а не имени раздела.
-HEADING = re.compile(r"^ {0,3}##\s+(.+?)(?:\s+#+)?\s*$")
+HEADING = re.compile(r"^ {0,3}(#{2,3})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 # Закрывающая граница не допускает info string: ```` ```python ```` — это строка
 # содержимого блока, а не его конец.
 FENCE_CLOSE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
+# Raw HTML block по CommonMark: переводы строк внутри него не создают ни
+# заголовков, ни ссылок, поэтому сырой HTML нужно исключить из разбора.
+HTML_RAW = re.compile(r"^<(pre|script|style|textarea)(?=[\s/>])", re.IGNORECASE)
+HTML_RAW_CLOSE = ("</pre>", "</script>", "</style>", "</textarea>")
+HTML_BLOCK = re.compile(
+    r"^</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|"
+    r"details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|"
+    r"h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|"
+    r"optgroup|option|p|param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|"
+    r"track|ul)(?=[\s/>]|$)",
+    re.IGNORECASE,
+)
 
 PERFORMANCE = "Производительность"
 STATUSES = ("измерено", "не применимо", "не измерено")
@@ -48,7 +60,7 @@ PERFORMANCE_HINT = (
 
 
 # GitHub скрывает HTML-комментарии, поэтому заголовки внутри них не являются
-# видимыми разделами body. Внутри код-блока `<!--` — литерал, а не комментарий.
+# видимыми разделами описания. Внутри код-блока `<!--` — литерал, а не комментарий.
 def mask_list_fences(lines: list[str]) -> list[str]:
     """Скрыть fenced-блоки внутри пунктов списка до разбора комментариев.
 
@@ -128,23 +140,84 @@ def mask_list_fences(lines: list[str]) -> list[str]:
     return result
 
 
-def strip_comments(lines: list[str]) -> list[str]:
-    """Убрать HTML-комментарии построчно, не трогая содержимое код-блоков."""
+def _hide(line: str) -> str:
+    """Строка-заполнитель той же длины: содержимое скрыто, смещения сохранены."""
+    return " " * len(line)
+
+
+def _html_block_type(line: str) -> int:
+    """Тип raw HTML-блока CommonMark, начинающегося с этой строки, либо 0.
+
+    Тип 1 (`<pre>`, `<script>`, `<style>`, `<textarea>`) длится до закрывающего
+    тега и может содержать пустые строки; тип 6 (блочные теги) прерывается
+    пустой строкой или концом документа. Внутри такого блока GitHub показывает
+    разметку дословно, поэтому похожие на заголовки строки там не являются
+    разделами.
+    """
+    stripped = line.lstrip(" ")
+    if HTML_RAW.match(stripped):
+        return 1
+    if HTML_BLOCK.match(stripped):
+        return 6
+    return 0
+
+
+def mask_raw_html(lines: list[str]) -> list[str]:
+    """Скрыть содержимое raw HTML-блоков, не задевая fenced-код.
+
+    Fenced-блок имеет приоритет над блочными тегами: пример внутри примера
+    остаётся кодом, а не открытым HTML. Markdown не разбирает действительно
+    отрисованный raw HTML-блок, поэтому такие строки не дают разделов.
+    """
     result: list[str] = []
-    inside = False
+    block = 0
     fence_char = ""
     fence_len = 0
-    for line in mask_list_fences(lines):
+    for line in lines:
+        if block == 1:
+            lowered = line.casefold()
+            # Начинаем поиск с самого открывающего тега строки: содержимое до
+            # него остаётся видимым.
+            start = line.find("<")
+            found = [lowered.find(tag, start) if start >= 0 else -1 for tag in HTML_RAW_CLOSE]
+            closing = min((position for position in found if position >= 0), default=-1)
+            if closing < 0:
+                result.append(_hide(line))
+                continue
+            block = 0
+            fence_char = ""
+            result.append(line)
+            continue
+        if block == 6:
+            if not line.strip():
+                block = 0
+                result.append(line)
+                continue
+            result.append(_hide(line))
+            continue
         if fence_char:
             closing = FENCE_CLOSE.match(line)
             if closing and closing.group(1)[0] == fence_char and len(closing.group(1)) >= fence_len:
                 fence_char = ""
             result.append(line)
             continue
-        if not inside and (opening := FENCE.match(line)):
-            fence_char, fence_len = opening.group(1)[0], len(opening.group(1))
-            result.append(line)
-            continue
+        if opening := FENCE.match(line):
+            token = opening.group(1)
+            # У backtick-fence info string не может содержать обратную кавычку.
+            if token[0] != "`" or "`" not in line[opening.end():]:
+                fence_char, fence_len = token[0], len(token)
+                result.append(line)
+                continue
+        block = _html_block_type(line)
+        result.append(line)
+    return result
+
+
+def strip_comments(lines: list[str]) -> list[str]:
+    """Убрать HTML-комментарии и содержимое raw HTML-блоков построчно."""
+    result: list[str] = []
+    inside = False
+    for line in mask_raw_html(mask_list_fences(lines)):
         visible = ""
         rest = line
         while rest:
@@ -168,8 +241,8 @@ def strip_comments(lines: list[str]) -> list[str]:
     return result
 
 
-def sections(body: str, *, raw: bool = False) -> list[tuple[str, str]]:
-    """Видимые разделы: очищенное содержимое либо исходный диапазон с заголовком."""
+def sections(body: str, *, raw: bool = False, level: int = 2) -> list[tuple[str, str]]:
+    """Видимые разделы заданного уровня: очищенное содержимое либо исходный диапазон."""
     original = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     lines = strip_comments(original)
     found: list[tuple[str, str]] = []
@@ -189,10 +262,10 @@ def sections(body: str, *, raw: bool = False) -> list[tuple[str, str]]:
             fence_char, fence_len = token[0], len(token)
             continue
         match = HEADING.match(line)
-        if match:
+        if match and len(match.group(1)) == level:
             if found:
                 found[-1] = (found[-1][0], "\n".join(original[start:index]).strip() if raw else "\n".join(active))
-            found.append((match.group(1).strip(), ""))
+            found.append((match.group(2).strip(), ""))
             active = []
             start = index
         elif found:
@@ -227,13 +300,7 @@ def substantive(values: list[str], minimum: int) -> bool:
 
 def scenario_blocks(content: str) -> list[tuple[str, str]]:
     """Блоки `### …` отдельных сценариев раздела производительности по порядку."""
-    blocks: list[tuple[str, list[str]]] = []
-    for line in content.split("\n"):
-        if line.startswith("### "):
-            blocks.append((line[4:].strip(), []))
-        elif blocks:
-            blocks[-1][1].append(line)
-    return [(heading, "\n".join(lines)) for heading, lines in blocks]
+    return sections(content, level=3)
 
 
 def validate_performance(content: str, raw_section: str | None = None) -> list[str]:
@@ -293,7 +360,7 @@ def validate(body: str) -> list[str]:
     """Детерминированный список ошибок; пустой список — структура соответствует контракту."""
     body = body.replace("\r\n", "\n").replace("\r", "\n")
     if len(body) > MAX_BODY_LENGTH:
-        return [f"PR body: {len(body)} символов, максимум {MAX_BODY_LENGTH}"]
+        return [f"Описание PR: {len(body)} символов, максимум {MAX_BODY_LENGTH}"]
     blocks = sections(body)
     raw_blocks = sections(body, raw=True)
     names = [heading for heading, _ in blocks]
@@ -331,7 +398,7 @@ def is_automation_pr(payload: dict) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--body-file", type=Path, help="локальный Markdown-источник body до публикации PR")
+    source.add_argument("--body-file", type=Path, help="локальный Markdown-источник описания PR до публикации")
     source.add_argument("--event-path", type=Path, help="JSON события GitHub pull_request или pull_request_target")
     args = parser.parse_args()
     try:
@@ -342,18 +409,18 @@ def main() -> int:
             if not isinstance(payload, dict) or not isinstance(payload.get("pull_request"), dict):
                 raise ValueError("Нет объекта pull_request в событии")
             if is_automation_pr(payload):
-                print("PR dependency-бота: формат ручных PR не применяется")
+                print("PR бота обновления зависимостей: формат ручных PR не применяется")
                 return 0
             body = payload["pull_request"].get("body") or ""
         problems = validate(body)
     except (OSError, UnicodeError, ValueError) as exc:
-        print(f"Не удалось проверить PR body: {exc}", file=sys.stderr)
+        print(f"Не удалось проверить описание PR: {exc}", file=sys.stderr)
         return 2
     if problems:
         for problem in problems:
             print(f"::error::{problem}", file=sys.stderr)
         return 1
-    print("Структура PR body соответствует контракту")
+    print("Структура описания PR соответствует контракту")
     return 0
 
 

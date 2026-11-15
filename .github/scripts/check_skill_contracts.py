@@ -5,12 +5,19 @@ import argparse
 import re
 import sys
 from pathlib import Path
+from urllib.parse import unquote
 
 import yaml
 
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
-LINK = re.compile(r"\]\(([^)]+)\)")
 ALLOWED = {"name", "description", "license", "compatibility", "metadata", "allowed-tools"}
+# Литеральные контексты, где ссылка — пример, а не назначение документа.
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+# Закрывающая граница не допускает info string: ```` ```python ```` — содержимое.
+FENCE_CLOSE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
+LABEL = re.compile(r"^ {0,3}\[([^\]]+)\]:[ \t]*(.*)$")
+# Автоссылка — `<scheme:...>` или e-mail с доменом; `<path/file.md>` ею не является.
+AUTOLINK = re.compile(r"<[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*>|<[^\s<>@/]+@[^\s<>@/]+\.[^\s<>@/]+>")
 
 
 class UniqueSafeLoader(yaml.SafeLoader):
@@ -31,7 +38,7 @@ class UniqueSafeLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep=deep)
 
 
-def validate_skill(path: Path) -> list[str]:
+def validate_skill(path: Path, definitions: dict[str, str] | None = None) -> list[str]:
     errors: list[str] = []
     try:
         source = path.read_text(encoding="utf-8")
@@ -74,23 +81,242 @@ def validate_skill(path: Path) -> list[str]:
     if isinstance(compatibility, str) and len(compatibility) > 500:
         errors.append(f"{path}: compatibility должен содержать не более 500 символов")
     body = "\n".join(lines[end + 1:])
-    errors.extend(validate_links(path, path.parent, body))
+    # Ссылочное определение в собственном документе действует и для его ссылок.
+    known = definitions if definitions is not None else reference_definitions(source)
+    errors.extend(validate_links(path, path.parent, body, known))
     return errors
 
 
-def validate_links(path: Path, boundary: Path, source: str | None = None) -> list[str]:
+def mask_literals(markdown: str) -> list[str]:
+    """Заменить литеральные контексты пробелами, сохранив длину строк.
+
+    Fenced-код, код-спан, HTML-комментарий и автоссылка не содержат назначений
+    документа, поэтому их содержимое не должно проверяться как ссылка.
+    """
+    result: list[str] = []
+    stop = ""
+    fence_char = ""
+    fence_len = 0
+    for raw in markdown.split("\n"):
+        line = raw.expandtabs(4)
+        if fence_char:
+            closing = FENCE_CLOSE.match(line)
+            if closing and closing.group(1)[0] == fence_char and len(closing.group(1)) >= fence_len:
+                fence_char = ""
+            result.append(" " * len(line))
+            continue
+        if stop:
+            position = line.find(stop)
+            if position < 0:
+                result.append(" " * len(line))
+                continue
+            tail = position + len(stop)
+            line = " " * tail + line[tail:]
+            stop = ""
+        elif opening := FENCE.match(line):
+            token = opening.group(1)
+            # У backtick-fence info string не может содержать обратную кавычку.
+            if token[0] != "`" or "`" not in line[opening.end():]:
+                fence_char, fence_len = token[0], len(token)
+                result.append(" " * len(line))
+                continue
+        visible: list[str] = []
+        index = 0
+        while index < len(line):
+            char = line[index]
+            if char == "\\":
+                visible.append(" " * min(2, len(line) - index))
+                index += 2
+                continue
+            if char == "<":
+                autolink = AUTOLINK.match(line, index)
+                if autolink:
+                    visible.append(" " * len(autolink.group(0)))
+                    index = autolink.end()
+                    continue
+                if line.startswith("<!--", index):
+                    end = line.find("-->", index + 4)
+                    if end < 0:
+                        stop = "-->"
+                        visible.append(" " * (len(line) - index))
+                        index = len(line)
+                    else:
+                        visible.append(" " * (end + 3 - index))
+                        index = end + 3
+                    continue
+            if char == "`":
+                run = len(line) - len(line[index:].lstrip("`"))
+                closing = line.find("`" * run, index + run)
+                if closing >= 0:
+                    visible.append(" " * (closing + run - index))
+                    index = closing + run
+                    continue
+                visible.append(line[index:index + run])
+                index += run
+                continue
+            visible.append(char)
+            index += 1
+        normalized = "".join(visible)
+        if len(normalized) < len(line):
+            normalized += " " * (len(line) - len(normalized))
+        result.append(normalized)
+    return result
+
+
+def inline_destination(text: str, position: int) -> tuple[str, int] | None:
+    """Разобрать назначение после `(`; None, если скобка не закрывает ссылку."""
+    index = position + 1
+    while index < len(text) and text[index] in " \t\n":
+        index += 1
+    if index >= len(text):
+        return None
+    if text[index] == "<":
+        end = index + 1
+        while end < len(text) and text[end] not in "\n<>":
+            end += 2 if text[end] == "\\" else 1
+        if end >= len(text) or text[end] != ">":
+            return None
+        return text[index + 1:end], end + 1
+    depth = 0
+    end = index
+    while end < len(text):
+        char = text[end]
+        if char == "\\" and end + 1 < len(text):
+            end += 2
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        elif char in " \t\n":
+            break
+        end += 1
+    if depth or end == index:
+        return None
+    return text[index:end], end
+
+
+def closes_link(text: str, position: int) -> bool:
+    """Проверить закрывающую `)` после необязательного title.
+
+    Для назначения в угловых скобках `position` указывает на `>`.
+    """
+    index = position
+    if index < len(text) and text[index] == ">":
+        index += 1
+    while index < len(text) and text[index] in " \t\n":
+        index += 1
+    if index < len(text) and text[index] in "\"'(":
+        closing = ")" if text[index] == "(" else text[index]
+        index = text.find(closing, index + 1)
+        if index < 0:
+            return False
+        index += 1
+        while index < len(text) and text[index] in " \t\n":
+            index += 1
+    return index < len(text) and text[index] == ")"
+
+
+def definition_destination(remainder: str) -> str | None:
+    """Назначение из остатка строки определения `[label]: <dest> "title"`."""
+    text = remainder.lstrip()
+    if not text:
+        return None
+    if text.startswith("<"):
+        end = text.find(">")
+        return text[1:end] if end > 0 else None
+    destination = text.split(None, 1)[0]
+    return destination or None
+
+
+def reference_definitions(markdown: str) -> dict[str, str]:
+    """Определения ссылок по нормализованному ярлыку в нижнем регистре."""
+    found: dict[str, str] = {}
+    for line in mask_literals(markdown):
+        match = LABEL.match(line)
+        if not match:
+            continue
+        label = re.sub(r"\s+", " ", match.group(1)).casefold()
+        destination = definition_destination(match.group(2))
+        if label and destination is not None and label not in found:
+            found[label] = destination
+    return found
+
+
+def label_key(text: str) -> str:
+    """Нормализованный вид ярлыка: регистр не важен, пробелы схлопываются."""
+    return re.sub(r"\s+", " ", text).casefold()
+
+
+def link_targets(markdown: str, definitions: dict[str, str]) -> list[str]:
+    """Назначения ссылок поддерживаемых форм Markdown вне литеральных контекстов."""
+    targets: list[str] = []
+    for line in mask_literals(markdown):
+        index = 0
+        while index < len(line):
+            opening = line.find("[", index)
+            if opening < 0:
+                break
+            closing = line.find("]", opening + 1)
+            if closing < 0:
+                break
+            index = closing + 1
+            following = line[index:index + 1]
+            if following == "(":
+                parsed = inline_destination(line, index)
+                if parsed is not None and closes_link(line, parsed[1]):
+                    targets.append(parsed[0])
+                continue
+            if following == "[":
+                end = line.find("]", index + 1)
+                if end < 0:
+                    continue
+                label = line[index + 1:end]
+                index = end + 1
+            else:
+                label = ""
+            # Пустой ярлык означает collapsed-форму `[text][]`.
+            key = label_key(label or line[opening + 1:closing])
+            if key in definitions:
+                targets.append(definitions[key])
+    return targets
+
+
+def local_target(destination: str) -> str | None:
+    """Локальная цель без якоря: внешние адреса и чистые якоря не проверяются."""
+    target = destination.split("#", 1)[0].strip()
+    if not target or target.startswith("#") or re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", target):
+        return None
+    return unquote(target)
+
+
+def validate_links(
+    path: Path,
+    boundary: Path,
+    source: str | None = None,
+    definitions: dict[str, str] | None = None,
+) -> list[str]:
     """Проверить локальные назначения ссылок в пределах владельца документа."""
-    errors = []
     try:
-        text = source if source is not None else path.read_text(encoding="utf-8")
+        markdown = source if source is not None else path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
         return [f"{path}: не удалось прочитать: {error}"]
-    for match in LINK.finditer(text):
-        target = match.group(1).split("#", 1)[0]
-        if not target or target.startswith("#") or re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", target):
+    known = reference_definitions(markdown) if definitions is None else definitions
+    errors: list[str] = []
+    root = boundary.resolve()
+    for destination in link_targets(markdown, known):
+        target = local_target(destination)
+        if target is None:
             continue
-        resolved = (path.parent / target).resolve()
-        if not resolved.is_relative_to(boundary.resolve()) or not resolved.exists():
+        try:
+            resolved = (path.parent / target).resolve()
+            outside = not resolved.is_relative_to(root)
+            missing = not resolved.exists()
+        except (OSError, ValueError):
+            outside, missing = True, True
+        if outside or missing:
             errors.append(f"{path}: несуществующая или выходящая за владельца ссылка: {target}")
     return errors
 
@@ -103,13 +329,28 @@ def validate_tree(root: Path) -> list[str]:
     # Каталог skill без манифеста — тоже нарушение контракта: обход по
     # `*/SKILL.md` такую поломку не заметил бы.
     missing = [f"{directory}: отсутствует SKILL.md" for directory in directories if not (directory / "SKILL.md").is_file()]
-    errors = missing + [error for skill in sorted(base.glob("*/SKILL.md")) for error in validate_skill(skill)]
+    documents = [root / "AGENTS.md"] if (root / "AGENTS.md").is_file() else []
+    for directory in directories:
+        documents.extend(
+            reference for reference in sorted(directory.rglob("*.md")) if reference != directory / "SKILL.md"
+        )
+    # Ссылочное определение действует на весь документ, поэтому определения
+    # собираются до проверки их использования.
+    definitions: dict[str, str] = {}
+    for document in documents:
+        try:
+            definitions.update(reference_definitions(document.read_text(encoding="utf-8")))
+        except (OSError, UnicodeError):
+            continue
+    errors = missing + [
+        error for skill in sorted(base.glob("*/SKILL.md")) for error in validate_skill(skill, definitions)
+    ]
     for directory in directories:
         for reference in sorted(directory.rglob("*.md")):
             if reference != directory / "SKILL.md":
-                errors.extend(validate_links(reference, directory))
+                errors.extend(validate_links(reference, directory, definitions=definitions))
     if (root / "AGENTS.md").is_file():
-        errors.extend(validate_links(root / "AGENTS.md", root))
+        errors.extend(validate_links(root / "AGENTS.md", root, definitions=definitions))
     return errors
 
 

@@ -129,14 +129,27 @@ if targeting the stack trunk. CI has no pull-request base filter so both are
 covered without hardcoding temporary feature branches. Merge-group verification
 is handled separately by CI, not by pretending it has a pull_request body.
 
-New workflows/validators in head do not establish trusted enforcement. The base
-may not contain them yet; inspect real hosted runs and state this limitation.
-Activation order: prepare in a PR, verify candidate/local behavior, obtain
-separate merge permission, confirm the files in the trusted base, observe a
-successful trusted-base run on an applicable PR, then configure a required
-context only with appropriate user authorization. Preserve existing protection
-and bypass rules. Never impose a cyclic required context first introduced by
-the PR, weaken protections, or label an absent check pending/successful. Job-name
-collisions from head workflows also need review; matching a name is not proof of
-trusted execution. No CodeRabbit automation or mandatory external review is
-introduced by these checks.
+New workflows/validators in head do not establish trusted enforcement, and a
+Draft that introduces them is normally inactive rather than failed. Inspect real
+hosted runs and state this limitation instead of assuming activation.
+
+Trusted activation has two separate preconditions that must be verified in order:
+
+1. **Event availability from the default branch.** GitHub starts a
+   `pull_request_target` run only if the workflow file exists on the repository
+   default branch. YAML that lives only in a feature branch or a PR head cannot
+   start the event, so the workflow must reach the default branch before any
+   activation is possible; that is a precondition, not a consequence of merging
+   a dependent PR.
+2. **Verifying code at the exact base SHA.** The run then checks out
+   `github.event.pull_request.base.sha`, so the validator must also exist at that
+   commit of the *specific PR base branch*. The default branch and a dependent
+   base are different commits; satisfying one does not satisfy the other.
+
+Only after both hold can an applicable PR produce a real trusted run. Observe
+that hosted run, then request a required context separately with explicit user
+authorization. Preserve existing protection and bypass rules. Never impose a
+cyclic required context first introduced by the PR, weaken protections, or label
+an absent check pending/successful. Job-name collisions from head workflows also
+need review; matching a name is not proof of trusted execution. No CodeRabbit
+automation or mandatory external review is introduced by these checks.
