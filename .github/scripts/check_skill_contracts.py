@@ -10,20 +10,34 @@ from urllib.parse import unquote
 import yaml
 
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
-ALLOWED = {"name", "description", "license", "compatibility", "metadata", "allowed-tools"}
+ALLOWED = {
+    "name",
+    "description",
+    "license",
+    "compatibility",
+    "metadata",
+    "allowed-tools",
+}
 # Литеральные контексты, где ссылка — пример, а не назначение документа.
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 # Закрывающая граница не допускает info string: ```` ```python ```` — содержимое.
 FENCE_CLOSE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
 LABEL = re.compile(r"^ {0,3}\[([^\]]+)\]:[ \t]*(.*)$")
 # Автоссылка — `<scheme:...>` или e-mail с доменом; `<path/file.md>` ею не является.
-AUTOLINK = re.compile(r"<[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*>|<[^\s<>@/]+@[^\s<>@/]+\.[^\s<>@/]+>")
+AUTOLINK = re.compile(
+    r"<[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*>|<[^\s<>@/]+@[^\s<>@/]+\.[^\s<>@/]+>"
+)
 # Маркер пункта списка: fenced-блок может стоять внутри контейнера.
 LIST_MARKER = re.compile(r" {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+")
 
 
 class UniqueSafeLoader(yaml.SafeLoader):
-    """Безопасный загрузчик, запрещающий повторные ключи на любой глубине."""
+    """Безопасный загрузчик, запрещающий повторные ключи на любой глубине.
+
+    Наследник yaml.SafeLoader собирает только базовые типы YAML и не умеет
+    создавать произвольные объекты; дополнительное правило — уникальность
+    ключей на всех уровнях вложенности.
+    """
 
     def construct_mapping(self, node, deep=False):
         seen = set()
@@ -32,11 +46,13 @@ class UniqueSafeLoader(yaml.SafeLoader):
             try:
                 if key in seen:
                     raise yaml.constructor.ConstructorError(
-                        None, None, "повторяющийся YAML-ключ", key_node.start_mark)
+                        None, None, "повторяющийся YAML-ключ", key_node.start_mark
+                    )
                 seen.add(key)
             except TypeError as error:
                 raise yaml.constructor.ConstructorError(
-                    None, None, "неподдерживаемый YAML-ключ", key_node.start_mark) from error
+                    None, None, "неподдерживаемый YAML-ключ", key_node.start_mark
+                ) from error
         return super().construct_mapping(node, deep=deep)
 
 
@@ -54,26 +70,44 @@ def validate_skill(path: Path) -> list[str]:
     except ValueError:
         return [f"{path}: отсутствует закрывающий ---"]
     try:
-        entries = yaml.load("\n".join(lines[1:end]), Loader=UniqueSafeLoader)
+        # UniqueSafeLoader не опаснее yaml.safe_load: он наследует SafeLoader и не
+        # создаёт произвольные объекты, а лишь запрещает повторные ключи.
+        entries = yaml.load("\n".join(lines[1:end]), Loader=UniqueSafeLoader)  # noqa: S506
     except yaml.YAMLError as error:
         mark = getattr(error, "problem_mark", None)
         where = f", строка {mark.line + 2}" if mark else ""
         return [f"{path}: неразбираемое значение YAML frontmatter{where}"]
-    if not isinstance(entries, dict) or not all(isinstance(key, str) for key in entries):
+    if not isinstance(entries, dict) or not all(
+        isinstance(key, str) for key in entries
+    ):
         return [f"{path}: frontmatter должен быть отображением со строковыми ключами"]
     for key in entries:
         if key not in ALLOWED:
-            errors.append(f"{path}: нестандартное поле {key}; условия активации помещай в description")
+            errors.append(
+                f"{path}: нестандартное поле {key}; условия активации помещай в description"
+            )
     name = entries.get("name")
-    if not isinstance(name, str) or not NAME.fullmatch(name) or len(name) > 64 or name != path.parent.name:
-        errors.append(f"{path}: name должен совпадать с каталогом и отвечать Agent Skills spec")
+    if (
+        not isinstance(name, str)
+        or not NAME.fullmatch(name)
+        or len(name) > 64
+        or name != path.parent.name
+    ):
+        errors.append(
+            f"{path}: name должен совпадать с каталогом и отвечать Agent Skills spec"
+        )
     description = entries.get("description")
-    if not isinstance(description, str) or not description.strip() or len(description) > 1024:
+    if (
+        not isinstance(description, str)
+        or not description.strip()
+        or len(description) > 1024
+    ):
         errors.append(f"{path}: description должен быть строкой из 1–1024 символов")
     if "metadata" in entries:
         metadata = entries["metadata"]
         if not isinstance(metadata, dict) or not all(
-            isinstance(key, str) and isinstance(value, str) for key, value in metadata.items()
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in metadata.items()
         ):
             errors.append(f"{path}: metadata должен быть отображением строк в строки")
     for key in ("license", "compatibility", "allowed-tools"):
@@ -82,7 +116,7 @@ def validate_skill(path: Path) -> list[str]:
     compatibility = entries.get("compatibility")
     if isinstance(compatibility, str) and len(compatibility) > 500:
         errors.append(f"{path}: compatibility должен содержать не более 500 символов")
-    body = "\n".join(lines[end + 1:])
+    body = "\n".join(lines[end + 1 :])
     # Ссылочные определения действуют в пределах своего документа, поэтому
     # валидатор берёт их из того же текста, в котором ищет ссылки.
     errors.extend(validate_links(path, path.parent, body))
@@ -103,7 +137,7 @@ def fence_open(line: str) -> tuple[str, int, int] | None:
         return None
     token = match.group(1)
     # Info string backtick-блока не может содержать обратную кавычку.
-    if token[0] == "`" and "`" in line[offset + match.end():]:
+    if token[0] == "`" and "`" in line[offset + match.end() :]:
         return None
     return token[0], len(token), offset
 
@@ -195,7 +229,7 @@ def mask_literals(markdown: str) -> list[str]:
                     visible.append(" " * (closing + run - index))
                     index = closing + run
                     continue
-                visible.append(line[index:index + run])
+                visible.append(line[index : index + run])
                 index += run
                 continue
             visible.append(char)
@@ -220,7 +254,7 @@ def inline_destination(text: str, position: int) -> tuple[str, int] | None:
             end += 2 if text[end] == "\\" else 1
         if end >= len(text) or text[end] != ">":
             return None
-        return text[index + 1:end], end + 1
+        return text[index + 1 : end], end + 1
     depth = 0
     end = index
     while end < len(text):
@@ -310,7 +344,7 @@ def link_targets(markdown: str, definitions: dict[str, str]) -> list[str]:
             if closing < 0:
                 break
             index = closing + 1
-            following = line[index:index + 1]
+            following = line[index : index + 1]
             if following == "(":
                 parsed = inline_destination(line, index)
                 if parsed is not None and closes_link(line, parsed[1]):
@@ -320,12 +354,12 @@ def link_targets(markdown: str, definitions: dict[str, str]) -> list[str]:
                 end = line.find("]", index + 1)
                 if end < 0:
                     continue
-                label = line[index + 1:end]
+                label = line[index + 1 : end]
                 index = end + 1
             else:
                 label = ""
             # Пустой ярлык означает collapsed-форму `[text][]`.
-            key = label_key(label or line[opening + 1:closing])
+            key = label_key(label or line[opening + 1 : closing])
             if key in definitions:
                 targets.append(definitions[key])
     return targets
@@ -334,7 +368,11 @@ def link_targets(markdown: str, definitions: dict[str, str]) -> list[str]:
 def local_target(destination: str) -> str | None:
     """Локальная цель без якоря: внешние адреса и чистые якоря не проверяются."""
     target = destination.split("#", 1)[0].strip()
-    if not target or target.startswith("#") or re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", target):
+    if (
+        not target
+        or target.startswith("#")
+        or re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", target)
+    ):
         return None
     return unquote(target)
 
@@ -363,21 +401,33 @@ def validate_links(path: Path, boundary: Path, source: str | None = None) -> lis
         except (OSError, ValueError):
             outside, missing = True, True
         if outside or missing:
-            errors.append(f"{path}: несуществующая или выходящая за владельца ссылка: {target}")
+            errors.append(
+                f"{path}: несуществующая или выходящая за владельца ссылка: {target}"
+            )
     return errors
 
 
 def validate_tree(root: Path) -> list[str]:
     base = root / ".agents" / "skills"
-    directories = sorted((path for path in base.glob("*") if path.is_dir()), key=lambda path: path.name)
+    directories = sorted(
+        (path for path in base.glob("*") if path.is_dir()), key=lambda path: path.name
+    )
     if not directories:
         return ["Нет каталогов skills в .agents/skills/"]
     # Каталог skill без манифеста — тоже нарушение контракта: обход по
     # `*/SKILL.md` такую поломку не заметил бы.
-    missing = [f"{directory}: отсутствует SKILL.md" for directory in directories if not (directory / "SKILL.md").is_file()]
+    missing = [
+        f"{directory}: отсутствует SKILL.md"
+        for directory in directories
+        if not (directory / "SKILL.md").is_file()
+    ]
     # Каждый документ проверяется со своими определениями: общий словарь давал
     # бы переток между файлами и терял определения самого SKILL.md.
-    errors = missing + [error for skill in sorted(base.glob("*/SKILL.md")) for error in validate_skill(skill)]
+    errors = missing + [
+        error
+        for skill in sorted(base.glob("*/SKILL.md"))
+        for error in validate_skill(skill)
+    ]
     for directory in directories:
         for reference in sorted(directory.rglob("*.md")):
             if reference != directory / "SKILL.md":

@@ -12,7 +12,14 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from check_pr_body import FENCE, FENCE_CLOSE, is_automation_pr, strip_comments, validate, validate_coderabbit
+from check_pr_body import (
+    FENCE,
+    FENCE_CLOSE,
+    is_automation_pr,
+    strip_comments,
+    validate,
+    validate_coderabbit,
+)
 
 MARKER = "<!-- coderabbit-disposition -->"
 API = "https://api.github.com"
@@ -36,12 +43,18 @@ def positive_id(value):
 
 
 def get_json(path, token):
-    request = urllib.request.Request(API + path, headers={
-        "Accept": "application/vnd.github+json",
-        "Authorization": "Bearer " + token,
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "pr-disposition-validator",
-    })
+    # Адрес собран из константы API и проверенного path; NoRedirect обрывает
+    # перенаправление, поэтому токен не уходит на чужой хост, а ссылки
+    # заголовка Link дополнительно разбираются и проверяются в next_page.
+    request = urllib.request.Request(  # noqa: S310
+        API + path,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": "Bearer " + token,
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "pr-disposition-validator",
+        },
+    )
     opener = urllib.request.build_opener(NoRedirect)
     for attempt in range(3):
         try:
@@ -66,7 +79,9 @@ def get_json(path, token):
             time.sleep(0.1 * (attempt + 1))
             continue
         # Исключения могут содержать URL, тело ответа или токен.
-        raise CheckError("Не удалось получить ответ GitHub API после повторов") from None
+        raise CheckError(
+            "Не удалось получить ответ GitHub API после повторов"
+        ) from None
 
 
 def next_page(link, path, current):
@@ -91,21 +106,31 @@ def next_page(link, path, current):
             params = urllib.parse.parse_qs(url.query, strict_parsing=True)
         except ValueError:
             raise CheckError("Некорректная ссылка пагинации") from None
-        canonical = resource and re.fullmatch(r"/repositories/[1-9][0-9]*" + re.escape(resource.group(1)), url.path)
+        canonical = resource and re.fullmatch(
+            r"/repositories/[1-9][0-9]*" + re.escape(resource.group(1)), url.path
+        )
         page = params.get("page", [])
-        if (relation not in {"first", "prev", "next", "last"}
-                or url.scheme != "https" or url.netloc != "api.github.com" or (url.path != path and not canonical)
-                or url.fragment or set(params) != {"page", "per_page"}
-                or len(page) != 1 or not re.fullmatch(r"[1-9][0-9]{0,4}", page[0])
-                or params["per_page"] != ["100"]):
+        if (
+            relation not in {"first", "prev", "next", "last"}
+            or url.scheme != "https"
+            or url.netloc != "api.github.com"
+            or (url.path != path and not canonical)
+            or url.fragment
+            or set(params) != {"page", "per_page"}
+            or len(page) != 1
+            or not re.fullmatch(r"[1-9][0-9]{0,4}", page[0])
+            or params["per_page"] != ["100"]
+        ):
             raise CheckError("Недопустимая ссылка пагинации")
         pages[relation] = int(page[0])
-    if ("next" in pages and pages["next"] != current + 1
-            or "prev" in pages and pages["prev"] != current - 1
-            or "first" in pages and pages["first"] != 1
-            or "last" in pages and pages["last"] < current
-            or pages.get("last", current) > current and "next" not in pages
-            or "next" in pages and pages.get("last", current + 1) < pages["next"]):
+    if (
+        ("next" in pages and pages["next"] != current + 1)
+        or ("prev" in pages and pages["prev"] != current - 1)
+        or ("first" in pages and pages["first"] != 1)
+        or ("last" in pages and pages["last"] < current)
+        or (pages.get("last", current) > current and "next" not in pages)
+        or ("next" in pages and pages.get("last", current + 1) < pages["next"])
+    ):
         raise CheckError("Несогласованная пагинация GitHub API")
     return pages.get("next")
 
@@ -169,9 +194,13 @@ def visible_comment(body):
         elif opening := FENCE.match(line):
             char, length = opening.group(1)[0], len(opening.group(1))
             result.append("")
-        elif tag := re.match(r"^ {0,3}<(?P<closing>/)?(?P<name>[A-Za-z][A-Za-z0-9-]*)(?:\s|/?>)", line):
+        elif tag := re.match(
+            r"^ {0,3}<(?P<closing>/)?(?P<name>[A-Za-z][A-Za-z0-9-]*)(?:\s|/?>)", line
+        ):
             name = tag.group("name").lower()
-            if name in {"script", "pre", "style", "textarea"} and not tag.group("closing"):
+            if name in {"script", "pre", "style", "textarea"} and not tag.group(
+                "closing"
+            ):
                 if not re.search(rf"</{name}\s*>", line, re.IGNORECASE):
                     raw_tag = name
             else:
@@ -190,7 +219,11 @@ def validate_comments(comments, author_id):
         return []
     comment = marked[0]
     user = comment.get("user")
-    if not isinstance(user, dict) or not positive_id(user.get("id")) or user["id"] != author_id:
+    if (
+        not isinstance(user, dict)
+        or not positive_id(user.get("id"))
+        or user["id"] != author_id
+    ):
         return ["Автор служебного комментария CodeRabbit не является автором PR"]
     body = comment["body"].replace("\r\n", "\n").replace("\r", "\n")
     if body.count(MARKER) != 1 or MARKER not in body.split("\n"):
@@ -198,7 +231,10 @@ def validate_comments(comments, author_id):
     # Проверить, что маркер не вложен в иной HTML-комментарий или код-блок.
     sentinel = "CODERABBIT_MARKER_LOCATION_SENTINEL"
     marker_line = body.split("\n").index(MARKER)
-    if visible_comment(body.replace(MARKER, sentinel)).split("\n")[marker_line] != sentinel:
+    if (
+        visible_comment(body.replace(MARKER, sentinel)).split("\n")[marker_line]
+        != sentinel
+    ):
         return ["Маркер CodeRabbit скрыт внутри комментария или блока кода"]
     return validate_coderabbit(visible_comment(body))
 
@@ -208,11 +244,16 @@ def run(env):
     number_text = env.get("PR_NUMBER", "")
     token = env.get("GITHUB_TOKEN", "")
     event_path = env.get("GITHUB_EVENT_PATH", "")
-    if (not REPOSITORY.fullmatch(repository) or any(part in {".", ".."} for part in repository.split("/"))
-            or not re.fullmatch(r"[1-9][0-9]{0,14}", number_text)):
+    if (
+        not REPOSITORY.fullmatch(repository)
+        or any(part in {".", ".."} for part in repository.split("/"))
+        or not re.fullmatch(r"[1-9][0-9]{0,14}", number_text)
+    ):
         raise CheckError("Некорректные GITHUB_REPOSITORY или PR_NUMBER")
     if not token or not event_path or any(not 33 <= ord(c) <= 126 for c in token):
-        raise CheckError("Отсутствуют или некорректны GITHUB_TOKEN или GITHUB_EVENT_PATH")
+        raise CheckError(
+            "Отсутствуют или некорректны GITHUB_TOKEN или GITHUB_EVENT_PATH"
+        )
     try:
         event = json.loads(Path(event_path).read_text(encoding="utf-8"))
         event_pr = event["pull_request"]
@@ -223,9 +264,15 @@ def run(env):
     except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
         raise CheckError("Некорректный файл события pull_request") from exc
     number = int(number_text)
-    if (event_repo != repository or not positive_id(event_number) or event_number != number
-            or not isinstance(event_sha, str) or not SHA.fullmatch(event_sha)
-            or not isinstance(event_base, str) or not SHA.fullmatch(event_base)):
+    if (
+        event_repo != repository
+        or not positive_id(event_number)
+        or event_number != number
+        or not isinstance(event_sha, str)
+        or not SHA.fullmatch(event_sha)
+        or not isinstance(event_base, str)
+        or not SHA.fullmatch(event_base)
+    ):
         raise CheckError("Номер, репозиторий, base или HEAD события некорректны")
     pr, _ = get_json(f"/repos/{repository}/pulls/{number}", token)
     try:
@@ -243,13 +290,24 @@ def run(env):
         state = pr["state"]
     except (KeyError, TypeError) as exc:
         raise CheckError("Некорректный объект PR из GitHub API") from exc
-    if (not positive_id(pr_number) or pr_number != number or not positive_id(author_id)
-            or not isinstance(login, str) or not login or not isinstance(branch, str) or not branch
-            or not isinstance(sha, str) or not SHA.fullmatch(sha)
-            or (body is not None and not isinstance(body, str))
-            or not isinstance(base_sha, str) or not SHA.fullmatch(base_sha)
-            or not isinstance(base_ref, str) or not base_ref
-            or type(draft) is not bool or state not in ("open", "closed")):
+    if (
+        not positive_id(pr_number)
+        or pr_number != number
+        or not positive_id(author_id)
+        or not isinstance(login, str)
+        or not login
+        or not isinstance(branch, str)
+        or not branch
+        or not isinstance(sha, str)
+        or not SHA.fullmatch(sha)
+        or (body is not None and not isinstance(body, str))
+        or not isinstance(base_sha, str)
+        or not SHA.fullmatch(base_sha)
+        or not isinstance(base_ref, str)
+        or not base_ref
+        or type(draft) is not bool
+        or state not in ("open", "closed")
+    ):
         raise CheckError("Некорректные поля PR из GitHub API")
     if sha != event_sha:
         raise CheckError("HEAD PR изменился после события: требуется новая проверка")
@@ -262,13 +320,38 @@ def run(env):
     # результат на основе смешанных версий опубликованных метаданных и body.
     current, _ = get_json(f"/repos/{repository}/pulls/{number}", token)
     try:
-        before = (pr["number"], pr["user"]["id"], pr["user"]["login"], pr["head"]["sha"], pr["head"]["ref"], pr["body"],
-                  pr["base"]["sha"], pr["base"]["ref"], pr["draft"], pr["state"])
-        after = (current["number"], current["user"]["id"], current["user"]["login"], current["head"]["sha"], current["head"]["ref"], current["body"],
-                 current["base"]["sha"], current["base"]["ref"], current["draft"], current["state"])
+        before = (
+            pr["number"],
+            pr["user"]["id"],
+            pr["user"]["login"],
+            pr["head"]["sha"],
+            pr["head"]["ref"],
+            pr["body"],
+            pr["base"]["sha"],
+            pr["base"]["ref"],
+            pr["draft"],
+            pr["state"],
+        )
+        after = (
+            current["number"],
+            current["user"]["id"],
+            current["user"]["login"],
+            current["head"]["sha"],
+            current["head"]["ref"],
+            current["body"],
+            current["base"]["sha"],
+            current["base"]["ref"],
+            current["draft"],
+            current["state"],
+        )
     except (KeyError, TypeError) as exc:
         raise CheckError("Некорректный PR при повторном чтении") from exc
-    if not positive_id(after[0]) or not positive_id(after[1]) or type(after[8]) is not bool or after != before:
+    if (
+        not positive_id(after[0])
+        or not positive_id(after[1])
+        or type(after[8]) is not bool
+        or after != before
+    ):
         raise CheckError("PR изменился во время проверки: запустите её повторно")
     return problems
 

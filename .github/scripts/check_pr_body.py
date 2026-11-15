@@ -39,10 +39,28 @@ HTML_BLOCK = re.compile(
 PERFORMANCE = "Производительность"
 STATUSES = ("измерено", "не применимо", "не измерено")
 # Строка «Поле: значение», в том числе пунктом списка и с полужирным именем.
-FIELD = re.compile(r"^\s*(?:[-*+]\s+)?(?:\*\*)?(?P<name>[^:|*\n]+?)(?:\*\*)?:(?:\*\*)?(?P<value>.*)$")
+FIELD = re.compile(
+    r"^\s*(?:[-*+]\s+)?(?:\*\*)?(?P<name>[^:|*\n]+?)(?:\*\*)?:(?:\*\*)?(?P<value>.*)$"
+)
 PLACEHOLDERS = {
-    "", "-", "—", "–", "n/a", "na", "none", "нет", "todo", "tbd", "...", "…",
-    "не применимо", "заполнить", "уточнить", "см. ниже", "см. выше", "?",
+    "",
+    "-",
+    "—",
+    "–",
+    "n/a",
+    "na",
+    "none",
+    "нет",
+    "todo",
+    "tbd",
+    "...",
+    "…",
+    "не применимо",
+    "заполнить",
+    "уточнить",
+    "см. ниже",
+    "см. выше",
+    "?",
 }
 # Обязательные поля компактного решения для каждого измеренного сценария.
 MEASURED_FIELDS = ("Сценарий", "База", "Кандидат", "Результат", "Вывод", "Регрессии")
@@ -79,7 +97,11 @@ def mask_list_fences(lines: list[str]) -> list[str]:
         indent = len(expanded) - len(expanded.lstrip(" "))
         if outer_char:
             closing = FENCE_CLOSE.match(expanded)
-            if closing and closing.group(1)[0] == outer_char and len(closing.group(1)) >= outer_len:
+            if (
+                closing
+                and closing.group(1)[0] == outer_char
+                and len(closing.group(1)) >= outer_len
+            ):
                 outer_char = ""
             result.append(line)
             continue
@@ -88,7 +110,11 @@ def mask_list_fences(lines: list[str]) -> list[str]:
                 fence_char = ""
             else:
                 closing = FENCE_CLOSE.match(expanded[fence_indent:])
-                if closing and closing.group(1)[0] == fence_char and len(closing.group(1)) >= fence_len:
+                if (
+                    closing
+                    and closing.group(1)[0] == fence_char
+                    and len(closing.group(1)) >= fence_len
+                ):
                     fence_char = ""
                 result.append(" " * len(line))
                 continue
@@ -103,7 +129,7 @@ def mask_list_fences(lines: list[str]) -> list[str]:
                 if end < 0:
                     break
                 in_comment = False
-                rest = rest[end + 3:]
+                rest = rest[end + 3 :]
             else:
                 start = rest.find("<!--")
                 if start < 0:
@@ -111,7 +137,7 @@ def mask_list_fences(lines: list[str]) -> list[str]:
                     break
                 visible += rest[:start]
                 in_comment = True
-                rest = rest[start + 4:]
+                rest = rest[start + 4 :]
         expanded = visible
         indent = len(expanded) - len(expanded.lstrip(" "))
         if expanded.strip():
@@ -128,7 +154,7 @@ def mask_list_fences(lines: list[str]) -> list[str]:
         if opening:
             token = opening.group(1)
             # У backtick-fence info string не может содержать обратную кавычку.
-            if token[0] != "`" or "`" not in relative[opening.end():]:
+            if token[0] != "`" or "`" not in relative[opening.end() :]:
                 in_comment = was_in_comment
                 if indents:
                     fence_char, fence_len, fence_indent = token[0], len(token), base
@@ -154,7 +180,7 @@ def _fence_open(line: str) -> tuple[str, int] | None:
     if not match:
         return None
     token = match.group(1)
-    if token[0] == "`" and "`" in line[match.end():]:
+    if token[0] == "`" and "`" in line[match.end() :]:
         return None
     return token[0], len(token)
 
@@ -233,10 +259,10 @@ def _strip_comments_in_line(line: str, inside: bool) -> tuple[str, bool]:
             run = len(line) - len(line[index:].lstrip("`"))
             closing = line.find("`" * run, index + run)
             if closing < 0:
-                visible.append(line[index:index + run])
+                visible.append(line[index : index + run])
                 index += run
                 continue
-            visible.append(line[index:closing + run])
+            visible.append(line[index : closing + run])
             index = closing + run
             continue
         if line.startswith("<!--", index):
@@ -347,14 +373,22 @@ def sections(body: str, *, raw: bool = False, level: int = 2) -> list[tuple[str,
         match = HEADING.match(line)
         if match and len(match.group(1)) == level:
             if found:
-                found[-1] = (found[-1][0], "\n".join(original[start:index]).strip() if raw else "\n".join(active))
+                found[-1] = (
+                    found[-1][0],
+                    "\n".join(original[start:index]).strip()
+                    if raw
+                    else "\n".join(active),
+                )
             found.append((match.group(2).strip(), ""))
             active = []
             start = index
         elif found:
             active.append(line)
     if found:
-        found[-1] = (found[-1][0], "\n".join(original[start:]).strip() if raw else "\n".join(active))
+        found[-1] = (
+            found[-1][0],
+            "\n".join(original[start:]).strip() if raw else "\n".join(active),
+        )
     return found
 
 
@@ -378,7 +412,10 @@ def placeholder(value: str) -> bool:
 
 def substantive(values: list[str], minimum: int) -> bool:
     """Есть хотя бы одно конкретное пояснение, а не шаблонная заглушка."""
-    return any(not placeholder(v) and len(v.strip()) >= minimum and len(v.split()) >= 3 for v in values)
+    return any(
+        not placeholder(v) and len(v.strip()) >= minimum and len(v.split()) >= 3
+        for v in values
+    )
 
 
 def table_cells(row: str) -> list[str]:
@@ -387,7 +424,14 @@ def table_cells(row: str) -> list[str]:
 
 
 CODERABBIT = "CodeRabbit review и disposition"
-CODERABBIT_HEADER = ("Итерация / reviewed HEAD", "Уровень", "Путь", "Влияние", "Решение", "Исправление")
+CODERABBIT_HEADER = (
+    "Итерация / reviewed HEAD",
+    "Уровень",
+    "Путь",
+    "Влияние",
+    "Решение",
+    "Исправление",
+)
 # Ячейка строки-разделителя GFM: дефисы с необязательным выравниванием «:».
 DELIMITER_CELL = re.compile(r"^:?-+:?$")
 # Первая ячейка завершённой итерации: номер и reviewed HEAD в code span.
@@ -400,7 +444,11 @@ def table_row(line: str) -> list[str] | None:
     Строка с отступом от четырёх пробелов — код-блок, пустая строка завершает
     таблицу. Внешние «|» необязательны, ячейки делит только неэкранированная «|».
     """
-    if not line.strip() or len(line) - len(line.lstrip(" ")) > 3 or not re.search(r"(?<!\\)\|", line):
+    if (
+        not line.strip()
+        or len(line) - len(line.lstrip(" ")) > 3
+        or not re.search(r"(?<!\\)\|", line)
+    ):
         return None
     return table_cells(line)
 
@@ -414,11 +462,15 @@ def validate_coderabbit(content: str) -> list[str]:
     итерации с reviewed HEAD; таблица без единой такой строки не принимается.
     """
     lines = content.split("\n")
-    header = [n for n, line in enumerate(lines) if table_row(line) == list(CODERABBIT_HEADER)]
+    header = [
+        n for n, line in enumerate(lines) if table_row(line) == list(CODERABBIT_HEADER)
+    ]
     if not header:
         return ["В разделе CodeRabbit отсутствует заголовок накопительной таблицы"]
     if len(header) > 1:
-        return ["В разделе CodeRabbit заголовок накопительной таблицы повторяется: нужна одна таблица"]
+        return [
+            "В разделе CodeRabbit заголовок накопительной таблицы повторяется: нужна одна таблица"
+        ]
     start = header[0]
     delimiter = table_row(lines[start + 1]) if start + 1 < len(lines) else None
     if (
@@ -427,13 +479,15 @@ def validate_coderabbit(content: str) -> list[str]:
         or not all(DELIMITER_CELL.match(cell) for cell in delimiter)
     ):
         return [
-            "В разделе CodeRabbit за заголовком таблицы нет строки-разделителя "
-            f"из {len(CODERABBIT_HEADER)} столбцов (`| --- | … |`): GitHub не соберёт таблицу"
+            (
+                "В разделе CodeRabbit за заголовком таблицы нет строки-разделителя "
+                f"из {len(CODERABBIT_HEADER)} столбцов (`| --- | … |`): GitHub не соберёт таблицу"
+            )
         ]
     errors: list[str] = []
     completed = False
     end = len(lines)
-    for offset, line in enumerate(lines[start + 2:], start + 2):
+    for offset, line in enumerate(lines[start + 2 :], start + 2):
         row = table_row(line)
         if row is None:
             end = offset
@@ -457,9 +511,14 @@ def validate_coderabbit(content: str) -> list[str]:
     # разделителем вне таблицы сам по себе продолжением таблицы не является.
     for line in lines[end:]:
         row = table_row(line)
-        if row and (line.lstrip().startswith("|") or len(row) == len(CODERABBIT_HEADER)
-                    or re.match(r"^[1-9]\d*\s*·", row[0])):
-            errors.append(f"Строка CodeRabbit оторвана от накопительной таблицы: {line.strip()}")
+        if row and (
+            line.lstrip().startswith("|")
+            or len(row) == len(CODERABBIT_HEADER)
+            or re.match(r"^[1-9]\d*\s*·", row[0])
+        ):
+            errors.append(
+                f"Строка CodeRabbit оторвана от накопительной таблицы: {line.strip()}"
+            )
     return errors
 
 
@@ -473,53 +532,109 @@ def validate_performance(content: str, raw_section: str | None = None) -> list[s
     prefix = "## Производительность: "
     errors: list[str] = []
     # Лимиты относятся ко всему разделу вместе с его заголовком.
-    length = len(raw_section) if raw_section is not None else len("## Производительность\n") + len(content.strip())
+    length = (
+        len(raw_section)
+        if raw_section is not None
+        else len("## Производительность\n") + len(content.strip())
+    )
     if length > MAX_PERFORMANCE_LENGTH:
-        errors.append(prefix + f"{length} символов, максимум {MAX_PERFORMANCE_LENGTH}; сократите отчёт до выводов")
+        errors.append(
+            prefix
+            + f"{length} символов, максимум {MAX_PERFORMANCE_LENGTH}; сократите отчёт до выводов"
+        )
     found = fields(content)
     statuses = [v.strip("`").casefold() for v in found.get("Статус", [])]
     if len(statuses) != 1 or statuses[0] not in STATUSES:
-        return errors + [prefix + "нужна ровно одна строка «Статус: измерено», «Статус: не применимо» или «Статус: не измерено»"]
+        return [
+            *errors,
+            prefix
+            + "нужна ровно одна строка «Статус: измерено», «Статус: не применимо» или «Статус: не измерено»",
+        ]
     status = statuses[0]
     if status != "измерено" and length > MAX_SIMPLE_PERFORMANCE_LENGTH:
-        errors.append(prefix + f"краткое решение занимает более {MAX_SIMPLE_PERFORMANCE_LENGTH} символов")
+        errors.append(
+            prefix
+            + f"краткое решение занимает более {MAX_SIMPLE_PERFORMANCE_LENGTH} символов"
+        )
     if status == "не применимо":
         if not substantive(found.get("Причина", []), 40):
-            errors.append(prefix + "«не применимо» требует конкретной причины не короче 40 символов")
+            errors.append(
+                prefix
+                + "«не применимо» требует конкретной причины не короче 40 символов"
+            )
     elif status == "не измерено":
         for name in ("Причина", "Диагностика"):
             if not substantive(found.get(name, []), 20):
-                errors.append(prefix + f"«не измерено» требует фактической строки «{name}:»")
+                errors.append(
+                    prefix + f"«не измерено» требует фактической строки «{name}:»"
+                )
         if NO_EVIDENCE[1] not in [v.casefold() for v in found.get(NO_EVIDENCE[0], [])]:
-            errors.append(prefix + "«не измерено» требует строки «Доказательство производительности: отсутствует»")
+            errors.append(
+                prefix
+                + "«не измерено» требует строки «Доказательство производительности: отсутствует»"
+            )
     else:
         blocks = scenario_blocks(content)
         if not blocks:
-            errors.append(prefix + "каждый сценарий «измерено» описывается в отдельном `###`-подразделе")
-        measured = [(heading, block) for heading, block in blocks if not heading.endswith("— не измерено")]
+            errors.append(
+                prefix
+                + "каждый сценарий «измерено» описывается в отдельном `###`-подразделе"
+            )
+        measured = [
+            (heading, block)
+            for heading, block in blocks
+            if not heading.endswith("— не измерено")
+        ]
         for heading, block in blocks:
             if heading.endswith("— не измерено"):
                 info = fields(block)
                 for name in ("Причина", "Диагностика"):
-                    if not info.get(name) or all(placeholder(value) for value in info[name]):
-                        errors.append(prefix + f"неизмеренный сценарий требует строки «{name}:» ({heading})")
-                if NO_EVIDENCE[1] not in [v.casefold() for v in info.get(NO_EVIDENCE[0], [])]:
-                    errors.append(prefix + f"неизмеренный сценарий требует отсутствия доказательства ({heading})")
+                    if not info.get(name) or all(
+                        placeholder(value) for value in info[name]
+                    ):
+                        errors.append(
+                            prefix
+                            + f"неизмеренный сценарий требует строки «{name}:» ({heading})"
+                        )
+                if NO_EVIDENCE[1] not in [
+                    v.casefold() for v in info.get(NO_EVIDENCE[0], [])
+                ]:
+                    errors.append(
+                        prefix
+                        + f"неизмеренный сценарий требует отсутствия доказательства ({heading})"
+                    )
         if blocks and not measured:
-            errors.append(prefix + "«измерено» требует хотя бы один измеренный сценарий")
+            errors.append(
+                prefix + "«измерено» требует хотя бы один измеренный сценарий"
+            )
         for heading, block in measured:
             where = f" ({heading})" if heading else ""
             info = fields(block)
             for name in MEASURED_FIELDS:
                 values = info.get(name, [])
                 if len(values) != 1 or any(placeholder(v) for v in values):
-                    errors.append(prefix + f"для измерения нужна фактическая строка «{name}:»{where}")
+                    errors.append(
+                        prefix
+                        + f"для измерения нужна фактическая строка «{name}:»{where}"
+                    )
             result = info.get("Результат", [])
-            if not any(re.search(r"\d[\d.,\s]*\s*(?:ms|µs|ns|s|%|KiB|MiB|GiB|bytes|count|мс|с)\b|\d\s*%", value) for value in result):
-                errors.append(prefix + f"«Результат» требует числового значения с единицей{where}")
+            if not any(
+                re.search(
+                    r"\d[\d.,\s]*\s*(?:ms|µs|ns|s|%|KiB|MiB|GiB|bytes|count|мс|с)\b|\d\s*%",
+                    value,
+                )
+                for value in result
+            ):
+                errors.append(
+                    prefix + f"«Результат» требует числового значения с единицей{where}"
+                )
             if re.search(r"(?m)^\s*\|\s*Метрика\s*\|", block):
-                errors.append(prefix + f"не вставляйте полную таблицу отчёта: оставьте компактный вывод{where}")
+                errors.append(
+                    prefix
+                    + f"не вставляйте полную таблицу отчёта: оставьте компактный вывод{where}"
+                )
     return errors
+
 
 def validate(body: str) -> list[str]:
     """Детерминированный список ошибок; пустой список — структура соответствует контракту."""
@@ -533,7 +648,9 @@ def validate(body: str) -> list[str]:
     for name in REQUIRED:
         count = names.count(name)
         if count == 0 and name == PERFORMANCE:
-            errors.append(f"Отсутствует обязательный заголовок: ## {name} — {PERFORMANCE_HINT}")
+            errors.append(
+                f"Отсутствует обязательный заголовок: ## {name} — {PERFORMANCE_HINT}"
+            )
         elif count == 0:
             errors.append(f"Отсутствует обязательный заголовок: ## {name}")
         elif count > 1:
@@ -545,7 +662,12 @@ def validate(body: str) -> list[str]:
     for index, (name, content) in enumerate(blocks):
         if name in REQUIRED and not content.strip():
             errors.append(f"Пустой обязательный раздел: ## {name}")
-        if name in REQUIRED and content.strip().casefold() in {"todo", "tbd", "заполнить", "уточнить"}:
+        if name in REQUIRED and content.strip().casefold() in {
+            "todo",
+            "tbd",
+            "заполнить",
+            "уточнить",
+        }:
             errors.append(f"Раздел содержит только заглушку: ## {name}")
         elif name == PERFORMANCE and content.strip() and names.count(PERFORMANCE) == 1:
             errors.extend(validate_performance(content, raw_blocks[index][1]))
@@ -563,18 +685,30 @@ def is_automation_pr(payload: dict) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--body-file", type=Path, help="локальный Markdown-источник описания PR до публикации")
-    source.add_argument("--event-path", type=Path, help="JSON события GitHub pull_request или pull_request_target")
+    source.add_argument(
+        "--body-file",
+        type=Path,
+        help="локальный Markdown-источник описания PR до публикации",
+    )
+    source.add_argument(
+        "--event-path",
+        type=Path,
+        help="JSON события GitHub pull_request или pull_request_target",
+    )
     args = parser.parse_args()
     try:
         if args.body_file is not None:
             body = args.body_file.read_text(encoding="utf-8")
         else:
             payload = json.loads(args.event_path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict) or not isinstance(payload.get("pull_request"), dict):
+            if not isinstance(payload, dict) or not isinstance(
+                payload.get("pull_request"), dict
+            ):
                 raise ValueError("Нет объекта pull_request в событии")
             if is_automation_pr(payload):
-                print("PR бота обновления зависимостей: формат ручных PR не применяется")
+                print(
+                    "PR бота обновления зависимостей: формат ручных PR не применяется"
+                )
                 return 0
             body = payload["pull_request"].get("body") or ""
         problems = validate(body)

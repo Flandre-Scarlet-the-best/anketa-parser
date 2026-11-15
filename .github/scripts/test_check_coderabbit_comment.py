@@ -9,16 +9,17 @@ import traceback
 import unittest
 import urllib.error
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 import check_coderabbit_comment as check
 from test_check_pr_body import CR_DELIMITER, CR_HEADER, CR_ROW, valid_body
 
-
 SHA = "a" * 40
 REPO = "example/project"
 NUMBER = 7
-MARKED = "\n".join((check.MARKER, "## CodeRabbit review и disposition", CR_HEADER, CR_DELIMITER, CR_ROW))
+TABLE = f"{CR_HEADER}\n{CR_DELIMITER}\n{CR_ROW}"
+MARKED = f"{check.MARKER}\n## CodeRabbit review и disposition\n{TABLE}"
 
 
 def comment(identifier, author=1, body=MARKED):
@@ -26,14 +27,27 @@ def comment(identifier, author=1, body=MARKED):
 
 
 def pr():
-    return {"number": NUMBER, "user": {"id": 1, "login": "author"},
-            "head": {"sha": SHA, "ref": "feature/example"}, "body": valid_body(),
-            "base": {"sha": "c" * 40, "ref": "feature/base"}, "draft": True, "state": "open"}
+    return {
+        "number": NUMBER,
+        "user": {"id": 1, "login": "author"},
+        "head": {"sha": SHA, "ref": "feature/example"},
+        "body": valid_body(),
+        "base": {"sha": "c" * 40, "ref": "feature/base"},
+        "draft": True,
+        "state": "open",
+    }
 
 
 def event():
-    return {"repository": {"full_name": REPO},
-            "pull_request": {"number": NUMBER, "head": {"sha": SHA}, "base": {"sha": "c" * 40}, "body": "устаревшее body"}}
+    return {
+        "repository": {"full_name": REPO},
+        "pull_request": {
+            "number": NUMBER,
+            "head": {"sha": SHA},
+            "base": {"sha": "c" * 40},
+            "body": "устаревшее body",
+        },
+    }
 
 
 def link(page, host="api.github.com", path=None):
@@ -43,22 +57,38 @@ def link(page, host="api.github.com", path=None):
 
 class CommentTests(unittest.TestCase):
     def test_canonical_comment_without_historical_heading(self):
-        canonical = "\n\n".join((check.MARKER, "\n".join((CR_HEADER, CR_DELIMITER, CR_ROW))))
+        canonical = f"{check.MARKER}\n\n{TABLE}"
         self.assertEqual(check.validate_comments([comment(1, body=canonical)], 1), [])
 
     def test_inline_code_cannot_supply_marker_or_table_header(self):
-        table = "\n".join((CR_HEADER, CR_DELIMITER, CR_ROW))
         for ticks in ("`", "``"):
-            for body in (ticks + check.MARKER + ticks + "\n\n" + table,
-                         check.MARKER + "\n" + ticks + CR_HEADER + ticks + "\n" + CR_DELIMITER + "\n" + CR_ROW):
+            for body in (
+                ticks + check.MARKER + ticks + "\n\n" + TABLE,
+                check.MARKER
+                + "\n"
+                + ticks
+                + CR_HEADER
+                + ticks
+                + "\n"
+                + CR_DELIMITER
+                + "\n"
+                + CR_ROW,
+            ):
                 with self.subTest(body=body):
                     self.assertTrue(check.validate_comments([comment(1, body=body)], 1))
 
     def test_absent_valid_and_accumulated(self):
         self.assertEqual(check.validate_comments([], 1), [])
         extra = "| 2 · `abcdef1` | major | `a.cs` | эффект | confirmed | `abcdef2` |"
-        same_iteration = "| 2 · `abcdef1` | minor | `b.cs` | эффект | false positive | — |"
-        self.assertEqual(check.validate_comments([comment(1, body=MARKED + "\n" + extra + "\n" + same_iteration)], 1), [])
+        same_iteration = (
+            "| 2 · `abcdef1` | minor | `b.cs` | эффект | false positive | — |"
+        )
+        self.assertEqual(
+            check.validate_comments(
+                [comment(1, body=MARKED + "\n" + extra + "\n" + same_iteration)], 1
+            ),
+            [],
+        )
 
     def test_duplicate_and_author_id_not_login(self):
         self.assertTrue(check.validate_comments([comment(1), comment(2)], 1))
@@ -73,23 +103,29 @@ class CommentTests(unittest.TestCase):
                 self.assertTrue(check.validate_comments([marked], 1))
 
     def test_bad_marker_and_invisible_table(self):
-        for body in (MARKED + "\n" + check.MARKER,
-                     "```\n" + MARKED + "\n```",
-                     "<!--\n" + check.MARKER + "\n-->\n" + MARKED.replace(check.MARKER, ""),
-                     "text " + MARKED,
-                     check.MARKER + "\n```\n" + "\n".join((CR_HEADER, CR_DELIMITER, CR_ROW)) + "\n```",
-                     check.MARKER + "\n<!--\n" + "\n".join((CR_HEADER, CR_DELIMITER, CR_ROW)) + "\n-->",
-                     check.MARKER + "\n<div>\n" + "\n".join((CR_HEADER, CR_DELIMITER, CR_ROW)) + "\n</div>",
-                     check.MARKER + "\n<script>\n\n" + "\n".join((CR_HEADER, CR_DELIMITER, CR_ROW)) + "\n</script>"):
+        for body in (
+            MARKED + "\n" + check.MARKER,
+            "```\n" + MARKED + "\n```",
+            "<!--\n" + check.MARKER + "\n-->\n" + MARKED.replace(check.MARKER, ""),
+            "text " + MARKED,
+            f"{check.MARKER}\n```\n{TABLE}\n```",
+            f"{check.MARKER}\n<!--\n{TABLE}\n-->",
+            f"{check.MARKER}\n<div>\n{TABLE}\n</div>",
+            f"{check.MARKER}\n<script>\n\n{TABLE}\n</script>",
+        ):
             with self.subTest(body=body):
                 self.assertTrue(check.validate_comments([comment(1, body=body)], 1))
 
     def test_bad_table(self):
-        for body in (check.MARKER, MARKED.replace(CR_DELIMITER, "| --- | --- |"),
-                     MARKED.replace("clean", ""), MARKED + "\n\n" + CR_ROW,
-                     MARKED + "\n\n| 2 · `ab` | minor | path | impact | confirmed | fix |",
-                     MARKED + "\n\n| повреждённая | строка |",
-                     MARKED + "\n\n" + CR_HEADER + "\n" + CR_DELIMITER + "\n" + CR_ROW):
+        for body in (
+            check.MARKER,
+            MARKED.replace(CR_DELIMITER, "| --- | --- |"),
+            MARKED.replace("clean", ""),
+            MARKED + "\n\n" + CR_ROW,
+            MARKED + "\n\n| 2 · `ab` | minor | path | impact | confirmed | fix |",
+            MARKED + "\n\n| повреждённая | строка |",
+            MARKED + "\n\n" + CR_HEADER + "\n" + CR_DELIMITER + "\n" + CR_ROW,
+        ):
             with self.subTest(body=body):
                 self.assertTrue(check.validate_comments([comment(1, body=body)], 1))
 
@@ -98,12 +134,17 @@ class PaginationTests(unittest.TestCase):
     @patch.object(check, "get_json")
     def test_unrelated_null_user_on_same_or_different_pages(self, get):
         ordinary = {"id": 2, "user": None, "body": "Обычный комментарий"}
-        for pages in (([ordinary, comment(1)],), ([ordinary], [comment(1)]),
-                      ([comment(1)], [ordinary])):
+        for pages in (
+            ([ordinary, comment(1)],),
+            ([ordinary], [comment(1)]),
+            ([comment(1)], [ordinary]),
+        ):
             with self.subTest(pages=pages):
                 get.reset_mock()
-                get.side_effect = [(page, link(index + 2) if index + 1 < len(pages) else None)
-                                   for index, page in enumerate(pages)]
+                get.side_effect = [
+                    (page, link(index + 2) if index + 1 < len(pages) else None)
+                    for index, page in enumerate(pages)
+                ]
                 comments = check.list_comments(REPO, NUMBER, "token")
                 self.assertEqual(len(comments), 2)
                 self.assertEqual(check.validate_comments(comments, 1), [])
@@ -114,8 +155,10 @@ class PaginationTests(unittest.TestCase):
         other = comment(2, author=2)
         get.side_effect = [([comment(1)], link(2)), ([other], None)]
         comments = check.list_comments(REPO, NUMBER, "token")
-        self.assertEqual(check.validate_comments(comments, 1),
-                         ["Найдено несколько служебных комментариев CodeRabbit"])
+        self.assertEqual(
+            check.validate_comments(comments, 1),
+            ["Найдено несколько служебных комментариев CodeRabbit"],
+        )
 
     @patch.object(check, "get_json")
     def test_follows_next_even_short_page_and_finds_duplicate(self, get):
@@ -127,21 +170,33 @@ class PaginationTests(unittest.TestCase):
 
     @patch.object(check, "get_json")
     def test_canonical_repository_id_link_fetches_original_repository(self, get):
-        get.side_effect = [([comment(1)], link(2, path=f"/repositories/123/issues/{NUMBER}/comments")),
-                           ([comment(2, body="другой комментарий")], None)]
+        get.side_effect = [
+            ([comment(1)], link(2, path=f"/repositories/123/issues/{NUMBER}/comments")),
+            ([comment(2, body="другой комментарий")], None),
+        ]
         self.assertEqual(len(check.list_comments(REPO, NUMBER, "token")), 2)
-        self.assertEqual(get.call_args_list[1].args[0], f"/repos/{REPO}/issues/{NUMBER}/comments?per_page=100&page=2")
+        self.assertEqual(
+            get.call_args_list[1].args[0],
+            f"/repos/{REPO}/issues/{NUMBER}/comments?per_page=100&page=2",
+        )
 
     @patch.object(check, "get_json")
     def test_full_page_without_link_fetches_next(self, get):
-        get.side_effect = [([comment(i, body="other") for i in range(1, 101)], None), ([comment(101)], None)]
+        get.side_effect = [
+            ([comment(i, body="other") for i in range(1, 101)], None),
+            ([comment(101)], None),
+        ]
         self.assertEqual(len(check.list_comments(REPO, NUMBER, "token")), 101)
         self.assertEqual(get.call_count, 2)
 
     @patch.object(check, "get_json")
     def test_malformed_and_duplicate_comment_fail_closed(self, get):
-        for response in [({}, None), ([{"id": 1}], None), ([comment(1), comment(1)], None),
-                         ([comment(1, body=None)], None)]:
+        for response in [
+            ({}, None),
+            ([{"id": 1}], None),
+            ([comment(1), comment(1)], None),
+            ([comment(1, body=None)], None),
+        ]:
             with self.subTest(response=response):
                 get.return_value = response
                 with self.assertRaises(check.CheckError):
@@ -149,13 +204,20 @@ class PaginationTests(unittest.TestCase):
 
     @patch.object(check, "get_json")
     def test_untrusted_links_and_errors_fail_closed(self, get):
-        for value in (link(2, host="attacker.invalid"), link(3), link(2, path="/wrong"),
-                      link(2, path="/repositories/0/issues/7/comments"),
-                      link(2, path="/repositories/123/issues/8/comments"), "bad", link(2) + ", " + link(2),
-                      '<https://[broken/>; rel="next"', link(2).replace("https:", "http:"),
-                      link(2).replace("page=2", "page=2&page=3"),
-                      link(2).replace("per_page=100", "per_page=50"),
-                      link(2).replace('>; rel=', '#fragment>; rel=')):
+        for value in (
+            link(2, host="attacker.invalid"),
+            link(3),
+            link(2, path="/wrong"),
+            link(2, path="/repositories/0/issues/7/comments"),
+            link(2, path="/repositories/123/issues/8/comments"),
+            "bad",
+            link(2) + ", " + link(2),
+            '<https://[broken/>; rel="next"',
+            link(2).replace("https:", "http:"),
+            link(2).replace("page=2", "page=2&page=3"),
+            link(2).replace("per_page=100", "per_page=50"),
+            link(2).replace(">; rel=", "#fragment>; rel="),
+        ):
             with self.subTest(link=value):
                 get.return_value = ([comment(1)], value)
                 with self.assertRaises(check.CheckError):
@@ -174,9 +236,11 @@ class PaginationTests(unittest.TestCase):
 
     @patch.object(check, "get_json")
     def test_invalid_last_link_or_missing_next_cannot_hide_comments(self, get):
-        for value in (link(2, host="attacker.invalid").replace('rel="next"', 'rel="last"'),
-                      link(2).replace('rel="next"', 'rel="last"'),
-                      '<https://[broken/>; rel="last"'):
+        for value in (
+            link(2, host="attacker.invalid").replace('rel="next"', 'rel="last"'),
+            link(2).replace('rel="next"', 'rel="last"'),
+            '<https://[broken/>; rel="last"',
+        ):
             with self.subTest(link=value):
                 get.return_value = ([comment(1)], value)
                 with self.assertRaises(check.CheckError):
@@ -184,14 +248,30 @@ class PaginationTests(unittest.TestCase):
 
     def test_consistent_first_prev_next_last_and_final_page_are_accepted(self):
         path = f"/repos/{REPO}/issues/{NUMBER}/comments"
+
         def relation(page, name):
             return link(page).replace('rel="next"', f'rel="{name}"')
-        full = ", ".join((relation(1, "first"), relation(1, "prev"), relation(3, "next"), relation(4, "last")))
+
+        full = ", ".join(
+            (
+                relation(1, "first"),
+                relation(1, "prev"),
+                relation(3, "next"),
+                relation(4, "last"),
+            )
+        )
         self.assertEqual(check.next_page(full, path, 2), 3)
-        final = ", ".join((relation(1, "first"), relation(3, "prev"), relation(4, "last")))
+        final = ", ".join(
+            (relation(1, "first"), relation(3, "prev"), relation(4, "last"))
+        )
         self.assertIsNone(check.next_page(final, path, 4))
-        for bad in (relation(3, "first"), relation(4, "prev"), relation(1, "last"),
-                    relation(3, "unknown"), relation(3, "next") + ", " + relation(2, "last")):
+        for bad in (
+            relation(3, "first"),
+            relation(4, "prev"),
+            relation(1, "last"),
+            relation(3, "unknown"),
+            relation(3, "next") + ", " + relation(2, "last"),
+        ):
             with self.subTest(link=bad), self.assertRaises(check.CheckError):
                 check.next_page(bad, path, 2)
 
@@ -199,7 +279,8 @@ class PaginationTests(unittest.TestCase):
 class RequestTests(unittest.TestCase):
     class Response(io.BytesIO):
         status = 200
-        headers = {}
+        # Двойник ответа HTTP: заголовки общие для класса, а не поле экземпляра.
+        headers: ClassVar[dict[str, str]] = {}
 
     @patch("urllib.request.build_opener")
     def test_request_headers_and_decode(self, opener):
@@ -209,22 +290,38 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(request.full_url, "https://api.github.com/test")
         self.assertEqual(request.get_header("Authorization"), "Bearer secret")
         self.assertIs(opener.call_args.args[0], check.NoRedirect)
-        self.assertIsNone(check.NoRedirect().redirect_request(None, None, 302, "", {}, "https://attacker.invalid"))
+        self.assertIsNone(
+            check.NoRedirect().redirect_request(
+                None, None, 302, "", {}, "https://attacker.invalid"
+            )
+        )
 
     @staticmethod
     def http_error(code):
-        return urllib.error.HTTPError("https://example.invalid/secret", code, "secret", {}, io.BytesIO(b"secret"))
+        return urllib.error.HTTPError(
+            "https://example.invalid/secret", code, "secret", {}, io.BytesIO(b"secret")
+        )
 
     @patch.object(check.time, "sleep")
     @patch("urllib.request.build_opener")
     def test_transient_failures_then_success(self, opener, sleep):
-        for failure in (self.http_error(500), self.http_error(503),
-                        urllib.error.URLError("unavailable"), TimeoutError(), OSError("network")):
+        for failure in (
+            self.http_error(500),
+            self.http_error(503),
+            urllib.error.URLError("unavailable"),
+            TimeoutError(),
+            OSError("network"),
+        ):
             with self.subTest(failure=failure):
                 opener.return_value.open.reset_mock(side_effect=True)
                 sleep.reset_mock()
-                opener.return_value.open.side_effect = [failure, self.Response(b'{"ok": true}')]
-                self.assertEqual(check.get_json("/test", "secret"), ({"ok": True}, None))
+                opener.return_value.open.side_effect = [
+                    failure,
+                    self.Response(b'{"ok": true}'),
+                ]
+                self.assertEqual(
+                    check.get_json("/test", "secret"), ({"ok": True}, None)
+                )
                 self.assertEqual(opener.return_value.open.call_count, 2)
                 sleep.assert_called_once_with(0.1)
                 if isinstance(failure, urllib.error.HTTPError):
@@ -232,13 +329,18 @@ class RequestTests(unittest.TestCase):
 
     @patch.object(check.time, "sleep")
     @patch("urllib.request.build_opener")
-    def test_http_protocol_failures_retry_without_exposing_response(self, opener, sleep):
-        for failure in (http.client.IncompleteRead(b"secret"),
-                        http.client.BadStatusLine("secret"), http.client.LineTooLong("secret")):
+    def test_http_protocol_failures_retry_without_exposing_response(
+        self, opener, sleep
+    ):
+        for failure in (
+            http.client.IncompleteRead(b"secret"),
+            http.client.BadStatusLine("secret"),
+            http.client.LineTooLong("secret"),
+        ):
             with self.subTest(failure=type(failure).__name__):
                 opener.return_value.open.reset_mock(side_effect=True)
                 sleep.reset_mock()
-                opener.return_value.open.side_effect = [failure, self.Response(b'{}')]
+                opener.return_value.open.side_effect = [failure, self.Response(b"{}")]
                 self.assertEqual(check.get_json("/test", "token"), ({}, None))
                 self.assertEqual(opener.return_value.open.call_count, 2)
                 sleep.assert_called_once_with(0.1)
@@ -247,9 +349,13 @@ class RequestTests(unittest.TestCase):
                 opener.return_value.open.side_effect = [failure, failure, failure]
                 with self.assertRaises(check.CheckError) as caught:
                     check.get_json("/test", "token")
-                self.assertNotIn("secret", "".join(traceback.format_exception(caught.exception)))
+                self.assertNotIn(
+                    "secret", "".join(traceback.format_exception(caught.exception))
+                )
                 self.assertEqual(opener.return_value.open.call_count, 3)
-                self.assertEqual([call.args for call in sleep.call_args_list], [(0.1,), (0.2,)])
+                self.assertEqual(
+                    [call.args for call in sleep.call_args_list], [(0.1,), (0.2,)]
+                )
 
     @patch.object(check.time, "sleep")
     @patch("urllib.request.build_opener")
@@ -258,8 +364,8 @@ class RequestTests(unittest.TestCase):
             def read(self, *args):
                 raise http.client.IncompleteRead(b"secret")
 
-        response = IncompleteResponse(b'')
-        opener.return_value.open.side_effect = [response, self.Response(b'{}')]
+        response = IncompleteResponse(b"")
+        opener.return_value.open.side_effect = [response, self.Response(b"{}")]
         self.assertEqual(check.get_json("/test", "token"), ({}, None))
         self.assertTrue(response.closed)
         self.assertEqual(opener.return_value.open.call_count, 2)
@@ -267,13 +373,15 @@ class RequestTests(unittest.TestCase):
 
     @patch.object(check.time, "sleep")
     @patch("urllib.request.build_opener")
-    def test_transport_failure_while_reading_retries_and_closes_response(self, opener, sleep):
+    def test_transport_failure_while_reading_retries_and_closes_response(
+        self, opener, sleep
+    ):
         class BrokenResponse(self.Response):
             def read(self, *args):
                 raise TimeoutError("secret")
 
-        response = BrokenResponse(b'')
-        opener.return_value.open.side_effect = [response, self.Response(b'{}')]
+        response = BrokenResponse(b"")
+        opener.return_value.open.side_effect = [response, self.Response(b"{}")]
         self.assertEqual(check.get_json("/test", "secret"), ({}, None))
         self.assertTrue(response.closed)
         self.assertEqual(opener.return_value.open.call_count, 2)
@@ -282,19 +390,25 @@ class RequestTests(unittest.TestCase):
     @patch.object(check.time, "sleep")
     @patch("urllib.request.build_opener")
     def test_persistent_failures_are_bounded_and_safe(self, opener, sleep):
-        for failures in ([self.http_error(503) for _ in range(3)],
-                         [urllib.error.URLError("secret") for _ in range(3)],
-                         [TimeoutError("secret") for _ in range(3)],
-                         [OSError("secret") for _ in range(3)]):
+        for failures in (
+            [self.http_error(503) for _ in range(3)],
+            [urllib.error.URLError("secret") for _ in range(3)],
+            [TimeoutError("secret") for _ in range(3)],
+            [OSError("secret") for _ in range(3)],
+        ):
             with self.subTest(failure=type(failures[0]).__name__):
                 opener.return_value.open.reset_mock(side_effect=True)
                 sleep.reset_mock()
                 opener.return_value.open.side_effect = failures
                 with self.assertRaises(check.CheckError) as caught:
                     check.get_json("/test", "secret")
-                self.assertNotIn("secret", "".join(traceback.format_exception(caught.exception)))
+                self.assertNotIn(
+                    "secret", "".join(traceback.format_exception(caught.exception))
+                )
                 self.assertEqual(opener.return_value.open.call_count, 3)
-                self.assertEqual([call.args for call in sleep.call_args_list], [(0.1,), (0.2,)])
+                self.assertEqual(
+                    [call.args for call in sleep.call_args_list], [(0.1,), (0.2,)]
+                )
                 for failure in failures:
                     if isinstance(failure, urllib.error.HTTPError):
                         self.assertTrue(failure.closed)
@@ -309,7 +423,9 @@ class RequestTests(unittest.TestCase):
                 opener.return_value.open.side_effect = error
                 with self.assertRaises(check.CheckError) as caught:
                     check.get_json("/test", "secret")
-                self.assertNotIn("secret", "".join(traceback.format_exception(caught.exception)))
+                self.assertNotIn(
+                    "secret", "".join(traceback.format_exception(caught.exception))
+                )
                 self.assertTrue(error.closed)
                 self.assertEqual(opener.return_value.open.call_count, 1)
         sleep.assert_not_called()
@@ -317,14 +433,16 @@ class RequestTests(unittest.TestCase):
     @patch.object(check.time, "sleep")
     @patch("urllib.request.build_opener")
     def test_invalid_json_and_unicode_fail_without_retry(self, opener, sleep):
-        for body in (b'bad-json secret', b'"\xff secret"'):
+        for body in (b"bad-json secret", b'"\xff secret"'):
             with self.subTest(body=body):
                 opener.return_value.open.reset_mock(side_effect=True)
                 response = self.Response(body)
                 opener.return_value.open.return_value = response
                 with self.assertRaises(check.CheckError) as caught:
                     check.get_json("/test", "secret")
-                self.assertNotIn("secret", "".join(traceback.format_exception(caught.exception)))
+                self.assertNotIn(
+                    "secret", "".join(traceback.format_exception(caught.exception))
+                )
                 self.assertTrue(response.closed)
                 self.assertEqual(opener.return_value.open.call_count, 1)
         sleep.assert_not_called()
@@ -332,16 +450,16 @@ class RequestTests(unittest.TestCase):
     @patch.object(check.time, "sleep")
     @patch("urllib.request.build_opener")
     def test_non_200_response_statuses(self, opener, sleep):
-        response = self.Response(b'')
+        response = self.Response(b"")
         response.status = 503
-        opener.return_value.open.side_effect = [response, self.Response(b'{}')]
+        opener.return_value.open.side_effect = [response, self.Response(b"{}")]
         self.assertEqual(check.get_json("/test", "secret"), ({}, None))
         self.assertTrue(response.closed)
         self.assertEqual(opener.return_value.open.call_count, 2)
         sleep.assert_called_once_with(0.1)
         opener.return_value.open.reset_mock(side_effect=True)
         sleep.reset_mock()
-        response = self.Response(b'')
+        response = self.Response(b"")
         response.status = 302
         opener.return_value.open.return_value = response
         with self.assertRaises(check.CheckError):
@@ -357,10 +475,19 @@ class PublishedPrTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.event_path = Path(self.tmp.name) / "event.json"
         self.event_path.write_text(json.dumps(event()), encoding="utf-8")
-        self.env = {"GITHUB_REPOSITORY": REPO, "PR_NUMBER": str(NUMBER), "GITHUB_TOKEN": "token", "GITHUB_EVENT_PATH": str(self.event_path)}
+        self.env = {
+            "GITHUB_REPOSITORY": REPO,
+            "PR_NUMBER": str(NUMBER),
+            "GITHUB_TOKEN": "token",
+            "GITHUB_EVENT_PATH": str(self.event_path),
+        }
 
     def execute(self, actual, comments=None):
-        responses = [(actual, None), (comments or [], None), (copy.deepcopy(actual), None)]
+        responses = [
+            (actual, None),
+            (comments or [], None),
+            (copy.deepcopy(actual), None),
+        ]
         with patch.object(check, "get_json", side_effect=responses):
             return check.run(self.env)
 
@@ -380,8 +507,13 @@ class PublishedPrTests(unittest.TestCase):
         self.assertTrue(self.execute(actual))
 
     def test_head_and_identity_are_validated(self):
-        for mutate in (lambda p: p["head"].update(sha="b" * 40), lambda p: p["user"].update(id=True),
-                       lambda p: p.update(number=8), lambda p: p.update(body=[]), lambda p: p.update(user=None)):
+        for mutate in (
+            lambda p: p["head"].update(sha="b" * 40),
+            lambda p: p["user"].update(id=True),
+            lambda p: p.update(number=8),
+            lambda p: p.update(body=[]),
+            lambda p: p.update(user=None),
+        ):
             actual = pr()
             mutate(actual)
             with self.subTest(actual=actual), self.assertRaises(check.CheckError):
@@ -401,16 +533,23 @@ class PublishedPrTests(unittest.TestCase):
         self.assertEqual(self.execute(pr(), [ordinary_without_user, comment(1)]), [])
         self.assertEqual(self.execute(pr(), [ordinary_without_user]), [])
         self.assertEqual(self.execute(pr(), [comment(1)]), [])
-        with patch.object(check, "get_json", side_effect=[(pr(), None), check.CheckError("API")]):
-            with self.assertRaises(check.CheckError):
-                check.run(self.env)
+        with (
+            patch.object(
+                check, "get_json", side_effect=[(pr(), None), check.CheckError("API")]
+            ),
+            self.assertRaises(check.CheckError),
+        ):
+            check.run(self.env)
 
     @patch.object(check.time, "sleep")
     @patch("urllib.request.build_opener")
     def test_protocol_failure_main_returns_sanitized_error(self, opener, sleep):
         opener.return_value.open.side_effect = http.client.BadStatusLine("secret")
         stderr = io.StringIO()
-        with patch.dict(check.os.environ, self.env, clear=True), patch("sys.stderr", stderr):
+        with (
+            patch.dict(check.os.environ, self.env, clear=True),
+            patch("sys.stderr", stderr),
+        ):
             self.assertEqual(check.main(), 2)
         self.assertEqual(opener.return_value.open.call_count, 3)
         self.assertEqual(sleep.call_count, 2)
@@ -420,43 +559,79 @@ class PublishedPrTests(unittest.TestCase):
     def test_pr_changes_during_pagination_are_rejected(self):
         changed = pr()
         changed["head"]["sha"] = "b" * 40
-        with patch.object(check, "get_json", side_effect=[(pr(), None), ([], None), (changed, None)]):
-            with self.assertRaises(check.CheckError):
-                check.run(self.env)
+        with (
+            patch.object(
+                check,
+                "get_json",
+                side_effect=[(pr(), None), ([], None), (changed, None)],
+            ),
+            self.assertRaises(check.CheckError),
+        ):
+            check.run(self.env)
         changed = pr()
         changed["body"] = "изменилось"
-        with patch.object(check, "get_json", side_effect=[(pr(), None), ([], None), (changed, None)]):
-            with self.assertRaises(check.CheckError):
-                check.run(self.env)
+        with (
+            patch.object(
+                check,
+                "get_json",
+                side_effect=[(pr(), None), ([], None), (changed, None)],
+            ),
+            self.assertRaises(check.CheckError),
+        ):
+            check.run(self.env)
 
     def test_base_draft_state_and_author_races_fail_closed(self):
-        for mutate in (lambda p: p["base"].update(sha="d" * 40),
-                       lambda p: p["base"].update(ref="other-base"),
-                       lambda p: p.update(draft=False), lambda p: p.update(state="closed"),
-                       lambda p: p["user"].update(id=2), lambda p: p["user"].update(login="other"),
-                       lambda p: p["head"].update(ref="other-head")):
+        for mutate in (
+            lambda p: p["base"].update(sha="d" * 40),
+            lambda p: p["base"].update(ref="other-base"),
+            lambda p: p.update(draft=False),
+            lambda p: p.update(state="closed"),
+            lambda p: p["user"].update(id=2),
+            lambda p: p["user"].update(login="other"),
+            lambda p: p["head"].update(ref="other-head"),
+        ):
             changed = pr()
             mutate(changed)
-            with self.subTest(changed=changed), patch.object(check, "get_json", side_effect=[(pr(), None), ([], None), (changed, None)]):
-                with self.assertRaises(check.CheckError):
-                    check.run(self.env)
+            with (
+                self.subTest(changed=changed),
+                patch.object(
+                    check,
+                    "get_json",
+                    side_effect=[(pr(), None), ([], None), (changed, None)],
+                ),
+                self.assertRaises(check.CheckError),
+            ):
+                check.run(self.env)
 
     def test_stale_event_base_and_malformed_metadata_fail_before_comment_read(self):
-        for mutate in (lambda p: p["base"].update(sha="d" * 40),
-                       lambda p: p.update(base=None), lambda p: p["base"].update(sha="bad"),
-                       lambda p: p["base"].update(ref=""), lambda p: p.update(draft=1),
-                       lambda p: p.update(state=[])):
+        for mutate in (
+            lambda p: p["base"].update(sha="d" * 40),
+            lambda p: p.update(base=None),
+            lambda p: p["base"].update(sha="bad"),
+            lambda p: p["base"].update(ref=""),
+            lambda p: p.update(draft=1),
+            lambda p: p.update(state=[]),
+        ):
             actual = pr()
             mutate(actual)
-            with self.subTest(actual=actual), patch.object(check, "get_json", return_value=(actual, None)) as get:
-                with self.assertRaises(check.CheckError):
-                    check.run(self.env)
+            with (
+                self.subTest(actual=actual),
+                patch.object(check, "get_json", return_value=(actual, None)) as get,
+                self.assertRaises(check.CheckError),
+            ):
+                check.run(self.env)
                 self.assertEqual(get.call_count, 1)
 
     def test_missing_event_base_and_failed_reread_fail_closed(self):
-        with patch.object(check, "get_json", side_effect=[(pr(), None), ([], None), check.CheckError("Ошибка API")]):
-            with self.assertRaises(check.CheckError):
-                check.run(self.env)
+        with (
+            patch.object(
+                check,
+                "get_json",
+                side_effect=[(pr(), None), ([], None), check.CheckError("Ошибка API")],
+            ),
+            self.assertRaises(check.CheckError),
+        ):
+            check.run(self.env)
         payload = event()
         del payload["pull_request"]["base"]
         self.event_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -464,6 +639,7 @@ class PublishedPrTests(unittest.TestCase):
             with self.assertRaises(check.CheckError):
                 check.run(self.env)
             get.assert_not_called()
+
     def test_missing_environment_fails(self):
         for key in self.env:
             env = dict(self.env)

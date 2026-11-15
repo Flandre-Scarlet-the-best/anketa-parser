@@ -10,10 +10,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from test_check_pr_body import CR_HEADER, CR_DELIMITER, CR_ROW, valid_body
+from test_check_pr_body import CR_DELIMITER, CR_HEADER, CR_ROW, valid_body
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / "workflows"
 TRUSTED = WORKFLOWS / "pr-body-trusted.yml"
+# Команда точки входа из проверяемого checkout: литеральные аргументы,
+# sys.executable и без shell, поэтому данные PR в неё не попадают.
+ENTRY_COMMAND = [sys.executable, ".github/scripts/check_coderabbit_comment.py"]
 
 
 class TrustedWorkflowTests(unittest.TestCase):
@@ -22,11 +25,15 @@ class TrustedWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.text = TRUSTED.read_text(encoding="utf-8")
         # Комментарии не участвуют в контракте: проверяется только сам YAML.
-        self.yaml = "\n".join(line for line in self.text.splitlines() if not line.lstrip().startswith("#"))
+        self.yaml = "\n".join(
+            line for line in self.text.splitlines() if not line.lstrip().startswith("#")
+        )
 
     def test_runs_only_on_pull_request_target(self):
         triggers = re.search(r"(?m)^on:\n((?:[ \t]+.*\n)+)", self.yaml + "\n").group(1)
-        self.assertEqual(re.findall(r"(?m)^  (\w+):", triggers), ["pull_request_target"])
+        self.assertEqual(
+            re.findall(r"(?m)^  (\w+):", triggers), ["pull_request_target"]
+        )
 
     def test_checks_out_exact_base_sha_without_credentials(self):
         checkouts = re.findall(r"uses: actions/checkout@", self.yaml)
@@ -35,16 +42,29 @@ class TrustedWorkflowTests(unittest.TestCase):
         self.assertIn("persist-credentials: false", self.yaml)
 
     def test_no_head_code_secrets_or_write_access(self):
-        for forbidden in ("head.sha", "head.ref", "head.repo", "merge_commit_sha", "refs/pull", "secrets.", ": write", "write-all"):
+        for forbidden in (
+            "head.sha",
+            "head.ref",
+            "head.repo",
+            "merge_commit_sha",
+            "refs/pull",
+            "secrets.",
+            ": write",
+            "write-all",
+        ):
             self.assertNotIn(forbidden, self.yaml, forbidden)
-        permissions = re.search(r"(?m)^permissions:\n((?:[ \t]+.*\n)+)", self.yaml + "\n").group(1)
-        self.assertEqual(permissions.split(), ["contents:", "read", "pull-requests:", "read"])
+        permissions = re.search(
+            r"(?m)^permissions:\n((?:[ \t]+.*\n)+)", self.yaml + "\n"
+        ).group(1)
+        self.assertEqual(
+            permissions.split(), ["contents:", "read", "pull-requests:", "read"]
+        )
         self.assertIn("GITHUB_TOKEN: ${{ github.token }}", self.yaml)
         self.assertIn("PR_NUMBER: ${{ github.event.pull_request.number }}", self.yaml)
 
     def test_runs_validator_from_checked_out_base(self):
         runs = re.findall(r"(?m)^\s+run: (.+)$", self.yaml)
-        self.assertEqual(runs, ['python .github/scripts/check_coderabbit_comment.py'])
+        self.assertEqual(runs, ["python .github/scripts/check_coderabbit_comment.py"])
         self.assertIn("name: Доверенная структура PR", self.yaml)
 
     def test_validator_replaced_in_pr_does_not_change_trusted_result(self):
@@ -63,7 +83,8 @@ class TrustedWorkflowTests(unittest.TestCase):
 
             # sitecustomize подменяет только транспорт и записывает происхождение
             # модулей; любой случайный выход в сеть завершается ошибкой.
-            (shim / "sitecustomize.py").write_text('''\
+            (shim / "sitecustomize.py").write_text(
+                """\
 import atexit
 import io
 import json
@@ -108,24 +129,68 @@ def record():
         **provenance, "requests": requests,
     }), encoding="utf-8")
 atexit.register(record)
-''', encoding="utf-8")
+""",
+                encoding="utf-8",
+            )
             sha = "a" * 40
             event = root / "event.json"
-            event.write_text(json.dumps({"repository": {"full_name": "owner/repo"}, "pull_request": {"number": 17, "head": {"sha": sha}, "base": {"sha": "c" * 40}}}), encoding="utf-8")
+            event.write_text(
+                json.dumps(
+                    {
+                        "repository": {"full_name": "owner/repo"},
+                        "pull_request": {
+                            "number": 17,
+                            "head": {"sha": sha},
+                            "base": {"sha": "c" * 40},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
             fixture = root / "api.json"
             trace = root / "trace.json"
             env = {
-                **os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1",
+                **os.environ,
+                "PYTHONIOENCODING": "utf-8",
+                "PYTHONDONTWRITEBYTECODE": "1",
                 "PYTHONPATH": str(shim) + os.pathsep + str(head_scripts),
-                "GITHUB_REPOSITORY": "owner/repo", "PR_NUMBER": "17", "GITHUB_TOKEN": "test-token",
-                "GITHUB_EVENT_PATH": str(event), "API_FIXTURE": str(fixture), "TRACE_PATH": str(trace),
+                "GITHUB_REPOSITORY": "owner/repo",
+                "PR_NUMBER": "17",
+                "GITHUB_TOKEN": "test-token",
+                "GITHUB_EVENT_PATH": str(event),
+                "API_FIXTURE": str(fixture),
+                "TRACE_PATH": str(trace),
             }
-            pr = {"number": 17, "user": {"id": 1, "login": "someone"}, "head": {"ref": "feat/x", "sha": sha}, "body": valid_body(), "base": {"sha": "c" * 40, "ref": "feature/base"}, "draft": True, "state": "open"}
-            comment = {"id": 1, "user": {"id": 1}, "body": "<!-- coderabbit-disposition -->\n## CodeRabbit review и disposition\n" + "\n".join((CR_HEADER, CR_DELIMITER, CR_ROW))}
+            pr = {
+                "number": 17,
+                "user": {"id": 1, "login": "someone"},
+                "head": {"ref": "feat/x", "sha": sha},
+                "body": valid_body(),
+                "base": {"sha": "c" * 40, "ref": "feature/base"},
+                "draft": True,
+                "state": "open",
+            }
+            comment = {
+                "id": 1,
+                "user": {"id": 1},
+                "body": f"<!-- coderabbit-disposition -->\n## CodeRabbit review и disposition\n{CR_HEADER}\n{CR_DELIMITER}\n{CR_ROW}",
+            }
             cases = (
                 ("valid", valid_body(), comment, 0, ""),
-                ("invalid_body", "## Цель\nТолько цель.", comment, 1, "Отсутствует обязательный заголовок"),
-                ("invalid_comment", valid_body(), {**comment, "body": "<!-- coderabbit-disposition -->\nнет таблицы"}, 1, "заголовок накопительной таблицы"),
+                (
+                    "invalid_body",
+                    "## Цель\nТолько цель.",
+                    comment,
+                    1,
+                    "Отсутствует обязательный заголовок",
+                ),
+                (
+                    "invalid_comment",
+                    valid_body(),
+                    {**comment, "body": "<!-- coderabbit-disposition -->\nнет таблицы"},
+                    1,
+                    "заголовок накопительной таблицы",
+                ),
             )
             expected_requests = [
                 "https://api.github.com/repos/owner/repo/pulls/17",
@@ -134,13 +199,33 @@ atexit.register(record)
             ]
 
             def run_case(body, current_comment):
-                fixture.write_text(json.dumps({"pr": {**pr, "body": body}, "comments": [current_comment]}), encoding="utf-8")
-                result = subprocess.run([sys.executable, ".github/scripts/check_coderabbit_comment.py"], cwd=root / "base", env=env, capture_output=True, text=True, encoding="utf-8")
+                fixture.write_text(
+                    json.dumps(
+                        {"pr": {**pr, "body": body}, "comments": [current_comment]}
+                    ),
+                    encoding="utf-8",
+                )
+                # Статическая команда запускает валидатор из base без shell.
+                result = subprocess.run(  # noqa: S603
+                    ENTRY_COMMAND,
+                    cwd=root / "base",
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    check=False,
+                )
                 provenance = json.loads(trace.read_text(encoding="utf-8"))
                 self.assertIsNotNone(provenance["entry"], result.stderr)
                 self.assertIsNotNone(provenance["validator"], result.stderr)
-                self.assertEqual(Path(provenance["entry"]).resolve(), base_scripts / "check_coderabbit_comment.py")
-                self.assertEqual(Path(provenance["validator"]).resolve(), base_scripts / "check_pr_body.py")
+                self.assertEqual(
+                    Path(provenance["entry"]).resolve(),
+                    base_scripts / "check_coderabbit_comment.py",
+                )
+                self.assertEqual(
+                    Path(provenance["validator"]).resolve(),
+                    base_scripts / "check_pr_body.py",
+                )
                 self.assertEqual(provenance["requests"], expected_requests)
                 return result
 
@@ -152,14 +237,30 @@ atexit.register(record)
                     self.assertIn(diagnostic, result.stderr)
                     baseline[name] = (result.returncode, result.stdout, result.stderr)
 
-            (head_scripts / "check_coderabbit_comment.py").write_text("print('ТОЧКА ВХОДА HEAD ВЫПОЛНЕНА')\n", encoding="utf-8")
-            (head_scripts / "check_pr_body.py").write_text("raise RuntimeError('ВАЛИДАТОР HEAD ИМПОРТИРОВАН')\n", encoding="utf-8")
+            (head_scripts / "check_coderabbit_comment.py").write_text(
+                "print('ТОЧКА ВХОДА HEAD ВЫПОЛНЕНА')\n", encoding="utf-8"
+            )
+            (head_scripts / "check_pr_body.py").write_text(
+                "raise RuntimeError('ВАЛИДАТОР HEAD ИМПОРТИРОВАН')\n", encoding="utf-8"
+            )
             for name, body, current_comment, _, _ in cases:
                 with self.subTest(case=name, head="replaced"):
                     result = run_case(body, current_comment)
-                    self.assertEqual((result.returncode, result.stdout, result.stderr), baseline[name])
+                    self.assertEqual(
+                        (result.returncode, result.stdout, result.stderr),
+                        baseline[name],
+                    )
 
             # Контроль: запуск из head действительно исполняет подменённую точку входа.
-            head_result = subprocess.run([sys.executable, ".github/scripts/check_coderabbit_comment.py"], cwd=root / "head", env=env, capture_output=True, text=True, encoding="utf-8")
+            # Команда фиксирована и запускается без shell.
+            head_result = subprocess.run(  # noqa: S603
+                ENTRY_COMMAND,
+                cwd=root / "head",
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
             self.assertEqual(head_result.returncode, 0, head_result.stderr)
             self.assertIn("ТОЧКА ВХОДА HEAD ВЫПОЛНЕНА", head_result.stdout)

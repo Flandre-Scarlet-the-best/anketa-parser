@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def instruction_prose(text: str) -> str:
     """Текст инструкции без литералов: fenced-блоки и код-спаны удаляются."""
-    prose = re.sub(r"```[^\n]*\n.*?```", "", text, flags=re.S)
+    prose = re.sub(r"```[^\n]*\n.*?```", "", text, flags=re.DOTALL)
     return re.sub(r"`[^`\n]+`", "", prose)
 
 
@@ -52,8 +52,13 @@ class AgentContractTests(unittest.TestCase):
         # Требование русскоязычного результата задаётся в прозе корневого
         # контракта и навыка. Проверяется сам язык, поэтому равноценная
         # переформулировка правила не ломает CI.
-        for path in (ROOT / "AGENTS.md", *sorted((ROOT / ".agents/skills").glob("*/SKILL.md"))):
-            self.assertTrue(requires_russian_output(path.read_text(encoding="utf-8")), str(path))
+        for path in (
+            ROOT / "AGENTS.md",
+            *sorted((ROOT / ".agents/skills").glob("*/SKILL.md")),
+        ):
+            self.assertTrue(
+                requires_russian_output(path.read_text(encoding="utf-8")), str(path)
+            )
         # Владелец формата описания PR сохраняет все русские заголовки контракта.
         body_contract = (skill / "references/pr-body.md").read_text(encoding="utf-8")
         for heading in REQUIRED:
@@ -69,7 +74,9 @@ class AgentContractTests(unittest.TestCase):
 
     def test_language_check_detects_real_violation(self):
         # Страховка: проверки действительно отлавливают нарушения контракта.
-        self.assertIsNotNone(re.search(r"[А-Яа-яЁё]", instruction_prose("Обычный текст без литералов.")))
+        self.assertIsNotNone(
+            re.search(r"[А-Яа-яЁё]", instruction_prose("Обычный текст без литералов."))
+        )
         self.assertFalse(requires_russian_output("Write everything in English."))
 
     def test_russian_output_requirement_is_phrasing_independent(self):
@@ -107,16 +114,25 @@ class AgentContractTests(unittest.TestCase):
             self.assertIn(command, text)
 
     def test_trusted_workflow_only_executes_base_validator(self):
-        text = (ROOT / ".github/workflows/pr-body-trusted.yml").read_text(encoding="utf-8")
+        text = (ROOT / ".github/workflows/pr-body-trusted.yml").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("  pull_request_target:", text)
         self.assertNotIn("  pull_request:", text)
         self.assertEqual(text.count("uses: actions/checkout@"), 1)
         self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", text)
         self.assertIn("persist-credentials: false", text)
-        for forbidden in ("head.sha", "head.ref", "refs/pull", "secrets.", ": write", "write-all"):
+        for forbidden in (
+            "head.sha",
+            "head.ref",
+            "refs/pull",
+            "secrets.",
+            ": write",
+            "write-all",
+        ):
             self.assertNotIn(forbidden, text)
         runs = re.findall(r"(?m)^\s+run: (.+)$", text)
-        self.assertEqual(runs, ['python .github/scripts/check_coderabbit_comment.py'])
+        self.assertEqual(runs, ["python .github/scripts/check_coderabbit_comment.py"])
 
     def test_replaced_head_validator_does_not_change_base_result(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -125,14 +141,24 @@ class AgentContractTests(unittest.TestCase):
             base.mkdir()
             head.mkdir()
             shutil.copy(ROOT / ".github/scripts/check_pr_body.py", base)
-            (head / "check_pr_body.py").write_text("raise RuntimeError('Код head выполнен')", encoding="utf-8")
+            (head / "check_pr_body.py").write_text(
+                "raise RuntimeError('Код head выполнен')", encoding="utf-8"
+            )
             event = root / "event.json"
             env = dict(os.environ, PYTHONPATH=str(head))
             for body, status in ((valid_body(), 0), ("## Цель\nНеполный текст", 1)):
-                event.write_text(json.dumps({"pull_request": {"body": body}}), encoding="utf-8")
-                result = subprocess.run(
+                event.write_text(
+                    json.dumps({"pull_request": {"body": body}}), encoding="utf-8"
+                )
+                # Ожидаемое поведение CLI проверяется по коду возврата, поэтому
+                # исключение на ненулевом коде здесь не нужно. Команда —
+                # литеральный список из sys.executable и пути файла теста.
+                result = subprocess.run(  # noqa: S603
                     [sys.executable, "check_pr_body.py", "--event-path", str(event)],
-                    cwd=base, env=env, capture_output=True,
+                    cwd=base,
+                    env=env,
+                    capture_output=True,
+                    check=False,
                 )
                 self.assertEqual(result.returncode, status, result.stderr)
                 self.assertNotIn("Код head выполнен".encode(), result.stderr)
@@ -145,9 +171,18 @@ class AgentContractTests(unittest.TestCase):
                 ("## Goal\nОписание", 1, "Отсутствует обязательный заголовок: ## Цель"),
             ):
                 body.write_text(content, encoding="utf-8")
-                result = subprocess.run(
-                    [sys.executable, str(ROOT / ".github/scripts/check_pr_body.py"), "--body-file", str(body)],
-                    capture_output=True, env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+                # Ненулевой код возврата — ожидаемый результат проверки.
+                # Аргументы — путь этого же файла в репозитории, без shell.
+                result = subprocess.run(  # noqa: S603
+                    [
+                        sys.executable,
+                        str(ROOT / ".github/scripts/check_pr_body.py"),
+                        "--body-file",
+                        str(body),
+                    ],
+                    capture_output=True,
+                    env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+                    check=False,
                 )
                 self.assertEqual(result.returncode, status)
                 self.assertIn(message, (result.stdout + result.stderr).decode("utf-8"))
