@@ -634,9 +634,13 @@ class CodeRabbitTableTests(unittest.TestCase):
         )
         self.assertTrue(any("оторвана" in e for e in errors), errors)
 
-    def test_coderabbit_prose_with_pipe_after_table_is_not_a_row(self):
+    def test_coderabbit_nonblank_prose_after_table_is_rejected_as_a_row(self):
         for prose in ("Итог: см. `a|b`", "Команда: a | b"):
             with self.subTest(prose=prose):
+                errors = validate_comment_table(
+                    coderabbit(CR_HEADER, CR_DELIMITER, CR_ROW, prose)
+                )
+                self.assertTrue(any("столбцов" in error for error in errors), errors)
                 self.assertEqual(
                     validate_comment_table(
                         coderabbit(CR_HEADER, CR_DELIMITER, CR_ROW, "", prose)
@@ -698,20 +702,94 @@ class CodeRabbitTableTests(unittest.TestCase):
         self.assertTrue(any("5 столбцов" in e for e in errors), errors)
 
     def test_coderabbit_row_must_belong_to_the_table(self):
-        # Пустая строка или абзац завершают таблицу: строка итерации после них
-        # уже не связана с заголовком.
-        for gap in ("", "Отдельный абзац без разделителей"):
+        # Пустая строка или новый блочный элемент завершают таблицу.
+        for gap in ("", "## Следующий раздел"):
             errors = validate_comment_table(
                 coderabbit(CR_HEADER, CR_DELIMITER, gap, CR_ROW)
             )
             self.assertTrue(
                 any("строка завершённой итерации" in e for e in errors), (gap, errors)
             )
-        # Отступ в четыре пробела делает строки код-блоком, а не таблицей.
-        errors = validate_comment_table(
-            coderabbit("    " + CR_HEADER, "    " + CR_DELIMITER, "    " + CR_ROW)
+        # Отступ в четыре колонки, включая табуляцию, создаёт код-блок.
+        for indent in ("    ", "\t"):
+            errors = validate_comment_table(
+                coderabbit(indent + CR_HEADER, indent + CR_DELIMITER, indent + CR_ROW)
+            )
+            self.assertTrue(any("заголовок" in e for e in errors), errors)
+
+    def test_coderabbit_rejects_extra_outer_table_separators(self):
+        for header, delimiter, row in (
+            ("|" + CR_HEADER, CR_DELIMITER, CR_ROW),
+            (CR_HEADER + "|", CR_DELIMITER, CR_ROW),
+            (CR_HEADER, "|" + CR_DELIMITER, CR_ROW),
+            (CR_HEADER, CR_DELIMITER + "|", CR_ROW),
+            (CR_HEADER, CR_DELIMITER, "|" + CR_ROW),
+            (CR_HEADER, CR_DELIMITER, CR_ROW + "|"),
+        ):
+            with self.subTest(header=header, delimiter=delimiter, row=row):
+                errors = validate_comment_table(coderabbit(header, delimiter, row))
+                self.assertTrue(
+                    any(
+                        "заголовок" in error
+                        or "разделителя" in error
+                        or "столбцов" in error
+                        for error in errors
+                    ),
+                    errors,
+                )
+
+    def test_coderabbit_disposition_is_a_machine_contract(self):
+        for disposition in (
+            "confirmed",
+            "partially confirmed",
+            "stale/repeated",
+            "false positive",
+        ):
+            row = CR_ROW.replace(
+                "— | — | 0 замечаний | clean",
+                f"minor | `a.cs` | подтверждённый эффект | {disposition}",
+            )
+            with self.subTest(disposition=disposition):
+                self.assertEqual(
+                    validate_comment_table(coderabbit(CR_HEADER, CR_DELIMITER, row)),
+                    [],
+                )
+
+        unknown = CR_ROW.replace("clean", "fixed")
+        errors = validate_comment_table(coderabbit(CR_HEADER, CR_DELIMITER, unknown))
+        self.assertTrue(
+            any("Недопустимое значение" in error for error in errors), errors
         )
-        self.assertTrue(any("заголовок" in e for e in errors), errors)
+
+    def test_coderabbit_finding_disposition_requires_severity_and_path(self):
+        for row in (
+            CR_ROW.replace(
+                "| — | — | 0 замечаний | clean", "| — | `a.cs` | эффект | confirmed"
+            ),
+            CR_ROW.replace(
+                "| — | — | 0 замечаний | clean", "| minor | — | эффект | false positive"
+            ),
+        ):
+            with self.subTest(row=row):
+                errors = validate_comment_table(
+                    coderabbit(CR_HEADER, CR_DELIMITER, row)
+                )
+                self.assertTrue(
+                    any("уровень и путь" in error for error in errors), errors
+                )
+
+    def test_coderabbit_clean_disposition_has_a_single_empty_finding_row(self):
+        invalid = CR_ROW.replace("| — | — |", "| minor | `a.cs` |")
+        errors = validate_comment_table(coderabbit(CR_HEADER, CR_DELIMITER, invalid))
+        self.assertTrue(any("только для итерации" in error for error in errors), errors)
+
+        finding = CR_ROW.replace(
+            "| — | — | 0 замечаний | clean", "| minor | `a.cs` | эффект | confirmed"
+        )
+        errors = validate_comment_table(
+            coderabbit(CR_HEADER, CR_DELIMITER, CR_ROW, finding)
+        )
+        self.assertTrue(any("одновременно чистой" in error for error in errors), errors)
 
     def test_coderabbit_single_cumulative_table(self):
         errors = validate_comment_table(

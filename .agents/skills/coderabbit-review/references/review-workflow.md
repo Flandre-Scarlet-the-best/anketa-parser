@@ -131,9 +131,11 @@ repository, current branch and comparison.
 
 Use pipes for NDJSON stdout and separate stderr/process exit evidence. PTY
 control sequences are not JSON; never save raw ConPTY as machine evidence. Allow
-the documented duration or run as a long operation, reading through EOF. Do not
-launch overlapping reviews. Keep-alive heartbeats reset appropriate timeouts;
-they are not findings or meaningful user progress.
+the documented duration or run as a long operation, reading through EOF. For
+CLI 0.9.0 and later, honor `review_context.expectedDuration` and allow at least
+15 minutes or keep the process in the background; continue reading heartbeat
+events. Do not launch overlapping reviews. Keep-alive heartbeats reset
+appropriate timeouts; they are not findings or meaningful user progress.
 
 Ordinary review stays ordinary. Add deep only for explicit deep intent, preserving
 any exact focus text. An ordinary thematic focus does not authorize deep or paid
@@ -153,14 +155,24 @@ installed-version semantics prevail. Require all of the following together:
   and outcome, with no message indicating incomplete or skipped work.
 - Proven full requested scope: no unreviewed files or other incompleteness.
   Check `outcome`, `message`, `unreviewedFileCount` and equivalent fields when
-  available. A required field missing from this version's contract is unknown,
-  not success. Do not invent mandatory fields that the actual version omits.
+  available. If the result provides `reviewedFiles`, compare it with the full
+  changed-file set for the requested base, HEAD and scope. A required field
+  missing from this version's contract is unknown, not success. Do not invent
+  mandatory fields that the actual version omits.
 - No error records, interruption or terminal contradictions, and the expected
   successful process exit code. A terminal `review_completed` or exit code zero
   alone is insufficient. Do not enable a severity gate implicitly; if explicitly
   requested, distinguish its finding-dependent exit from provider incompleteness.
 - Evidence of an actually performed review. A `reused: true` result is not proof
   of a fresh pass and does not independently consume another iteration.
+
+If a run reports reused results, omits evidence needed to prove full scope, or
+does not cover the requested changed-file set, it earns no iteration credit.
+Retry that same unfinished requested mode with `--fresh`, keeping the same base,
+scope and any requested focus; preserve whether the request was simple or deep
+and do not add paid-use flags. Recheck the entire stream and coverage. If a fresh
+retry still cannot prove successful full-scope completion, stop without a marker
+commit and report the blocker.
 
 Current agent documentation distinguishes completed-with-warnings and a failed
 local findings save from server review failure. Preserve live findings and

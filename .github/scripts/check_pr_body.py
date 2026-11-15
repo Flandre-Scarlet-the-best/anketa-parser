@@ -431,9 +431,38 @@ def substantive(values: list[str], minimum: int) -> bool:
     )
 
 
+def _unescaped_pipe_positions(line: str) -> list[int]:
+    """Позиции разделителей ячеек, перед которыми чётное число обратных косых черт."""
+    backslash = chr(92)
+    positions = []
+    for index, char in enumerate(line):
+        if char != "|":
+            continue
+        count = 0
+        cursor = index - 1
+        while cursor >= 0 and line[cursor] == backslash:
+            count += 1
+            cursor -= 1
+        if count % 2 == 0:
+            positions.append(index)
+    return positions
+
+
 def table_cells(row: str) -> list[str]:
-    """Ячейки строки таблицы Markdown: делит только неэкранированная «|»."""
-    return [c.strip() for c in re.split(r"(?<!\\)\|", row.strip().strip("|"))]
+    """Ячейки строки GFM; учитываются только по одному внешнему разделителю."""
+    line = row.strip()
+    line = line.removeprefix("|")
+    positions = _unescaped_pipe_positions(line)
+    if positions and positions[-1] == len(line) - 1:
+        line = line[:-1]
+        positions.pop()
+    cells = []
+    start = 0
+    for position in positions:
+        cells.append(line[start:position].strip())
+        start = position + 1
+    cells.append(line[start:].strip())
+    return cells
 
 
 CODERABBIT = "CodeRabbit review и disposition"
@@ -451,28 +480,52 @@ DELIMITER_CELL = re.compile(r"^:?-+:?$")
 ITERATION_CELL = re.compile(r"^[1-9]\d*\s*·\s*`[0-9a-f]{7,40}`$")
 
 
-def table_row(line: str) -> list[str] | None:
-    """Ячейки строки таблицы GFM; None — строка не может быть строкой таблицы.
+def _starts_gfm_block(line: str) -> bool:
+    """Распознать блочную конструкцию, которая заканчивает текущую GFM-таблицу."""
+    stripped = line.lstrip(" ")
+    compact = "".join(stripped.split())
+    thematic_break = (
+        len(compact) >= 3
+        and compact[0] in "*-_"
+        and all(char == compact[0] for char in compact)
+    )
+    return (
+        _indent_width(line) >= 4
+        or _fence_open(line) is not None
+        or _raw_block(line) is not None
+        or HEADING.match(line) is not None
+        or stripped.startswith(">")
+        or re.match(r"^(?:[-+*]|[0-9]{1,9}[.)])(?: +|$)", stripped) is not None
+        or thematic_break
+    )
 
-    Строка с отступом от четырёх пробелов — код-блок, пустая строка завершает
-    таблицу. Внешние «|» необязательны, ячейки делит только неэкранированная «|».
+
+CODERABBIT_DISPOSITIONS = frozenset(
+    {"confirmed", "partially confirmed", "stale/repeated", "false positive", "clean"}
+)
+
+
+def table_row(line: str, *, in_table: bool = False) -> list[str] | None:
+    """Ячейки строки GFM; внутри таблицы обычный текст образует одну ячейку.
+
+    Четырёхколоночный отступ означает блок кода, пустая строка или другой блок
+    заканчивает таблицу. Внешние «|» необязательны.
     """
-    if (
-        not line.strip()
-        or len(line) - len(line.lstrip(" ")) > 3
-        or not re.search(r"(?<!\\)\|", line)
-    ):
+    if not line.strip() or _indent_width(line) > 3:
         return None
+    if in_table and _starts_gfm_block(line):
+        return None
+    if not _unescaped_pipe_positions(line):
+        return [line.strip()] if in_table else None
     return table_cells(line)
 
 
 def validate_coderabbit(content: str) -> list[str]:
-    """Проверить, что раздел содержит связанную накопительную таблицу GFM.
+    """Проверить видимую непрерывную таблицу и машинные значения disposition.
 
     Заголовок, строка-разделитель с тем же числом столбцов и строки данных должны
-    идти подряд: только так GitHub собирает их в одну таблицу. Каждая строка
-    данных обязана иметь все шесть заполненных столбцов и в первом — номер
-    итерации с reviewed HEAD; таблица без единой такой строки не принимается.
+    идти подряд. Каждая строка данных содержит шесть заполненных столбцов, номер
+    итерации с reviewed HEAD и одно из разрешённых значений «Решение».
     """
     lines = content.split("\n")
     header = [
@@ -494,14 +547,15 @@ def validate_coderabbit(content: str) -> list[str]:
         return [
             (
                 "В разделе CodeRabbit за заголовком таблицы нет строки-разделителя "
-                f"из {len(CODERABBIT_HEADER)} столбцов (`| --- | … |`): GitHub не соберёт таблицу"
+                f"из {len(CODERABBIT_HEADER)} столбцов: GitHub не соберёт таблицу"
             )
         ]
     errors: list[str] = []
     completed = False
     end = len(lines)
+    dispositions_by_iteration: dict[str, list[str]] = {}
     for offset, line in enumerate(lines[start + 2 :], start + 2):
-        row = table_row(line)
+        row = table_row(line, in_table=True)
         if row is None:
             end = offset
             break
@@ -510,24 +564,41 @@ def validate_coderabbit(content: str) -> list[str]:
                 f"Строка таблицы CodeRabbit содержит {len(row)} столбцов вместо {len(CODERABBIT_HEADER)}: {line.strip()}"
             )
             continue
-        if not ITERATION_CELL.match(row[0]) or not all(row[1:]):
+        iteration_match = ITERATION_CELL.fullmatch(row[0])
+        if not iteration_match or not all(row[1:]):
             errors.append(
                 "Строка таблицы CodeRabbit не связана с итерацией и reviewed HEAD "
                 f"или содержит пустые ячейки: {line.strip()}"
             )
             continue
+        iteration = row[0].split("·", 1)[0].strip()
+        disposition = row[4]
+        if disposition not in CODERABBIT_DISPOSITIONS:
+            errors.append(
+                f"Недопустимое значение «Решение» в строке CodeRabbit: {disposition}"
+            )
+        if disposition != "clean" and "—" in row[1:3]:
+            errors.append("Строка с находкой должна сохранять её уровень и путь")
+        dispositions_by_iteration.setdefault(iteration, []).append(disposition)
+        if disposition == "clean" and row[1:3] != ["—", "—"]:
+            errors.append(
+                "Решение clean допускается только для итерации без уровня и пути находки"
+            )
         completed = True
     if not completed:
         errors.append("В разделе CodeRabbit отсутствует строка завершённой итерации")
-    # После разрыва отклоняем вероятные продолжения таблицы, включая строки
-    # без внешних «|» и повреждённый reviewed HEAD. Обычный текст с одиночным
-    # разделителем вне таблицы сам по себе продолжением таблицы не является.
+    for iteration, dispositions in dispositions_by_iteration.items():
+        if "clean" in dispositions and len(dispositions) != 1:
+            errors.append(
+                f"Итерация {iteration} не может быть одновременно чистой и содержать другие строки"
+            )
+    # После завершения таблицы обнаруживаем строки, которые выглядят как её оторванное продолжение.
     for line in lines[end:]:
         row = table_row(line)
         if row and (
             line.lstrip().startswith("|")
             or len(row) == len(CODERABBIT_HEADER)
-            or re.match(r"^[1-9]\d*\s*·", row[0])
+            or re.match(r"^[1-9][0-9]* *·", row[0])
         ):
             errors.append(
                 f"Строка CodeRabbit оторвана от накопительной таблицы: {line.strip()}"
