@@ -5,7 +5,12 @@ This reference owns body content and the future CodeRabbit disposition format.
 
 ## Structure and language
 
-Write the title and all authored prose in Russian. Keep exact technical names.
+Use Conventional Commits for the PR title: keep the type and optional scope in
+English and write the description after the colon in Russian, for example
+`feat(agents): базовый агентский контракт и безопасный Git workflow`.
+Choose the title from the final PR scope, not just the latest commit. Write all
+authored body prose in Russian and keep exact technical names. The commit-message
+body and attribution rules are owned by [publication](publication.md).
 Describe the final work item for a reviewer who has not read the conversation:
 problem, resulting behavior, actual changes, verification, CI and limitations.
 Do not paste prompts, transcripts, command dumps, abandoned plans or stale facts.

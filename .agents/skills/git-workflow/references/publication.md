@@ -27,10 +27,39 @@ Inspect the entire final diff and stage only explicit task paths with
 commit. Do not include ignored local artifacts, secrets or unrelated staging.
 If ownership cannot be established, stop the dependent operation and explain.
 
-Write a meaningful Russian commit description reflecting the final change.
-For Conventional Commits use English type/scope and Russian description. Commit
-on the task branch. Empty commits require a separately defined workflow reason;
-they are not a substitute for an implementation or check.
+### Commit message
+
+Use Conventional Commits for every commit subject: keep the type and optional
+scope in English and write the description after the colon in Russian. Example:
+`feat(memory): автоматическая предметная память языковых решений`.
+Choose the type and scope from the actual change; the example does not introduce
+a project feature. PR titles follow the same subject format (see
+[pr-body](pr-body.md)).
+
+Every commit must include a substantive Russian body after a blank line. Explain
+what changed and why, using concise paragraphs or bullets for distinct changes.
+Include relevant verification or limitations when useful. Do not merely repeat
+the subject, paste the task prompt or include a command transcript. For example:
+
+```text
+docs(git): единый формат сообщений коммитов и заголовков PR
+
+- Для коммитов и заголовков PR закреплён Conventional Commits:
+  тип и scope на английском, описание после двоеточия на русском.
+- Тело коммита объясняет изменения и их причины, чтобы историю
+  можно было понять без переписки с агентом.
+```
+
+Do not add `Co-Authored-By` trailers, AI model names, agent signatures or other
+automatic AI attribution to authored commit messages or PR text. Preserve
+existing history and unrelated authorship metadata; this rule does not authorize
+rewriting old commits or changing Git author/committer identity.
+
+With a local checkout, prefer a UTF-8 message file and `git commit --file <file>`
+to preserve the subject, blank line and body without shell interpolation. Inspect
+the complete resulting message as well as the staged content. Commit on the task
+branch. Empty commits require a separately defined workflow reason; they are not
+a substitute for an implementation or check.
 
 ## Explicit push and remote proof
 

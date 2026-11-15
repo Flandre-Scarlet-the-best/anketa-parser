@@ -21,6 +21,11 @@ duplicate procedure in another document.
 
 Communicate and write commit descriptions, PR titles/bodies, issue comments,
 review comments and reports in Russian. Keep technical identifiers exact.
+Use Conventional Commits for commit subjects and PR titles: keep the type and
+optional scope in English and write the description after the colon in Russian.
+Every commit must also have a meaningful Russian body separated from its subject
+by a blank line, without AI attribution or `Co-Authored-By` trailers. The message
+format and examples belong to [publication](references/publication.md).
 Maintain this skill and its instructional references in English; exact Russian
 validator literals are the only necessary language exceptions.
 
