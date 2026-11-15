@@ -1,0 +1,25 @@
+name: Доверенный контракт описания PR
+# Код head не скачивается и не исполняется; данные события не становятся командами.
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-body-trusted:
+    name: Доверенная структура PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Получить доверенный валидатор
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Проверить описание валидатором base
+        run: python .github/scripts/check_pr_body.py --event-path "$GITHUB_EVENT_PATH"

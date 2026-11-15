@@ -20,7 +20,7 @@
 - парсинга, работы с анкетами, контактами, аккаунтами, чёрными списками, жалобами, подписками;
 - Telegram Bot API / MTProto, LLM-провайдеров, поиска уведомлений;
 - доменной схемы PostgreSQL, EF Core-миграций, pgvector, Redis, RabbitMQ, очередей заданий;
-- административного HTTP API, MCP, Agent Skills и прочей отложенной автоматизации.
+- административного HTTP API, MCP и прочей отложенной продуктовой автоматизации.
 
 PostgreSQL на этом этапе — запускаемая и проверяемая инфраструктура: единственная зависимость,
 которую продукт проверяет, это доступность сервера БД (`SELECT 1`). Таблиц анкет, репозиториев и
@@ -345,6 +345,29 @@ docker compose exec -T postgres psql -U anketa_parser -d anketa_parser -tAc "SEL
     ├── AnketaParser.Tests/
     └── AnketaParser.DockerTests/
 ```
+
+## Работа агентов и Git/GitHub
+
+Карта проекта и постоянные правила — в [AGENTS.md](AGENTS.md), процедура публикации —
+в [git-workflow](.agents/skills/git-workflow/SKILL.md). Инструкции этих файлов написаны
+на английском; общение, документация, сообщения коммитов и PR остаются русскими.
+
+Проверки контрактов используют только стандартную библиотеку Python 3.12:
+
+```sh
+python -m unittest discover -s .github/scripts -p 'test_*.py'
+python .github/scripts/check_skill_contracts.py
+python .github/scripts/check_pr_body.py --body-file .codex/local/pr/<task>/body.md
+```
+
+Восемь обязательных разделов PR, лимиты и требования к содержанию описаны в
+[контракте PR body](.agents/skills/git-workflow/references/pr-body.md).
+CI проверяет .NET и агентские контракты для PR с любой базой, в том числе зависимой,
+и для `merge_group`. Проверка «Структура PR» использует код кандидата;
+«Доверенная структура PR» на `pull_request_target` — только код точного base SHA.
+Она начинает действовать после появления workflow и валидатора в доверенной базе
+и подтверждённого запуска. Файл в head ещё не означает активную независимую проверку.
+Правила защиты веток автоматически не изменяются.
 
 ## Частые проблемы
 
