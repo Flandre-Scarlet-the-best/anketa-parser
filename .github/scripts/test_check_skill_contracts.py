@@ -125,6 +125,44 @@ class SkillContractTests(unittest.TestCase):
                 self.write_skill(body=body)
                 self.assertEqual(validate_skill(self.file), [])
 
+    def test_skill_own_definitions_are_used_by_tree_validation(self):
+        # Определение внутри SKILL.md действует для его ссылок: проверка дерева
+        # должна находить ту же ошибку, что и прямой вызов валидатора.
+        (self.folder / "references").mkdir()
+        self.write_skill(
+            body="[Подробнее][manual]\n\n[manual]: references/missing.md\n"
+        )
+        direct = validate_skill(self.file)
+        tree = validate_tree(self.root)
+        self.assertTrue(any("missing.md" in error for error in direct), direct)
+        self.assertTrue(any("missing.md" in error for error in tree), tree)
+
+    def test_reference_definitions_do_not_leak_between_documents(self):
+        # В CommonMark определения действуют в пределах своего документа.
+        (self.folder / "references").mkdir()
+        self.write_skill(body="Без ссылок.")
+        (self.folder / "references/a.md").write_text(
+            "[Текст][x]\n\n[x]: missing.md\n", encoding="utf-8"
+        )
+        (self.folder / "references/b.md").write_text("[Текст][x]\n", encoding="utf-8")
+        errors = validate_tree(self.root)
+        self.assertTrue(any("a.md" in error for error in errors), errors)
+        self.assertFalse(any("b.md" in error for error in errors), errors)
+
+    def test_fence_inside_list_item_is_not_a_link(self):
+        # Fenced-блок внутри пункта списка остаётся литеральным примером.
+        for body in (
+            "- ```md\n  [d](references/missing.md)\n  ```",
+            "1. ```md\n   [d](references/missing.md)\n   ```",
+            "~~~md\n[d](references/missing.md)\n~~~",
+        ):
+            with self.subTest(body=body):
+                self.write_skill(body=body)
+                self.assertEqual(validate_skill(self.file), [])
+        # Ссылка в пункте списка вне кода по-прежнему проверяется.
+        self.write_skill(body="- [d](references/missing.md)")
+        self.assertTrue(any("missing.md" in error for error in validate_skill(self.file)))
+
     def test_escape_and_root_map_links_are_checked(self):
         self.write_skill(body="[Выход](../../outside.md)")
         (self.root / ".agents/outside.md").write_text("Текст", encoding="utf-8")

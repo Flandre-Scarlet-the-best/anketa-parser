@@ -27,7 +27,6 @@ FENCE_CLOSE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
 # Raw HTML block по CommonMark: переводы строк внутри него не создают ни
 # заголовков, ни ссылок, поэтому сырой HTML нужно исключить из разбора.
 HTML_RAW = re.compile(r"^<(pre|script|style|textarea)(?=[\s/>])", re.IGNORECASE)
-HTML_RAW_CLOSE = ("</pre>", "</script>", "</style>", "</textarea>")
 HTML_BLOCK = re.compile(
     r"^</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|"
     r"details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|"
@@ -145,21 +144,51 @@ def _hide(line: str) -> str:
     return " " * len(line)
 
 
-def _html_block_type(line: str) -> int:
-    """Тип raw HTML-блока CommonMark, начинающегося с этой строки, либо 0.
+def _fence_open(line: str) -> tuple[str, int] | None:
+    """Открывающий fenced-блок (символ, длина маркера) либо None.
 
-    Тип 1 (`<pre>`, `<script>`, `<style>`, `<textarea>`) длится до закрывающего
-    тега и может содержать пустые строки; тип 6 (блочные теги) прерывается
-    пустой строкой или концом документа. Внутри такого блока GitHub показывает
-    разметку дословно, поэтому похожие на заголовки строки там не являются
-    разделами.
+    Info string backtick-блока не может содержать обратную кавычку
+    (CommonMark §4.5), поэтому такая строка блок не открывает.
+    """
+    match = FENCE.match(line)
+    if not match:
+        return None
+    token = match.group(1)
+    if token[0] == "`" and "`" in line[match.end():]:
+        return None
+    return token[0], len(token)
+
+
+def _fence_closes(line: str, char: str, length: int) -> bool:
+    """Закрывающая граница блока: тот же символ и не меньшая длина маркера."""
+    match = FENCE_CLOSE.match(line)
+    return bool(match) and match.group(1)[0] == char and len(match.group(1)) >= length
+
+
+def _raw_block(line: str) -> tuple[int, str] | None:
+    """Тип raw HTML-блока CommonMark и его тег, либо None.
+
+    Тип 1 (`<pre>`, `<script>`, `<style>`, `<textarea>`) длится до собственного
+    закрывающего тега и может содержать пустые строки. Тип 6 (блочные теги)
+    прерывается пустой строкой или концом документа. Внутри такого блока
+    GitHub показывает разметку дословно, поэтому похожие на заголовки строки
+    там не являются разделами.
     """
     stripped = line.lstrip(" ")
-    if HTML_RAW.match(stripped):
-        return 1
+    raw = HTML_RAW.match(stripped)
+    if raw:
+        return 1, raw.group(1).casefold()
     if HTML_BLOCK.match(stripped):
-        return 6
-    return 0
+        return 6, ""
+    return None
+
+
+def _raw_close(line: str, tag: str) -> int:
+    """Позиция закрывающего тега того же типа, начиная с первого `<` строки."""
+    start = line.find("<")
+    if start < 0:
+        return -1
+    return line.casefold().find("</" + tag + ">", start)
 
 
 def mask_raw_html(lines: list[str]) -> list[str]:
@@ -170,54 +199,64 @@ def mask_raw_html(lines: list[str]) -> list[str]:
     отрисованный raw HTML-блок, поэтому такие строки не дают разделов.
     """
     result: list[str] = []
-    block = 0
-    fence_char = ""
-    fence_len = 0
+    block: tuple[int, str] | None = None
+    fence: tuple[str, int] | None = None
     for line in lines:
-        if block == 1:
-            lowered = line.casefold()
-            # Начинаем поиск с самого открывающего тега строки: содержимое до
-            # него остаётся видимым.
-            start = line.find("<")
-            found = [lowered.find(tag, start) if start >= 0 else -1 for tag in HTML_RAW_CLOSE]
-            closing = min((position for position in found if position >= 0), default=-1)
-            if closing < 0:
-                result.append(_hide(line))
+        if block is not None:
+            kind, tag = block
+            if kind == 1:
+                # Блок завершает только его собственный закрывающий тег:
+                # `</style>` не закрывает `<pre>`.
+                if _raw_close(line, tag) < 0:
+                    result.append(_hide(line))
+                    continue
+                block = None
+                result.append(line)
                 continue
-            block = 0
-            fence_char = ""
-            result.append(line)
-            continue
-        if block == 6:
             if not line.strip():
-                block = 0
+                block = None
                 result.append(line)
                 continue
             result.append(_hide(line))
             continue
-        if fence_char:
-            closing = FENCE_CLOSE.match(line)
-            if closing and closing.group(1)[0] == fence_char and len(closing.group(1)) >= fence_len:
-                fence_char = ""
+        if fence is not None:
+            if _fence_closes(line, fence[0], fence[1]):
+                fence = None
             result.append(line)
             continue
-        if opening := FENCE.match(line):
-            token = opening.group(1)
-            # У backtick-fence info string не может содержать обратную кавычку.
-            if token[0] != "`" or "`" not in line[opening.end():]:
-                fence_char, fence_len = token[0], len(token)
-                result.append(line)
-                continue
-        block = _html_block_type(line)
+        if (opened := _fence_open(line)) is not None:
+            fence = opened
+            result.append(line)
+            continue
+        found = _raw_block(line)
         result.append(line)
+        if found is not None:
+            # Блок, закрывшийся на той же строке, дальше не продолжается.
+            kind, tag = found
+            block = None if kind == 1 and _raw_close(line, tag) >= 0 else found
     return result
 
 
 def strip_comments(lines: list[str]) -> list[str]:
-    """Убрать HTML-комментарии и содержимое raw HTML-блоков построчно."""
+    """Убрать HTML-комментарии и содержимое raw HTML-блоков построчно.
+
+    Fenced-код сохраняется как литерал: его содержимое не разбирается ни как
+    HTML, ни как Markdown, поэтому `<!--` внутри примера не открывает
+    комментарий и не скрывает последующие настоящие разделы.
+    """
     result: list[str] = []
     inside = False
+    fence: tuple[str, int] | None = None
     for line in mask_raw_html(mask_list_fences(lines)):
+        if fence is not None:
+            if _fence_closes(line, fence[0], fence[1]):
+                fence = None
+            result.append(line)
+            continue
+        if not inside and (opened := _fence_open(line)) is not None:
+            fence = opened
+            result.append(line)
+            continue
         visible = ""
         rest = line
         while rest:
@@ -247,19 +286,15 @@ def sections(body: str, *, raw: bool = False, level: int = 2) -> list[tuple[str,
     lines = strip_comments(original)
     found: list[tuple[str, str]] = []
     active: list[str] = []
-    fence_char = ""
-    fence_len = 0
+    fence: tuple[str, int] | None = None
     start = 0
     for index, line in enumerate(lines):
-        if fence_char:
-            closing = FENCE_CLOSE.match(line)
-            if closing and closing.group(1)[0] == fence_char and len(closing.group(1)) >= fence_len:
-                fence_char = ""
+        if fence:
+            if _fence_closes(line, fence[0], fence[1]):
+                fence = None
             continue
-        opening = FENCE.match(line)
-        if opening:
-            token = opening.group(1)
-            fence_char, fence_len = token[0], len(token)
+        if (opened := _fence_open(line)) is not None:
+            fence = opened
             continue
         match = HEADING.match(line)
         if match and len(match.group(1)) == level:

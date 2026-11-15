@@ -18,6 +18,8 @@ FENCE_CLOSE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
 LABEL = re.compile(r"^ {0,3}\[([^\]]+)\]:[ \t]*(.*)$")
 # Автоссылка — `<scheme:...>` или e-mail с доменом; `<path/file.md>` ею не является.
 AUTOLINK = re.compile(r"<[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*>|<[^\s<>@/]+@[^\s<>@/]+\.[^\s<>@/]+>")
+# Маркер пункта списка: fenced-блок может стоять внутри контейнера.
+LIST_MARKER = re.compile(r" {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+")
 
 
 class UniqueSafeLoader(yaml.SafeLoader):
@@ -38,7 +40,7 @@ class UniqueSafeLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep=deep)
 
 
-def validate_skill(path: Path, definitions: dict[str, str] | None = None) -> list[str]:
+def validate_skill(path: Path) -> list[str]:
     errors: list[str] = []
     try:
         source = path.read_text(encoding="utf-8")
@@ -81,28 +83,56 @@ def validate_skill(path: Path, definitions: dict[str, str] | None = None) -> lis
     if isinstance(compatibility, str) and len(compatibility) > 500:
         errors.append(f"{path}: compatibility должен содержать не более 500 символов")
     body = "\n".join(lines[end + 1:])
-    # Ссылочное определение в собственном документе действует и для его ссылок.
-    known = definitions if definitions is not None else reference_definitions(source)
-    errors.extend(validate_links(path, path.parent, body, known))
+    # Ссылочные определения действуют в пределах своего документа, поэтому
+    # валидатор берёт их из того же текста, в котором ищет ссылки.
+    errors.extend(validate_links(path, path.parent, body))
     return errors
+
+
+def fence_open(line: str) -> tuple[str, int, int] | None:
+    """Открывающий fenced-блок: символ, длина маркера и колонка содержимого.
+
+    Маркер может стоять после маркеров списка, поэтому проверяется остаток
+    строки, а не только её начало.
+    """
+    offset = 0
+    while marker := LIST_MARKER.match(line[offset:]):
+        offset += marker.end()
+    match = FENCE.match(line[offset:])
+    if not match:
+        return None
+    token = match.group(1)
+    # Info string backtick-блока не может содержать обратную кавычку.
+    if token[0] == "`" and "`" in line[offset + match.end():]:
+        return None
+    return token[0], len(token), offset
+
+
+def fence_closes(line: str, char: str, length: int, column: int) -> bool:
+    """Закрывающая граница блока с учётом отступа контейнера списка."""
+    candidates = (line, line[column:] if len(line) > column else "")
+    for candidate in candidates:
+        match = FENCE_CLOSE.match(candidate)
+        if match and match.group(1)[0] == char and len(match.group(1)) >= length:
+            return True
+    return False
 
 
 def mask_literals(markdown: str) -> list[str]:
     """Заменить литеральные контексты пробелами, сохранив длину строк.
 
-    Fenced-код, код-спан, HTML-комментарий и автоссылка не содержат назначений
-    документа, поэтому их содержимое не должно проверяться как ссылка.
+    Fenced-код (в том числе внутри пунктов списка), код-спан, HTML-комментарий
+    и автоссылка не содержат назначений документа, поэтому их содержимое не
+    должно проверяться как ссылка.
     """
     result: list[str] = []
     stop = ""
-    fence_char = ""
-    fence_len = 0
+    fence: tuple[str, int, int] | None = None
     for raw in markdown.split("\n"):
         line = raw.expandtabs(4)
-        if fence_char:
-            closing = FENCE_CLOSE.match(line)
-            if closing and closing.group(1)[0] == fence_char and len(closing.group(1)) >= fence_len:
-                fence_char = ""
+        if fence is not None:
+            if fence_closes(line, fence[0], fence[1], fence[2]):
+                fence = None
             result.append(" " * len(line))
             continue
         if stop:
@@ -113,13 +143,10 @@ def mask_literals(markdown: str) -> list[str]:
             tail = position + len(stop)
             line = " " * tail + line[tail:]
             stop = ""
-        elif opening := FENCE.match(line):
-            token = opening.group(1)
-            # У backtick-fence info string не может содержать обратную кавычку.
-            if token[0] != "`" or "`" not in line[opening.end():]:
-                fence_char, fence_len = token[0], len(token)
-                result.append(" " * len(line))
-                continue
+        elif (opened := fence_open(line)) is not None:
+            fence = opened
+            result.append(" " * len(line))
+            continue
         visible: list[str] = []
         index = 0
         while index < len(line):
@@ -254,6 +281,9 @@ def link_targets(markdown: str, definitions: dict[str, str]) -> list[str]:
     """Назначения ссылок поддерживаемых форм Markdown вне литеральных контекстов."""
     targets: list[str] = []
     for line in mask_literals(markdown):
+        # Строка `[label]: цель` — определение, а не использование ссылки.
+        if LABEL.match(line):
+            continue
         index = 0
         while index < len(line):
             opening = line.find("[", index)
@@ -292,18 +322,17 @@ def local_target(destination: str) -> str | None:
     return unquote(target)
 
 
-def validate_links(
-    path: Path,
-    boundary: Path,
-    source: str | None = None,
-    definitions: dict[str, str] | None = None,
-) -> list[str]:
-    """Проверить локальные назначения ссылок в пределах владельца документа."""
+def validate_links(path: Path, boundary: Path, source: str | None = None) -> list[str]:
+    """Проверить локальные назначения ссылок в пределах владельца документа.
+
+    Определения собираются из этого же документа: в CommonMark они не
+    переходят в другие файлы.
+    """
     try:
         markdown = source if source is not None else path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
         return [f"{path}: не удалось прочитать: {error}"]
-    known = reference_definitions(markdown) if definitions is None else definitions
+    known = reference_definitions(markdown)
     errors: list[str] = []
     root = boundary.resolve()
     for destination in link_targets(markdown, known):
@@ -329,28 +358,15 @@ def validate_tree(root: Path) -> list[str]:
     # Каталог skill без манифеста — тоже нарушение контракта: обход по
     # `*/SKILL.md` такую поломку не заметил бы.
     missing = [f"{directory}: отсутствует SKILL.md" for directory in directories if not (directory / "SKILL.md").is_file()]
-    documents = [root / "AGENTS.md"] if (root / "AGENTS.md").is_file() else []
-    for directory in directories:
-        documents.extend(
-            reference for reference in sorted(directory.rglob("*.md")) if reference != directory / "SKILL.md"
-        )
-    # Ссылочное определение действует на весь документ, поэтому определения
-    # собираются до проверки их использования.
-    definitions: dict[str, str] = {}
-    for document in documents:
-        try:
-            definitions.update(reference_definitions(document.read_text(encoding="utf-8")))
-        except (OSError, UnicodeError):
-            continue
-    errors = missing + [
-        error for skill in sorted(base.glob("*/SKILL.md")) for error in validate_skill(skill, definitions)
-    ]
+    # Каждый документ проверяется со своими определениями: общий словарь давал
+    # бы переток между файлами и терял определения самого SKILL.md.
+    errors = missing + [error for skill in sorted(base.glob("*/SKILL.md")) for error in validate_skill(skill)]
     for directory in directories:
         for reference in sorted(directory.rglob("*.md")):
             if reference != directory / "SKILL.md":
-                errors.extend(validate_links(reference, directory, definitions=definitions))
+                errors.extend(validate_links(reference, directory))
     if (root / "AGENTS.md").is_file():
-        errors.extend(validate_links(root / "AGENTS.md", root, definitions=definitions))
+        errors.extend(validate_links(root / "AGENTS.md", root))
     return errors
 
 

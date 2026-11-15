@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from check_pr_body import is_automation_pr, validate
+from check_pr_body import is_automation_pr, sections, validate
 
 
 HEADINGS = (
@@ -123,6 +123,28 @@ class PrBodyContractTests(unittest.TestCase):
             "<pre>\nпример вывода\n</pre>\nФактическая информация для CI.",
         )
         self.assertEqual(validate(documented), [])
+
+    def test_comment_marker_inside_fence_does_not_swallow_real_sections(self):
+        # Содержимое fenced-кода не разбирается как HTML: `<!--` в примере не
+        # открывает комментарий и не скрывает следующие настоящие разделы.
+        for marker in ("```md", "~~~md"):
+            with self.subTest(marker=marker):
+                closing = marker[:3]
+                body = f"{marker}\n<!--\n{closing}\n\n" + valid_body()
+                self.assertEqual(validate(body), [])
+                self.assertEqual([heading for heading, _ in sections(body)], list(HEADINGS))
+
+    def test_raw_html_block_ends_only_with_its_own_close_tag(self):
+        # `</style>` не закрывает `<pre>`: блок продолжается, поэтому разделы
+        # остаются невидимыми, а не дают ложный успех.
+        foreign = "<pre>\n</style>\n" + valid_body()
+        self.assertEqual(len(validate(foreign)), len(HEADINGS))
+        # Собственный закрывающий тег завершает блок, и разделы снова видны.
+        proper = "<pre>\n</style>\n</pre>\n\n" + valid_body()
+        self.assertEqual(validate(proper), [])
+        # Блок, закрытый на строке открытия, не продолжается дальше.
+        single_line = "<pre>пример</pre>\n\n" + valid_body()
+        self.assertEqual(validate(single_line), [])
 
     def test_performance_scenario_heading_allows_up_to_three_spaces(self):
         # ATX-заголовок допускает отступ 0-3 пробела; четыре пробела — код-блок.
