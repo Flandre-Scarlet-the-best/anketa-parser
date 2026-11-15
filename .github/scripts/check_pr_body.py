@@ -5,7 +5,20 @@ import argparse
 import json
 import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
+
+type JSONValue = (
+    None | bool | int | float | str | list[JSONValue] | Mapping[str, JSONValue]
+)
+
+
+def _parse_json(value: str | bytes) -> JSONValue:
+    # json.loads возвращает Any в typeshed.
+    # После успешного разбора возможны только типы JSON.
+    return cast(JSONValue, json.loads(value))
+
 
 REQUIRED = (
     "Цель",
@@ -674,12 +687,29 @@ def validate(body: str) -> list[str]:
     return errors
 
 
-def is_automation_pr(payload: dict) -> bool:
+def is_automation_pr(payload: JSONValue) -> bool:
     """Узкое исключение: PR зависимостей от проверенного аккаунта бота из его префикса ветки."""
-    pr = payload.get("pull_request") or {}
-    login = (pr.get("user") or {}).get("login", "")
-    branch = (pr.get("head") or {}).get("ref", "")
+    if not isinstance(payload, dict):
+        return False
+    pr = payload.get("pull_request")
+    if not isinstance(pr, dict):
+        return False
+    user = pr.get("user")
+    head = pr.get("head")
+    if not isinstance(user, dict) or not isinstance(head, dict):
+        return False
+    login = user.get("login")
+    branch = head.get("ref")
+    if not isinstance(login, str) or not isinstance(branch, str):
+        return False
     return branch.startswith(BOT_BRANCHES.get(login, "\0"))
+
+
+class Arguments(argparse.Namespace):
+    def __init__(self) -> None:
+        super().__init__()
+        self.body_file: Path | None = None
+        self.event_path: Path | None = None
 
 
 def main() -> int:
@@ -695,22 +725,27 @@ def main() -> int:
         type=Path,
         help="JSON события GitHub pull_request или pull_request_target",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(namespace=Arguments())
     try:
         if args.body_file is not None:
             body = args.body_file.read_text(encoding="utf-8")
         else:
-            payload = json.loads(args.event_path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict) or not isinstance(
-                payload.get("pull_request"), dict
-            ):
+            event_path = args.event_path
+            if event_path is None:
+                raise ValueError("Не задан корректный путь к событию")
+            payload = _parse_json(event_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("Нет объекта pull_request в событии")
+            pull_request = payload.get("pull_request")
+            if not isinstance(pull_request, dict):
                 raise ValueError("Нет объекта pull_request в событии")
             if is_automation_pr(payload):
                 print(
                     "PR бота обновления зависимостей: формат ручных PR не применяется"
                 )
                 return 0
-            body = payload["pull_request"].get("body") or ""
+            body_value = pull_request.get("body")
+            body = body_value if isinstance(body_value, str) else ""
         problems = validate(body)
     except (OSError, UnicodeError, ValueError) as exc:
         print(f"Не удалось проверить описание PR: {exc}", file=sys.stderr)

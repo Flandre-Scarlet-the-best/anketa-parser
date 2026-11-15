@@ -8,8 +8,10 @@ import tempfile
 import traceback
 import unittest
 import urllib.error
+import urllib.request
+from collections.abc import Callable
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, TypedDict
 from unittest.mock import patch
 
 import check_coderabbit_comment as check
@@ -22,11 +24,33 @@ TABLE = f"{CR_HEADER}\n{CR_DELIMITER}\n{CR_ROW}"
 MARKED = f"{check.MARKER}\n## CodeRabbit review и disposition\n{TABLE}"
 
 
-def comment(identifier, author=1, body=MARKED):
+class UserPayload(TypedDict):
+    id: check.JSONValue
+    login: str
+
+
+class RefPayload(TypedDict):
+    sha: str
+    ref: str
+
+
+class PullRequestPayload(TypedDict):
+    number: int
+    user: UserPayload | None
+    head: RefPayload
+    body: check.JSONValue
+    base: RefPayload
+    draft: bool
+    state: str
+
+
+def comment(
+    identifier: int, author: int = 1, body: str | None = MARKED
+) -> dict[str, check.JSONValue]:
     return {"id": identifier, "user": {"id": author, "login": "any-name"}, "body": body}
 
 
-def pr():
+def pr() -> PullRequestPayload:
     return {
         "number": NUMBER,
         "user": {"id": 1, "login": "author"},
@@ -48,6 +72,13 @@ def event():
             "body": "устаревшее body",
         },
     }
+
+
+def set_invalid_author_id(payload: PullRequestPayload) -> None:
+    user = payload["user"]
+    if user is None:
+        raise AssertionError("В фикстуре PR должен быть автор")
+    user["id"] = True
 
 
 def link(page, host="api.github.com", path=None):
@@ -191,16 +222,17 @@ class PaginationTests(unittest.TestCase):
 
     @patch.object(check, "get_json")
     def test_malformed_and_duplicate_comment_fail_closed(self, get):
-        for response in [
+        responses: list[tuple[object, str | None]] = [
             ({}, None),
             ([{"id": 1}], None),
             ([comment(1), comment(1)], None),
             ([comment(1, body=None)], None),
-        ]:
+        ]
+        for response in responses:
             with self.subTest(response=response):
                 get.return_value = response
                 with self.assertRaises(check.CheckError):
-                    check.list_comments(REPO, NUMBER, "token")
+                    _ = check.list_comments(REPO, NUMBER, "token")
 
     @patch.object(check, "get_json")
     def test_untrusted_links_and_errors_fail_closed(self, get):
@@ -221,18 +253,22 @@ class PaginationTests(unittest.TestCase):
             with self.subTest(link=value):
                 get.return_value = ([comment(1)], value)
                 with self.assertRaises(check.CheckError):
-                    check.list_comments(REPO, NUMBER, "token")
+                    _ = check.list_comments(REPO, NUMBER, "token")
         get.side_effect = check.CheckError("Ошибка API")
         with self.assertRaises(check.CheckError):
-            check.list_comments(REPO, NUMBER, "token")
+            _ = check.list_comments(REPO, NUMBER, "token")
 
     @patch.object(check, "get_json")
     def test_empty_page_with_continuation_and_oversized_page_are_rejected(self, get):
-        for response in (([], link(2)), ([comment(i) for i in range(1, 102)], None)):
+        responses: tuple[tuple[object, str | None], ...] = (
+            ([], link(2)),
+            ([comment(i) for i in range(1, 102)], None),
+        )
+        for response in responses:
             with self.subTest(response_size=len(response[0])):
                 get.return_value = response
                 with self.assertRaises(check.CheckError):
-                    check.list_comments(REPO, NUMBER, "token")
+                    _ = check.list_comments(REPO, NUMBER, "token")
 
     @patch.object(check, "get_json")
     def test_invalid_last_link_or_missing_next_cannot_hide_comments(self, get):
@@ -244,7 +280,7 @@ class PaginationTests(unittest.TestCase):
             with self.subTest(link=value):
                 get.return_value = ([comment(1)], value)
                 with self.assertRaises(check.CheckError):
-                    check.list_comments(REPO, NUMBER, "token")
+                    _ = check.list_comments(REPO, NUMBER, "token")
 
     def test_consistent_first_prev_next_last_and_final_page_are_accepted(self):
         path = f"/repos/{REPO}/issues/{NUMBER}/comments"
@@ -292,14 +328,23 @@ class RequestTests(unittest.TestCase):
         self.assertIs(opener.call_args.args[0], check.NoRedirect)
         self.assertIsNone(
             check.NoRedirect().redirect_request(
-                None, None, 302, "", {}, "https://attacker.invalid"
+                urllib.request.Request("https://api.github.com/test"),
+                io.BytesIO(),
+                302,
+                "Found",
+                http.client.HTTPMessage(),
+                "https://attacker.invalid",
             )
         )
 
     @staticmethod
     def http_error(code):
         return urllib.error.HTTPError(
-            "https://example.invalid/secret", code, "secret", {}, io.BytesIO(b"secret")
+            "https://example.invalid/secret",
+            code,
+            "secret",
+            http.client.HTTPMessage(),
+            io.BytesIO(b"secret"),
         )
 
     @patch.object(check.time, "sleep")
@@ -348,7 +393,7 @@ class RequestTests(unittest.TestCase):
                 sleep.reset_mock()
                 opener.return_value.open.side_effect = [failure, failure, failure]
                 with self.assertRaises(check.CheckError) as caught:
-                    check.get_json("/test", "token")
+                    _ = check.get_json("/test", "token")
                 self.assertNotIn(
                     "secret", "".join(traceback.format_exception(caught.exception))
                 )
@@ -401,7 +446,7 @@ class RequestTests(unittest.TestCase):
                 sleep.reset_mock()
                 opener.return_value.open.side_effect = failures
                 with self.assertRaises(check.CheckError) as caught:
-                    check.get_json("/test", "secret")
+                    _ = check.get_json("/test", "secret")
                 self.assertNotIn(
                     "secret", "".join(traceback.format_exception(caught.exception))
                 )
@@ -422,7 +467,7 @@ class RequestTests(unittest.TestCase):
                 error = self.http_error(code)
                 opener.return_value.open.side_effect = error
                 with self.assertRaises(check.CheckError) as caught:
-                    check.get_json("/test", "secret")
+                    _ = check.get_json("/test", "secret")
                 self.assertNotIn(
                     "secret", "".join(traceback.format_exception(caught.exception))
                 )
@@ -439,7 +484,7 @@ class RequestTests(unittest.TestCase):
                 response = self.Response(body)
                 opener.return_value.open.return_value = response
                 with self.assertRaises(check.CheckError) as caught:
-                    check.get_json("/test", "secret")
+                    _ = check.get_json("/test", "secret")
                 self.assertNotIn(
                     "secret", "".join(traceback.format_exception(caught.exception))
                 )
@@ -463,13 +508,19 @@ class RequestTests(unittest.TestCase):
         response.status = 302
         opener.return_value.open.return_value = response
         with self.assertRaises(check.CheckError):
-            check.get_json("/test", "secret")
+            _ = check.get_json("/test", "secret")
         self.assertTrue(response.closed)
         self.assertEqual(opener.return_value.open.call_count, 1)
         sleep.assert_not_called()
 
 
 class PublishedPrTests(unittest.TestCase):
+    def __init__(self, methodName: str = "runTest") -> None:
+        super().__init__(methodName)
+        self.tmp: tempfile.TemporaryDirectory[str] | None = None
+        self.event_path = Path()
+        self.env: dict[str, str] = {}
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -500,20 +551,24 @@ class PublishedPrTests(unittest.TestCase):
     def test_bot_exception_uses_actual_login_and_branch(self):
         actual = pr()
         actual["body"] = ""
-        actual["user"]["login"] = "renovate[bot]"
+        user = actual["user"]
+        if user is None:
+            self.fail("В фикстуре PR должен быть автор")
+        user["login"] = "renovate[bot]"
         actual["head"]["ref"] = "renovate/example"
         self.assertEqual(self.execute(actual), [])
         actual["head"]["ref"] = "feature/fake"
         self.assertTrue(self.execute(actual))
 
     def test_head_and_identity_are_validated(self):
-        for mutate in (
+        mutations: tuple[Callable[[PullRequestPayload], None], ...] = (
             lambda p: p["head"].update(sha="b" * 40),
-            lambda p: p["user"].update(id=True),
+            set_invalid_author_id,
             lambda p: p.update(number=8),
             lambda p: p.update(body=[]),
             lambda p: p.update(user=None),
-        ):
+        )
+        for mutate in mutations:
             actual = pr()
             mutate(actual)
             with self.subTest(actual=actual), self.assertRaises(check.CheckError):

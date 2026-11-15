@@ -8,6 +8,13 @@ from check_skill_contracts import validate_skill, validate_tree
 
 
 class SkillContractTests(unittest.TestCase):
+    def __init__(self, methodName: str = "runTest") -> None:
+        super().__init__(methodName)
+        self.tmp: tempfile.TemporaryDirectory[str] | None = None
+        self.root = Path()
+        self.folder = Path()
+        self.file = Path()
+
     def test_plain_scalar_punctuation_is_valid(self):
         for ending in ("]", "}", "[", "{", ",", "\\"):
             with self.subTest(ending=ending):

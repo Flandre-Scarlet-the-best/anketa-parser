@@ -10,7 +10,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import BinaryIO, TypeGuard, cast
 
 from check_pr_body import (
     FENCE,
@@ -22,10 +24,19 @@ from check_pr_body import (
 )
 
 MARKER = "<!-- coderabbit-disposition -->"
+type JSONValue = (
+    None | bool | int | float | str | list[JSONValue] | Mapping[str, JSONValue]
+)
 API = "https://api.github.com"
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 LINK = re.compile(r'\s*<([^<>]+)>\s*;\s*rel="([a-z]+)"\s*')
+
+
+def _parse_json(value: str | bytes) -> JSONValue:
+    # json.loads возвращает Any в typeshed.
+    # После успешного разбора возможны только типы JSON.
+    return cast(JSONValue, json.loads(value))
 
 
 class CheckError(Exception):
@@ -38,11 +49,19 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def positive_id(value):
+def _is_json_object(value: JSONValue) -> TypeGuard[dict[str, JSONValue]]:
+    return isinstance(value, dict)
+
+
+def _is_json_array(value: JSONValue) -> TypeGuard[list[JSONValue]]:
+    return isinstance(value, list)
+
+
+def positive_id(value: object) -> TypeGuard[int]:
     return type(value) is int and value > 0
 
 
-def get_json(path, token):
+def get_json(path: str, token: str) -> tuple[JSONValue, str | None]:
     # Адрес собран из константы API и проверенного path; NoRedirect обрывает
     # перенаправление, поэтому токен не уходит на чужой хост, а ссылки
     # заголовка Link дополнительно разбираются и проверяются в next_page.
@@ -64,7 +83,10 @@ def get_json(path, token):
                 elif response.status != 200:
                     raise CheckError("GitHub API вернул неожиданный HTTP-статус")
                 else:
-                    return json.load(response), response.headers.get("Link")
+                    # HTTP-ответ и тестовый поток возвращают бинарное содержимое.
+                    response_stream = cast(BinaryIO, response)
+                    payload = _parse_json(response_stream.read())
+                    return payload, response.headers.get("Link")
         except urllib.error.HTTPError as exc:
             # HTTPError также содержит открытый ответ; закрыть до повтора или отказа.
             retry = 500 <= exc.code <= 599
@@ -82,6 +104,7 @@ def get_json(path, token):
         raise CheckError(
             "Не удалось получить ответ GitHub API после повторов"
         ) from None
+    raise CheckError("Не удалось получить ответ GitHub API после повторов")
 
 
 def next_page(link, path, current):
@@ -135,23 +158,28 @@ def next_page(link, path, current):
     return pages.get("next")
 
 
-def list_comments(repository, number, token):
+def list_comments(
+    repository: str, number: int, token: str
+) -> list[dict[str, JSONValue]]:
     path = f"/repos/{repository}/issues/{number}/comments"
     page = 1
-    comments = []
-    ids = set()
+    comments: list[dict[str, JSONValue]] = []
+    ids: set[int] = set()
     while True:
         if page > 10000:
             raise CheckError("Превышен предел страниц комментариев")
         data, link = get_json(f"{path}?per_page=100&page={page}", token)
-        if not isinstance(data, list) or len(data) > 100:
+        if not _is_json_array(data) or len(data) > 100:
             raise CheckError("Некорректная страница комментариев GitHub API")
         for comment in data:
-            if not isinstance(comment, dict) or not positive_id(comment.get("id")):
+            if not _is_json_object(comment):
                 raise CheckError("Некорректный ID комментария GitHub API")
-            if comment["id"] in ids:
+            comment_id = comment.get("id")
+            if type(comment_id) is not int or comment_id <= 0:
+                raise CheckError("Некорректный ID комментария GitHub API")
+            if comment_id in ids:
                 raise CheckError("Повторный ID комментария при пагинации")
-            ids.add(comment["id"])
+            ids.add(comment_id)
             if not isinstance(comment.get("body"), str):
                 raise CheckError("Некорректное тело комментария GitHub API")
             comments.append(comment)
@@ -211,21 +239,29 @@ def visible_comment(body):
     return "\n".join(result)
 
 
-def validate_comments(comments, author_id):
-    marked = [comment for comment in comments if MARKER in comment["body"]]
+def validate_comments(
+    comments: Sequence[Mapping[str, JSONValue]], author_id: int
+) -> list[str]:
+    marked: list[tuple[Mapping[str, JSONValue], str]] = []
+    for comment in comments:
+        body = comment.get("body")
+        if not isinstance(body, str):
+            return ["Некорректное тело комментария GitHub API"]
+        if MARKER in body:
+            marked.append((comment, body))
     if len(marked) > 1:
         return ["Найдено несколько служебных комментариев CodeRabbit"]
     if not marked:
         return []
-    comment = marked[0]
+    comment, body = marked[0]
     user = comment.get("user")
     if (
-        not isinstance(user, dict)
+        not _is_json_object(user)
         or not positive_id(user.get("id"))
         or user["id"] != author_id
     ):
         return ["Автор служебного комментария CodeRabbit не является автором PR"]
-    body = comment["body"].replace("\r\n", "\n").replace("\r", "\n")
+    body = body.replace("\r\n", "\n").replace("\r", "\n")
     if body.count(MARKER) != 1 or MARKER not in body.split("\n"):
         return ["Маркер CodeRabbit должен встречаться один раз отдельной строкой"]
     # Проверить, что маркер не вложен в иной HTML-комментарий или код-блок.
@@ -239,7 +275,7 @@ def validate_comments(comments, author_id):
     return validate_coderabbit(visible_comment(body))
 
 
-def run(env):
+def run(env: Mapping[str, str]) -> list[str]:
     repository = env.get("GITHUB_REPOSITORY", "")
     number_text = env.get("PR_NUMBER", "")
     token = env.get("GITHUB_TOKEN", "")
@@ -255,14 +291,23 @@ def run(env):
             "Отсутствуют или некорректны GITHUB_TOKEN или GITHUB_EVENT_PATH"
         )
     try:
-        event = json.loads(Path(event_path).read_text(encoding="utf-8"))
-        event_pr = event["pull_request"]
-        event_repo = event["repository"]["full_name"]
-        event_number = event_pr["number"]
-        event_sha = event_pr["head"]["sha"]
-        event_base = event_pr["base"]["sha"]
+        event_data = _parse_json(Path(event_path).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
         raise CheckError("Некорректный файл события pull_request") from exc
+    if not _is_json_object(event_data):
+        raise CheckError("Некорректный файл события pull_request")
+    event_pr_data = event_data.get("pull_request")
+    event_repository_data = event_data.get("repository")
+    if not _is_json_object(event_pr_data) or not _is_json_object(event_repository_data):
+        raise CheckError("Некорректный файл события pull_request")
+    event_head_data = event_pr_data.get("head")
+    event_base_data = event_pr_data.get("base")
+    if not _is_json_object(event_head_data) or not _is_json_object(event_base_data):
+        raise CheckError("Некорректный файл события pull_request")
+    event_repo = event_repository_data.get("full_name")
+    event_number = event_pr_data.get("number")
+    event_sha = event_head_data.get("sha")
+    event_base = event_base_data.get("sha")
     number = int(number_text)
     if (
         event_repo != repository
@@ -274,18 +319,31 @@ def run(env):
         or not SHA.fullmatch(event_base)
     ):
         raise CheckError("Номер, репозиторий, base или HEAD события некорректны")
-    pr, _ = get_json(f"/repos/{repository}/pulls/{number}", token)
+    pr_data, _ = get_json(f"/repos/{repository}/pulls/{number}", token)
+    if not _is_json_object(pr_data):
+        raise CheckError("Некорректный объект PR из GitHub API")
+    pr = pr_data
     try:
-        author = pr["user"]
+        author_data = pr["user"]
+        head_data = pr["head"]
+        base_data = pr["base"]
+        if (
+            not _is_json_object(author_data)
+            or not _is_json_object(head_data)
+            or not _is_json_object(base_data)
+        ):
+            raise TypeError
+        author = author_data
+        head = head_data
+        base = base_data
         author_id = author["id"]
         login = author["login"]
-        head = pr["head"]
         branch = head["ref"]
         sha = head["sha"]
         body = pr["body"]
         pr_number = pr["number"]
-        base_sha = pr["base"]["sha"]
-        base_ref = pr["base"]["ref"]
+        base_sha = base["sha"]
+        base_ref = base["ref"]
         draft = pr["draft"]
         state = pr["state"]
     except (KeyError, TypeError) as exc:
@@ -313,34 +371,51 @@ def run(env):
         raise CheckError("HEAD PR изменился после события: требуется новая проверка")
     if base_sha != event_base:
         raise CheckError("Base PR изменился после события: требуется новая проверка")
-    problems = [] if is_automation_pr({"pull_request": pr}) else validate(body or "")
+    problems: list[str] = (
+        [] if is_automation_pr({"pull_request": pr}) else validate(body or "")
+    )
     comments = list_comments(repository, number, token)
     problems.extend(validate_comments(comments, author_id))
     # PR мог измениться во время постраничного чтения комментариев; не выдавать
     # результат на основе смешанных версий опубликованных метаданных и body.
-    current, _ = get_json(f"/repos/{repository}/pulls/{number}", token)
+    current_data, _ = get_json(f"/repos/{repository}/pulls/{number}", token)
+    if not _is_json_object(current_data):
+        raise CheckError("Некорректный PR при повторном чтении")
+    current = current_data
     try:
+        current_author_data = current["user"]
+        current_head_data = current["head"]
+        current_base_data = current["base"]
+        if (
+            not _is_json_object(current_author_data)
+            or not _is_json_object(current_head_data)
+            or not _is_json_object(current_base_data)
+        ):
+            raise TypeError
+        current_author = current_author_data
+        current_head = current_head_data
+        current_base = current_base_data
         before = (
             pr["number"],
-            pr["user"]["id"],
-            pr["user"]["login"],
-            pr["head"]["sha"],
-            pr["head"]["ref"],
+            author["id"],
+            author["login"],
+            head["sha"],
+            head["ref"],
             pr["body"],
-            pr["base"]["sha"],
-            pr["base"]["ref"],
+            base["sha"],
+            base["ref"],
             pr["draft"],
             pr["state"],
         )
         after = (
             current["number"],
-            current["user"]["id"],
-            current["user"]["login"],
-            current["head"]["sha"],
-            current["head"]["ref"],
+            current_author["id"],
+            current_author["login"],
+            current_head["sha"],
+            current_head["ref"],
             current["body"],
-            current["base"]["sha"],
-            current["base"]["ref"],
+            current_base["sha"],
+            current_base["ref"],
             current["draft"],
             current["state"],
         )

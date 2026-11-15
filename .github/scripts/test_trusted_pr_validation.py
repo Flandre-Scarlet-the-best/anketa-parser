@@ -22,6 +22,11 @@ ENTRY_COMMAND = [sys.executable, ".github/scripts/check_coderabbit_comment.py"]
 class TrustedWorkflowTests(unittest.TestCase):
     """Доверенная проверка не исполняет код PR и берёт валидатор только из base."""
 
+    def __init__(self, methodName: str = "runTest") -> None:
+        super().__init__(methodName)
+        self.text = ""
+        self.yaml = ""
+
     def setUp(self):
         self.text = TRUSTED.read_text(encoding="utf-8")
         # Комментарии не участвуют в контракте: проверяется только сам YAML.
@@ -30,7 +35,10 @@ class TrustedWorkflowTests(unittest.TestCase):
         )
 
     def test_runs_only_on_pull_request_target(self):
-        triggers = re.search(r"(?m)^on:\n((?:[ \t]+.*\n)+)", self.yaml + "\n").group(1)
+        trigger_match = re.search(r"(?m)^on:\n((?:[ \t]+.*\n)+)", self.yaml + "\n")
+        if trigger_match is None:
+            self.fail("Не найдена секция on в доверенном workflow")
+        triggers = trigger_match.group(1)
         self.assertEqual(
             re.findall(r"(?m)^  (\w+):", triggers), ["pull_request_target"]
         )
@@ -53,9 +61,12 @@ class TrustedWorkflowTests(unittest.TestCase):
             "write-all",
         ):
             self.assertNotIn(forbidden, self.yaml, forbidden)
-        permissions = re.search(
+        permission_match = re.search(
             r"(?m)^permissions:\n((?:[ \t]+.*\n)+)", self.yaml + "\n"
-        ).group(1)
+        )
+        if permission_match is None:
+            self.fail("Не найдена секция permissions в доверенном workflow")
+        permissions = permission_match.group(1)
         self.assertEqual(
             permissions.split(), ["contents:", "read", "pull-requests:", "read"]
         )
