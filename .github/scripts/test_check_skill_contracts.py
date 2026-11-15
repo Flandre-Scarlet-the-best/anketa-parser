@@ -163,6 +163,30 @@ class SkillContractTests(unittest.TestCase):
         self.write_skill(body="- [d](references/missing.md)")
         self.assertTrue(any("missing.md" in error for error in validate_skill(self.file)))
 
+    def test_unclosed_fence_ends_with_its_list_item(self):
+        # Незакрытый fenced-блок заканчивается вместе с пунктом списка, поэтому
+        # ссылка за пределами списка снова обычный Markdown и проверяется.
+        (self.folder / "references").mkdir()
+        (self.folder / "references/real.md").write_text("Текст", encoding="utf-8")
+        bodies = (
+            "- ```md\n  [Пример](references/absent.md)\n\n[Настоящая ссылка](references/missing.md)",
+            "- ```md\n  [Пример](references/absent.md)\n  ```\n\n[Настоящая ссылка](references/missing.md)",
+            "- ```md\n  [Пример](references/absent.md)\n\n- [Второй пункт](references/missing.md)",
+        )
+        for body in bodies:
+            with self.subTest(body=body):
+                self.write_skill(body=body)
+                errors = validate_skill(self.file)
+                self.assertTrue(any("missing.md" in error for error in errors), errors)
+                # Содержимое блока внутри пункта остаётся литеральным примером.
+                self.assertFalse(any("absent.md" in error for error in errors), errors)
+        # Действительная ссылка после списка не даёт ложной ошибки.
+        self.write_skill(body="- ```md\n  [Пример](references/absent.md)\n\n[Настоящая ссылка](references/real.md)")
+        self.assertEqual(validate_skill(self.file), [])
+        # Пока пункт списка продолжается, содержимое блока остаётся литералом.
+        self.write_skill(body="- ```md\n  [Пример](references/missing.md)\n  продолжение примера")
+        self.assertEqual(validate_skill(self.file), [])
+
     def test_escape_and_root_map_links_are_checked(self):
         self.write_skill(body="[Выход](../../outside.md)")
         (self.root / ".agents/outside.md").write_text("Текст", encoding="utf-8")

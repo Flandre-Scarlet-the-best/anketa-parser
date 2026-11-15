@@ -165,6 +165,19 @@ def _fence_closes(line: str, char: str, length: int) -> bool:
     return bool(match) and match.group(1)[0] == char and len(match.group(1)) >= length
 
 
+def _indent_width(line: str) -> int:
+    """Ширина ведущего отступа в колонках: табуляция дополняет до кратной четырём."""
+    width = 0
+    for char in line:
+        if char == " ":
+            width += 1
+        elif char == "\t":
+            width += 4 - width % 4
+        else:
+            break
+    return width
+
+
 def _raw_block(line: str) -> tuple[int, str] | None:
     """Тип raw HTML-блока CommonMark и его тег, либо None.
 
@@ -173,7 +186,14 @@ def _raw_block(line: str) -> tuple[int, str] | None:
     прерывается пустой строкой или концом документа. Внутри такого блока
     GitHub показывает разметку дословно, поэтому похожие на заголовки строки
     там не являются разделами.
+
+    Отступ в четыре и более колонок открывает indented-код (CommonMark §4.4):
+    тег в такой строке — пример кода, а не начало raw HTML-блока. Отступ
+    считается от начала строки, поэтому тег в пункте списка с отступом в четыре
+    и более колонок блоком не признаётся; разделы от этого не теряются.
     """
+    if _indent_width(line) >= 4:
+        return None
     stripped = line.lstrip(" ")
     raw = HTML_RAW.match(stripped)
     if raw:
@@ -189,52 +209,6 @@ def _raw_close(line: str, tag: str) -> int:
     if start < 0:
         return -1
     return line.casefold().find("</" + tag + ">", start)
-
-
-def mask_raw_html(lines: list[str]) -> list[str]:
-    """Скрыть содержимое raw HTML-блоков, не задевая fenced-код.
-
-    Fenced-блок имеет приоритет над блочными тегами: пример внутри примера
-    остаётся кодом, а не открытым HTML. Markdown не разбирает действительно
-    отрисованный raw HTML-блок, поэтому такие строки не дают разделов.
-    """
-    result: list[str] = []
-    block: tuple[int, str] | None = None
-    fence: tuple[str, int] | None = None
-    for line in lines:
-        if block is not None:
-            kind, tag = block
-            if kind == 1:
-                # Блок завершает только его собственный закрывающий тег:
-                # `</style>` не закрывает `<pre>`.
-                if _raw_close(line, tag) < 0:
-                    result.append(_hide(line))
-                    continue
-                block = None
-                result.append(line)
-                continue
-            if not line.strip():
-                block = None
-                result.append(line)
-                continue
-            result.append(_hide(line))
-            continue
-        if fence is not None:
-            if _fence_closes(line, fence[0], fence[1]):
-                fence = None
-            result.append(line)
-            continue
-        if (opened := _fence_open(line)) is not None:
-            fence = opened
-            result.append(line)
-            continue
-        found = _raw_block(line)
-        result.append(line)
-        if found is not None:
-            # Блок, закрывшийся на той же строке, дальше не продолжается.
-            kind, tag = found
-            block = None if kind == 1 and _raw_close(line, tag) >= 0 else found
-    return result
 
 
 def _strip_comments_in_line(line: str, inside: bool) -> tuple[str, bool]:
@@ -272,6 +246,61 @@ def _strip_comments_in_line(line: str, inside: bool) -> tuple[str, bool]:
         visible.append(char)
         index += 1
     return "".join(visible), inside
+
+
+def mask_raw_html(lines: list[str]) -> list[str]:
+    """Скрыть содержимое raw HTML-блоков, не задевая fenced-код и комментарии.
+
+    Fenced-блок имеет приоритет над блочными тегами: пример внутри примера
+    остаётся кодом, а не открытым HTML. Markdown не разбирает действительно
+    отрисованный raw HTML-блок, поэтому такие строки не дают разделов.
+
+    HTML-тег внутри комментария состояние разбора не меняет: GitHub показывает
+    комментарий скрытым, а не как HTML. Состояние комментария снимается так же,
+    как в strip_comments, поэтому решения здесь согласованы с очисткой строк.
+    """
+    result: list[str] = []
+    block: tuple[int, str] | None = None
+    fence: tuple[str, int] | None = None
+    comment = False
+    for line in lines:
+        if block is not None:
+            kind, tag = block
+            if kind == 1:
+                # Блок завершает только его собственный закрывающий тег:
+                # `</style>` не закрывает `<pre>`.
+                if _raw_close(line, tag) < 0:
+                    result.append(_hide(line))
+                    continue
+                block = None
+                result.append(line)
+                continue
+            if not line.strip():
+                block = None
+                result.append(line)
+                continue
+            result.append(_hide(line))
+            continue
+        if fence is not None:
+            if _fence_closes(line, fence[0], fence[1]):
+                fence = None
+            result.append(line)
+            continue
+        started_inside_comment = comment
+        visible, comment = _strip_comments_in_line(line, comment)
+        if not started_inside_comment and (opened := _fence_open(line)) is not None:
+            fence = opened
+            result.append(line)
+            continue
+        # Строка, начавшаяся внутри комментария, не открывает блок: её теги —
+        # часть комментария, а разметка после `-->` относится к тому же блоку.
+        found = None if started_inside_comment else _raw_block(visible)
+        result.append(line)
+        if found is not None:
+            # Блок, закрывшийся на той же строке, дальше не продолжается.
+            kind, tag = found
+            block = None if kind == 1 and _raw_close(line, tag) >= 0 else found
+    return result
 
 
 def strip_comments(lines: list[str]) -> list[str]:

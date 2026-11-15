@@ -106,6 +106,33 @@ class PrBodyContractTests(unittest.TestCase):
         # GitHub скрывает HTML-комментарии, поэтому шаблон внутри них не является телом PR.
         self.assertEqual(len(validate(f"<!--\n{valid_body()}\n-->")), len(HEADINGS))
 
+    def test_html_tag_inside_comment_does_not_open_raw_block(self):
+        # HTML-тег внутри комментария не меняет состояние raw HTML-разбора:
+        # после `-->` настоящие разделы снова видны и описание не отклоняется.
+        for tag in ("pre", "script", "style", "textarea", "div", "blockquote"):
+            with self.subTest(tag=tag):
+                body = f"<!--\n<{tag}>\n-->\n\n" + valid_body()
+                self.assertEqual(validate(body), [])
+                self.assertEqual([heading for heading, _ in sections(body)], list(HEADINGS))
+        # Строка, начавшаяся внутри комментария, тоже не открывает блок.
+        inline = "<!-- пояснение -->\n\n" + valid_body()
+        self.assertEqual(validate(inline), [])
+        # Незакрытый комментарий по-прежнему скрывает последующие разделы.
+        self.assertTrue(any("Цель" in error for error in validate(f"<!--\n<pre>\n{valid_body()}")))
+
+    def test_four_column_indented_tag_is_code_not_raw_block(self):
+        # Четыре колонки открывают indented-код (CommonMark §4.4), поэтому тег в
+        # такой строке — пример, а заголовки следующего блока остаются разделами.
+        for prefix in ("    ", "   \t", "\t", "     "):
+            with self.subTest(prefix=repr(prefix)):
+                body = f"{prefix}<pre>\n" + valid_body()
+                self.assertEqual(validate(body), [])
+                self.assertEqual([heading for heading, _ in sections(body)], list(HEADINGS))
+        # Отступ 0-3 пробела, наоборот, открывает raw HTML-блок.
+        for indent in range(4):
+            with self.subTest(indent=indent):
+                self.assertEqual(len(validate(" " * indent + "<pre>\n" + valid_body())), len(HEADINGS))
+
     def test_headings_in_raw_html_block_are_not_real(self):
         # Внутри raw HTML-блока GitHub показывает разметку дословно, поэтому такие
         # строки не являются видимыми разделами. `<pre>` длится до закрывающего тега

@@ -118,12 +118,26 @@ def fence_closes(line: str, char: str, length: int, column: int) -> bool:
     return False
 
 
+def fence_ends_with_container(line: str, column: int) -> bool:
+    """Незакрытый блок кончился вместе с пунктом списка, открывшим его.
+
+    Содержимое пункта списка должно сохранять отступ контейнера: непустая
+    строка с меньшим отступом выходит из списка, а потому и из fenced-блока,
+    который в нём был открыт.
+    """
+    if not column or not line.strip():
+        return False
+    return len(line) - len(line.lstrip(" ")) < column
+
+
 def mask_literals(markdown: str) -> list[str]:
     """Заменить литеральные контексты пробелами, сохранив длину строк.
 
     Fenced-код (в том числе внутри пунктов списка), код-спан, HTML-комментарий
     и автоссылка не содержат назначений документа, поэтому их содержимое не
-    должно проверяться как ссылка.
+    должно проверяться как ссылка. Незакрытый блок заканчивается вместе с
+    пунктом списка, в котором он открыт: за пределами контейнера его содержимое
+    снова обычный Markdown.
     """
     result: list[str] = []
     stop = ""
@@ -131,10 +145,13 @@ def mask_literals(markdown: str) -> list[str]:
     for raw in markdown.split("\n"):
         line = raw.expandtabs(4)
         if fence is not None:
-            if fence_closes(line, fence[0], fence[1], fence[2]):
+            if fence_ends_with_container(line, fence[2]):
                 fence = None
-            result.append(" " * len(line))
-            continue
+            else:
+                if fence_closes(line, fence[0], fence[1], fence[2]):
+                    fence = None
+                result.append(" " * len(line))
+                continue
         if stop:
             position = line.find(stop)
             if position < 0:
