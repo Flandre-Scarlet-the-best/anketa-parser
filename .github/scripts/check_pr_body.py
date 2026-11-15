@@ -381,6 +381,88 @@ def substantive(values: list[str], minimum: int) -> bool:
     return any(not placeholder(v) and len(v.strip()) >= minimum and len(v.split()) >= 3 for v in values)
 
 
+def table_cells(row: str) -> list[str]:
+    """Ячейки строки таблицы Markdown: делит только неэкранированная «|»."""
+    return [c.strip() for c in re.split(r"(?<!\\)\|", row.strip().strip("|"))]
+
+
+CODERABBIT = "CodeRabbit review и disposition"
+CODERABBIT_HEADER = ("Итерация / reviewed HEAD", "Уровень", "Путь", "Влияние", "Решение", "Исправление")
+# Ячейка строки-разделителя GFM: дефисы с необязательным выравниванием «:».
+DELIMITER_CELL = re.compile(r"^:?-+:?$")
+# Первая ячейка завершённой итерации: номер и reviewed HEAD в code span.
+ITERATION_CELL = re.compile(r"^[1-9]\d*\s*·\s*`[0-9a-f]{7,40}`$")
+
+
+def table_row(line: str) -> list[str] | None:
+    """Ячейки строки таблицы GFM; None — строка не может быть строкой таблицы.
+
+    Строка с отступом от четырёх пробелов — код-блок, пустая строка завершает
+    таблицу. Внешние «|» необязательны, ячейки делит только неэкранированная «|».
+    """
+    if not line.strip() or len(line) - len(line.lstrip(" ")) > 3 or not re.search(r"(?<!\\)\|", line):
+        return None
+    return table_cells(line)
+
+
+def validate_coderabbit(content: str) -> list[str]:
+    """Проверить, что раздел содержит связанную накопительную таблицу GFM.
+
+    Заголовок, строка-разделитель с тем же числом столбцов и строки данных должны
+    идти подряд: только так GitHub собирает их в одну таблицу. Каждая строка
+    данных обязана иметь все шесть заполненных столбцов и в первом — номер
+    итерации с reviewed HEAD; таблица без единой такой строки не принимается.
+    """
+    lines = content.split("\n")
+    header = [n for n, line in enumerate(lines) if table_row(line) == list(CODERABBIT_HEADER)]
+    if not header:
+        return ["В разделе CodeRabbit отсутствует заголовок накопительной таблицы"]
+    if len(header) > 1:
+        return ["В разделе CodeRabbit заголовок накопительной таблицы повторяется: нужна одна таблица"]
+    start = header[0]
+    delimiter = table_row(lines[start + 1]) if start + 1 < len(lines) else None
+    if (
+        delimiter is None
+        or len(delimiter) != len(CODERABBIT_HEADER)
+        or not all(DELIMITER_CELL.match(cell) for cell in delimiter)
+    ):
+        return [
+            "В разделе CodeRabbit за заголовком таблицы нет строки-разделителя "
+            f"из {len(CODERABBIT_HEADER)} столбцов (`| --- | … |`): GitHub не соберёт таблицу"
+        ]
+    errors: list[str] = []
+    completed = False
+    end = len(lines)
+    for offset, line in enumerate(lines[start + 2:], start + 2):
+        row = table_row(line)
+        if row is None:
+            end = offset
+            break
+        if len(row) != len(CODERABBIT_HEADER):
+            errors.append(
+                f"Строка таблицы CodeRabbit содержит {len(row)} столбцов вместо {len(CODERABBIT_HEADER)}: {line.strip()}"
+            )
+            continue
+        if not ITERATION_CELL.match(row[0]) or not all(row[1:]):
+            errors.append(
+                "Строка таблицы CodeRabbit не связана с итерацией и reviewed HEAD "
+                f"или содержит пустые ячейки: {line.strip()}"
+            )
+            continue
+        completed = True
+    if not completed:
+        errors.append("В разделе CodeRabbit отсутствует строка завершённой итерации")
+    # После разрыва отклоняем вероятные продолжения таблицы, включая строки
+    # без внешних «|» и повреждённый reviewed HEAD. Обычный текст с одиночным
+    # разделителем вне таблицы сам по себе продолжением таблицы не является.
+    for line in lines[end:]:
+        row = table_row(line)
+        if row and (line.lstrip().startswith("|") or len(row) == len(CODERABBIT_HEADER)
+                    or re.match(r"^[1-9]\d*\s*·", row[0])):
+            errors.append(f"Строка CodeRabbit оторвана от накопительной таблицы: {line.strip()}")
+    return errors
+
+
 def scenario_blocks(content: str) -> list[tuple[str, str]]:
     """Блоки `### …` отдельных сценариев раздела производительности по порядку."""
     return sections(content, level=3)

@@ -7,7 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from check_pr_body import is_automation_pr, sections, validate
+from check_pr_body import is_automation_pr, sections, validate, validate_coderabbit
+from check_coderabbit_comment import visible_comment
 
 
 HEADINGS = (
@@ -56,6 +57,20 @@ def body_with(performance: str) -> str:
 
 def valid_body() -> str:
     return body_with(NOT_APPLICABLE)
+
+
+CR_HEADER = "| Итерация / reviewed HEAD | Уровень | Путь | Влияние | Решение | Исправление |"
+CR_DELIMITER = "| --- | --- | --- | --- | --- | --- |"
+CR_ROW = "| 1 · `abcdef0` | — | — | 0 замечаний | clean | `abcdef0` |"
+
+
+def coderabbit(*lines: str) -> str:
+    return valid_body() + "\n\n## CodeRabbit review и disposition\n" + "\n".join(lines)
+
+
+
+def validate_comment_table(content):
+    return validate_coderabbit(visible_comment(content))
 
 
 class PrBodyContractTests(unittest.TestCase):
@@ -242,6 +257,12 @@ class PrBodyContractTests(unittest.TestCase):
         # Пример внутри пункта списка — код, а не разделы и не таблица body.
         nested = "- ```markdown\n" + "\n".join("  " + line for line in valid_body().split("\n")) + "\n  ```"
         self.assertTrue(any("Цель" in e for e in validate(nested)))
+        for marker in ("~~~", "```", "~~~~"):
+            for indent in ("    ", "     ", "\t"):
+                with self.subTest(marker=marker, indent=indent):
+                    rows = "\n".join(indent + line for line in (CR_HEADER, CR_DELIMITER, CR_ROW))
+                    errors = validate_comment_table(coderabbit("- нет таблицы", f"{indent}{marker}md", f"{indent}<!-- `пример`", rows, f"{indent}{marker}"))
+                    self.assertTrue(any("заголовок" in e for e in errors), errors)
 
     def test_performance_limits_include_heading(self):
         heading = len("## Производительность\n")
@@ -352,6 +373,106 @@ class PrBodyContractTests(unittest.TestCase):
             proc = subprocess.run([sys.executable, str(Path(__file__).with_name("check_pr_body.py")), "--event-path", str(event)], capture_output=True, text=True)
             self.assertEqual(proc.returncode, 2)
             self.assertIn("pull_request", proc.stderr)
+
+
+class CodeRabbitTableTests(unittest.TestCase):
+    def test_coderabbit_table_in_fence_is_not_accepted(self):
+        body = valid_body() + "\n\n## CodeRabbit review и disposition\n```markdown\n| Итерация / reviewed HEAD | Уровень | Путь | Влияние | Решение | Исправление |\n| 1 · x | — | — | 0 | clean | x |\n```"
+        self.assertEqual(validate(body), [])
+        self.assertTrue(any("таблицы" in e for e in validate_comment_table(body)))
+
+    def test_conditional_coderabbit_table(self):
+        body = valid_body() + "\n\n## CodeRabbit review и disposition\nПроверено."
+        self.assertEqual(validate(body), [])
+        self.assertTrue(any("таблицы" in e for e in validate_comment_table(body)))
+        body += "\n| Итерация / reviewed HEAD | Уровень | Путь | Влияние | Решение | Исправление |\n| --- | --- | --- | --- | --- | --- |\n| 1 · `abcdef0` | — | — | 0 замечаний | clean | `def` |"
+        self.assertEqual(validate_comment_table(body), [])
+
+    def test_coderabbit_row_requires_reviewed_sha(self):
+        body = valid_body() + "\n\n## CodeRabbit review и disposition\n| Итерация / reviewed HEAD | Уровень | Путь | Влияние | Решение | Исправление |\n| --- | --- | --- | --- | --- | --- |\n| 1 | — | — | 0 замечаний | clean | unknown |"
+        self.assertTrue(any("строка" in e for e in validate_comment_table(body)))
+        self.assertEqual(validate(body), [])
+
+    def test_coderabbit_row_requires_filled_cells(self):
+        # Строка из одних разделителей не является записью disposition.
+        table = "\n\n## CodeRabbit review и disposition\n| Итерация / reviewed HEAD | Уровень | Путь | Влияние | Решение | Исправление |\n| --- | --- | --- | --- | --- | --- |\n"
+        self.assertTrue(any("строка" in e for e in validate_comment_table(table + "| 1 · `abcdef0` | | | | | |")))
+        self.assertEqual(validate_comment_table(table + "| 1 · `abcdef0` | — | — | 0 замечаний | clean | `abcdef0` |"), [])
+
+    def test_coderabbit_row_after_gap_is_rejected(self):
+        later = "| 2 · `abcdef1` | minor | `a.cs` | эффект | confirmed | `abcdef2` |"
+        errors = validate_comment_table(coderabbit(CR_HEADER, CR_DELIMITER, CR_ROW, "", later))
+        self.assertTrue(any("оторвана" in e for e in errors), errors)
+
+    def test_coderabbit_prose_with_pipe_after_table_is_not_a_row(self):
+        for prose in ("Итог: см. `a|b`", "Команда: a | b"):
+            with self.subTest(prose=prose):
+                self.assertEqual(validate_comment_table(coderabbit(CR_HEADER, CR_DELIMITER, CR_ROW, "", prose)), [])
+
+    def test_coderabbit_bare_and_broken_rows_after_gap_are_rejected(self):
+        for row in ("2 · `abcdef1` | minor | path | effect | confirmed | fix",
+                    "2 · `bad` | minor | path | effect | confirmed | fix",
+                    "2 · `bad` | обрыв"):
+            with self.subTest(row=row):
+                errors = validate_comment_table(coderabbit(CR_HEADER, CR_DELIMITER, CR_ROW, "", row))
+                self.assertTrue(any("оторвана" in error for error in errors), errors)
+
+    def test_coderabbit_every_row_is_checked(self):
+        # Некорректная строка не прячется за соседней корректной.
+        for bad in ("| 2 | major | `a.cs` | x | confirmed | `abcdef0` |", "| 2 · `abcdef0` | major | | | | |"):
+            errors = validate_comment_table(coderabbit(CR_HEADER, CR_DELIMITER, CR_ROW, bad))
+            self.assertTrue(any("не связана" in e for e in errors), (bad, errors))
+
+    def test_coderabbit_table_requires_delimiter_row(self):
+        # Без строки-разделителя GitHub показывает две строки текста, а не таблицу.
+        errors = validate_comment_table(coderabbit(CR_HEADER, CR_ROW))
+        self.assertTrue(any("разделителя" in e for e in errors), errors)
+        errors = validate_comment_table(coderabbit(CR_HEADER, "Пояснение.", CR_DELIMITER, CR_ROW))
+        self.assertTrue(any("разделителя" in e for e in errors), errors)
+
+    def test_coderabbit_delimiter_must_match_header_columns(self):
+        for delimiter in ("| --- | --- | --- | --- | --- |", "| --- | --- | --- | --- | --- | --- | --- |", "| --- | --- | x | --- | --- | --- |"):
+            errors = validate_comment_table(coderabbit(CR_HEADER, delimiter, CR_ROW))
+            self.assertTrue(any("разделителя" in e for e in errors), (delimiter, errors))
+
+    def test_coderabbit_rows_must_have_all_columns(self):
+        short = "| 1 · `abcdef0` | — | — | clean | `abcdef0` |"
+        errors = validate_comment_table(coderabbit(CR_HEADER, CR_DELIMITER, short))
+        self.assertTrue(any("5 столбцов" in e for e in errors), errors)
+        # Неполная строка не прячется за соседней корректной.
+        errors = validate_comment_table(coderabbit(CR_HEADER, CR_DELIMITER, CR_ROW, short))
+        self.assertTrue(any("5 столбцов" in e for e in errors), errors)
+
+    def test_coderabbit_row_must_belong_to_the_table(self):
+        # Пустая строка или абзац завершают таблицу: строка итерации после них
+        # уже не связана с заголовком.
+        for gap in ("", "Отдельный абзац без разделителей"):
+            errors = validate_comment_table(coderabbit(CR_HEADER, CR_DELIMITER, gap, CR_ROW))
+            self.assertTrue(any("строка завершённой итерации" in e for e in errors), (gap, errors))
+        # Отступ в четыре пробела делает строки код-блоком, а не таблицей.
+        errors = validate_comment_table(coderabbit("    " + CR_HEADER, "    " + CR_DELIMITER, "    " + CR_ROW))
+        self.assertTrue(any("заголовок" in e for e in errors), errors)
+
+    def test_coderabbit_single_cumulative_table(self):
+        errors = validate_comment_table(coderabbit(CR_HEADER, CR_DELIMITER, CR_ROW, "", CR_HEADER, CR_DELIMITER, CR_ROW))
+        self.assertTrue(any("повторяется" in e for e in errors), errors)
+
+    def test_coderabbit_valid_gfm_variants_are_accepted(self):
+        second = "| 2 · `0123456789abcdef0123456789abcdef01234567` | major | `src/a.cs` | потеря данных | confirmed | исправлено `1234567` |"
+        self.assertEqual(validate_comment_table(coderabbit("Накопительный журнал ревью.", CR_HEADER, CR_DELIMITER, CR_ROW, second, "", "Итог: блокирующих нет.")), [])
+        aligned = "|:---|:---:|---:|---|---|---|"
+        self.assertEqual(validate_comment_table(coderabbit(CR_HEADER, aligned, CR_ROW)), [])
+        bare = [line.strip().strip("|").strip() for line in (CR_HEADER, CR_DELIMITER, CR_ROW)]
+        self.assertEqual(validate_comment_table(coderabbit(*bare)), [])
+        escaped = "| 1 · `abcdef0` | minor | `a\\|b.md` | разметка | false positive | — |"
+        self.assertEqual(validate_comment_table(coderabbit(CR_HEADER, CR_DELIMITER, escaped)), [])
+
+    def test_coderabbit_section_stays_conditional(self):
+        self.assertEqual(validate(valid_body()), [])
+
+    def test_performance_section_coexists_with_coderabbit_table(self):
+        body = body_with(MEASURED) + "\n\n## CodeRabbit review и disposition\n| Итерация / reviewed HEAD | Уровень | Путь | Влияние | Решение | Исправление |\n| --- | --- | --- | --- | --- | --- |\n| 1 · `abcdef0` | — | — | 0 замечаний | clean | `abcdef0` |"
+        self.assertEqual(validate(body), [])
 
 
 if __name__ == "__main__":

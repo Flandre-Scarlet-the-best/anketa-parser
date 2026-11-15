@@ -80,13 +80,14 @@ dependencies and ownership before deleting a remote branch. Use `git branch -d`
 locally. If squash prevents safe deletion, leave the branch and report it; never
 escalate automatically to `-D`. Preserve unrelated files and worktrees.
 
-## Future disposition comment publication
+## Disposition comment publication
 
-No review iteration means no comment is needed. If a future authorized review
+No review iteration means no comment is needed. If an authorized review
 produces one, follow the format in pr-body. Establish PR author from API data,
 the acting account's ability to write as that author, PR identity and complete
 paginated top-level Conversation comments. Inline review threads and bot messages
-are not the journal. Locate the exact marker and verify author and comment ID.
+are not the journal. Locate the exact marker and verify author by numeric GitHub
+user ID (not login text), comment ID and membership in this PR.
 Zero matches permits creation only for an actual completed iteration; exactly
 one permits updating that verified ID. Multiple markers, wrong authors, incomplete
 listing or API failure block mutation; never delete someone else's comments.
@@ -105,6 +106,18 @@ historical PRs automatically or discard body history before comment confirmation
 Respect the actual trusted validator version during migration; do not bypass old
 required checks or treat head validation as independent base validation.
 
+Validate the published PR body and complete paginated comment history using
+`python .github/scripts/check_coderabbit_comment.py`, with `GITHUB_REPOSITORY`,
+`PR_NUMBER`, read-only `GITHUB_TOKEN` and `GITHUB_EVENT_PATH` established for the
+actual PR/event HEAD. Do not expose the token. This read-only validator fetches
+live body rather than trusting event text, checks comment identity/visible GFM
+through the shared body parser, then rereads PR metadata/body to reject races.
+It cannot prove provider completion, historical append-only behavior or atomic
+comment edits: compare complete history and real review evidence independently.
+API failure, malformed pagination/data, redirects, duplicate markers, wrong
+authors or concurrent PR changes must fail closed. Never create a fake clean
+comment to make a check pass.
+
 ## Trusted checks and staged activation
 
 `pr-body.yml` on `pull_request` runs candidate code; it is useful regression
@@ -112,17 +125,21 @@ evidence, not independent enforcement when the PR edits its validator.
 `pr-body-trusted.yml` on `pull_request_target` checks out the exact event base
 SHA with credentials persistence disabled. It must never check out or execute
 head code. PR text/event metadata are untrusted data, not shell source. Use only
-minimal read permissions, no additional secrets and no write token.
+minimal read permissions, no additional secrets and no write token. Both existing
+jobs invoke `check_coderabbit_comment.py`; candidate checks live body/journal with
+head code, trusted with exact base code. Keep their existing context names.
 
 The event payload is a snapshot, not a guarantee that the description is unchanged
 later. Reread the current body independently at handoff. A comment-only change
 does not automatically refresh a PR HEAD required check; `issue_comment` runs in
 default-branch context. Do not represent a default-branch run as PR HEAD evidence.
 If needed, rerun an existing PR workflow only after verifying its event HEAD,
-base, body and trusted version still match current state, then reread results/content.
-A rerun reuses the original event payload: it cannot validate a changed body.
-Changed descriptions require a fresh applicable PR event and a new workflow run.
-Otherwise wait for an applicable PR event; do not invent bypass contexts.
+base and trusted version still match current state, then reread results/content.
+A rerun reuses the original event HEAD, but this live API validator rereads the
+current body and comments. An old event with a different HEAD is rejected and
+cannot establish current evidence. If an existing base still has an event-only
+body validator, a changed body needs a fresh applicable PR event. Otherwise wait
+for an applicable PR event; do not invent bypass contexts.
 
 Ordinary dependent PRs target their direct base; native stacks route Actions as
 if targeting the stack trunk. CI has no pull-request base filter so both are

@@ -1,0 +1,180 @@
+# yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+language: ru-RU
+early_access: false
+
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary_instructions: >-
+    Суммируй фактические изменения инфраструктурной основы C#/.NET:
+    Core, Infrastructure, Host/Cli, проверки, Docker и агентские контракты.
+    Объясняй наблюдаемый эффект и причину изменения. Сверяй diff с явно
+    заданной задачей; при недостатке доказательств указывай неопределённость.
+    Не приписывай проекту ещё не реализованные парсинг, профили, Telegram,
+    LLM-интеграции, доменное хранение и миграции.
+  high_level_summary_in_walkthrough: true
+  review_details: true
+  # Локальные ревью запускаются явно; служебные сообщения бота в PR не нужны.
+  review_status: false
+  fail_commit_status: false
+  suggested_labels: false
+  suggested_reviewers: false
+  in_progress_fortune: false
+  enable_prompt_for_ai_agents: true
+
+  path_instructions:
+    - path: "**/*"
+      instructions: >-
+        Проверяй конкретные ошибки по текущему коду, вызовам, тестам и
+        применимым AGENTS.md. Сохраняй фактическую архитектуру одного процесса
+        и одной БД, границы владельцев и русский язык пользовательских текстов.
+        Не предлагай несвязанные переделки или гипотетические подсистемы.
+        Замечание должно описывать технический эффект и необходимое действие;
+        предположения явно отделяй от фактов.
+
+    - path: "src/**/*.cs"
+      instructions: >-
+        Зависимости идут Host/Cli → Infrastructure → Core; composition остаётся
+        в исполняемых проектах, адаптеры регистрируются через
+        AddAnketaParserInfrastructure. Оба входа используют DiagnosticsRunner.
+        Проверяй передачу CancellationToken, штатное завершение фоновой работы,
+        async disposal соединений и отсутствие sync-over-async. Сохраняй
+        структурированные поля ILogger и стабильные EventId, не добавляй
+        параллельный файловый лог или произвольный stdout. Сырые строки
+        подключения, конфигурация и сообщения исключений зависимостей с
+        секретами не должны попадать в диагностику.
+
+    - path: "src/AnketaParser.Core/**"
+      instructions: >-
+        Core содержит диагностические контракты, отчёты, статусы и exit codes
+        без hosting, CLI, БД и сетевых implementation packages. Сохраняй
+        различимые ExitCodes для успеха, внутренней ошибки, аргументов,
+        конфигурации и недоступной обязательной зависимости. Не подменяй
+        деградацию здоровьем и не переноси адаптеры в Core.
+
+    - path: "src/AnketaParser.Infrastructure/**"
+      instructions: >-
+        Host и CLI используют общую конфигурационную цепочку и typed validators:
+        необязательный appsettings.json, DOTNET_ENVIRONMENT JSON,
+        appsettings.Local.json, затем ANKETAPARSER_ с __ для вложенности.
+        Отсутствующий content root и ненастроенная необязательная БД допустимы.
+        Npgsql readiness выполняет SELECT 1 с отменой и ограничением времени,
+        освобождает ресурсы, не создаёт схему и не делает миграций.
+        Необязательная ненастроенная зависимость пропускается с деградацией;
+        недоступная обязательная зависимость не может дать healthy.
+        Проверяй актуальность runtime snapshot и readiness state.
+
+    - path: "src/AnketaParser.{Host,Cli}/**"
+      instructions: >-
+        Проверяй composition, startup diagnostics, мониторинг readiness и
+        штатное завершение Generic Host. Работающий процесс ещё не доказывает
+        готовность. Для CLI doctor --json stdout содержит ровно один JSON
+        документ, а логи и человекочитаемая диагностика идут в stderr.
+        Сохраняй ключи JSON, машинные статусы, семантику аргументов и exit codes;
+        исключения и логи не должны портить машинный stdout.
+
+    - path: "tests/**"
+      instructions: >-
+        Тесты должны проверять наблюдаемое поведение, ошибки, отмену и границы
+        контракта. AnketaParser.Tests не требует внешних сервисов;
+        AnketaParser.DockerTests запускается только с ANKETAPARSER_DOCKER_TESTS=1,
+        использует изолированный Compose project и синтетические данные.
+        Проверяй connectivity и сохранность данных после пересоздания контейнера.
+        Пропущенный smoke и docker compose config не являются live acceptance.
+        Не ослабляй assertions ради зелёного CI.
+
+    - path: "**/{*.csproj,packages.lock.json,Directory.*.props,global.json,NuGet.config}"
+      instructions: >-
+        Сохраняй SDK selection из global.json, централизованные версии NuGet,
+        locked restore, nullable, анализаторы и строгую политику сборки.
+        Зависимость должна решать конкретную задачу в правильном слое.
+        Отмечай необъяснимый lockfile churn и рассинхронизацию manifest/lockfile;
+        не рекомендуй вымышленные инструменты CodeRabbit для Roslyn/.NET.
+
+    - path: "{Dockerfile,compose*.yaml,.env.example,.dockerignore}"
+      instructions: >-
+        Сохраняй приватную сеть и persistent PostgreSQL volume. Основной Compose
+        не публикует порты; отладочный файл разрешает только loopback.
+        Изменение исходников не разрешает рестарт production, миграции или
+        удаление томов. Не добавляй реальные секреты в образ, пример окружения,
+        логи и diff. Cleanup должен сохранять неизвестные файлы и данные.
+
+    - path: ".github/**"
+      instructions: >-
+        Проверяй locked restore и существующую матрицу проверок. Candidate
+        pull_request исполняет код PR, trusted pull_request_target — только код
+        точного event base SHA с persist-credentials: false и минимальными read
+        permissions. Недоверенные Markdown и event payload остаются данными,
+        не shell-кодом. API-проверка журнала учитывает все страницы, user ID
+        автора, единственность маркера, видимость таблицы, сбои API и гонки
+        PR/HEAD/body; токен не должен утекать через redirect или ошибки.
+        Наличие workflow в head не доказывает trusted hosted run.
+
+    - path: "{AGENTS.md,.agents/**}"
+      instructions: >-
+        Инструкции должны соответствовать текущим владельцам и путям.
+        git-workflow единолично владеет публикацией и форматом журнала,
+        coderabbit-review — явным запуском, завершённостью и triage.
+        Сохраняй обязательную проверку latest stable и автоматическое обновление
+        только CodeRabbit CLI перед будущим явно запрошенным циклом.
+        Английские инструкции не меняют русский язык результатов. Не закрепляй
+        текущие PR/SHA и не превращай создание skill в разрешение на ревью.
+
+    - path: "**/README.md"
+      instructions: >-
+        Сверяй примеры команд, конфигурационные ключи, пути, статусы и ограничения
+        с фактическим кодом. Не обещай отсутствующие возможности. Документация
+        маршрутизирует к владельцам и не дублирует Git workflow или цикл ревью.
+
+  auto_review:
+    enabled: false
+    auto_incremental_review: false
+    auto_pause_after_reviewed_commits: 0
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: "off"
+    description:
+      mode: "off"
+    issue_assessment:
+      mode: "off"
+
+chat:
+  art: false
+  auto_reply: false
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - files: AGENTS.md
+        applyTo: "**/*"
+  learnings:
+    scope: local
+    approval_delay: 30
+  issues:
+    scope: local
+  jira:
+    usage: disabled
+  linear:
+    usage: disabled
+  pull_requests:
+    scope: local
+  mcp:
+    usage: disabled
+
+issue_enrichment:
+  planning:
+    enabled: false
+    auto_planning:
+      enabled: false

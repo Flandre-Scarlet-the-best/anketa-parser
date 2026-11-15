@@ -19,5 +19,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Проверить описание из события PR
-        run: python .github/scripts/check_pr_body.py --event-path "$GITHUB_EVENT_PATH"
+      - name: Проверить опубликованные описание и журнал PR
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .github/scripts/check_coderabbit_comment.py

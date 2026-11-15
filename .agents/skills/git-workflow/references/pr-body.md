@@ -1,6 +1,6 @@
 # PR body contract
 
-This reference owns body content and the future CodeRabbit disposition format.
+This reference owns body content and the cumulative CodeRabbit disposition format.
 [pr-lifecycle](pr-lifecycle.md) owns storage, publication and read-back.
 
 ## Structure and language
@@ -97,11 +97,11 @@ complete Russian language quality or benchmark comparability. Independently
 verify those against evidence. Candidate and trusted CI have distinct trust
 boundaries described in [pr-lifecycle](pr-lifecycle.md).
 
-## Future single CodeRabbit journal
+## Single cumulative CodeRabbit journal
 
-This is a boundary contract, not authorization to run CodeRabbit or implement its
-skill. The future review owner determines invocation, completion, adjudication,
-iteration limits and valid dispositions, and delegates all Git publication here.
+`coderabbit-review` determines invocation, completion, adjudication, iteration
+limits and valid dispositions, and delegates all Git publication here. This
+format does not itself authorize running CodeRabbit.
 After an actually completed iteration, keep one cumulative top-level Conversation
 issue comment by the PR author, with the exact marker on its own line:
 
@@ -110,6 +110,7 @@ issue comment by the PR author, with the exact marker on its own line:
 
 | Итерация / reviewed HEAD | Уровень | Путь | Влияние | Решение | Исправление |
 | --- | --- | --- | --- | --- | --- |
+| 1 · `0123456` | major | `path/to/file` | технический эффект | confirmed | исправление и опубликованный commit |
 ```
 
 No iteration means no fabricated comment or mandatory link/table in the body.
@@ -121,10 +122,20 @@ HEAD in a code span. Preserve severity, path, technical impact, disposition and
 the actual published fix/commit. Write authored explanations in Russian; keep
 machine disposition values exact. Never present false positives or stale/repeated
 findings as fixes. A truly clean iteration has one row with `—` for severity and
-path, `clean` disposition and its published marker commit if required by the
-future review owner. A later fix HEAD is not the reviewed HEAD of that iteration.
+path, `clean` disposition and its mandatory published empty marker commit.
+Findings rejected as false or stale retain their individual rows, rather than
+becoming `clean`. A later fix HEAD is not the reviewed HEAD of that iteration.
 
 Append each iteration without erasing history or repeating headers. Do not paste
 raw provider output. If the comment limit would require losing history or a
 second journal, stop and explain. Syntax cannot prove truth. Publication,
 identity, safe migration and read-back belong to pr-lifecycle.
+
+New comments use only this marker and table. The validator also accepts historical
+optional headings/prose, aligned separators and omitted outer pipes; these are
+compatibility cases, not the canonical publication format. Require at least one
+completed row and validate every row, not just the first valid one. No blank line,
+prose gap, duplicate header or detached continuation may split the table. The body
+validator remains about substantive body structure; the shared `validate_coderabbit`
+parser is used by the live comment validator. Neither syntax nor API identity
+proves that a review ran; verify the provider evidence independently.

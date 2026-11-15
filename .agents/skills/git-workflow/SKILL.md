@@ -37,7 +37,7 @@ Read the relevant owner before its operation:
   branch, verification, staging, commit, push, exact remote postcondition,
   uncertain network outcome recovery and verified stack synchronization.
 - [pr-body](references/pr-body.md): substantive PR structure, Unicode limits,
-  performance decision and the future single CodeRabbit disposition table.
+  performance decision and the single cumulative CodeRabbit disposition table.
 - [pr-lifecycle](references/pr-lifecycle.md): PR identity, local body source,
   create/update/read-back, Draft/Ready, CI/review freshness, conflicts, separately
   authorized merge, cleanup and trusted-check activation.

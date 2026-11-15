@@ -131,8 +131,11 @@ frontmatter and applicability, and read only relevant references. There is one
 canonical copy, independent of the agent harness. Do not create compatibility
 copies, indexes or new skills without a task requiring them. CodeRabbit runs
 require explicit positive authorization; mentioning it or editing workflow
-instructions does not authorize a run. Its future review procedure will own
-provider-specific behavior and delegate Git publication to this skill.
+instructions does not authorize a run. The independent
+[coderabbit-review](.agents/skills/coderabbit-review/SKILL.md) owns local provider
+execution, confirmed latest-stable CLI preflight with automatic supported updates,
+completion, triage and iterations. It delegates Git publication and the cumulative
+PR-author journal to `git-workflow`; application checks remain with this contract.
 
 The PR body validator and candidate workflow own deterministic structure checks;
 the trusted workflow uses only base code. Their trust and activation boundaries

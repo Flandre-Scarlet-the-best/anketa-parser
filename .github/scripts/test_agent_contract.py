@@ -43,7 +43,7 @@ class AgentContractTests(unittest.TestCase):
         русским литералам контракта сохраняются.
         """
         skill = ROOT / ".agents/skills/git-workflow"
-        files = [ROOT / "AGENTS.md", *sorted(skill.rglob("*.md"))]
+        files = [ROOT / "AGENTS.md", *sorted((ROOT / ".agents/skills").rglob("*.md"))]
         self.assertTrue((skill / "SKILL.md").is_file(), "нужен сам канонический skill")
         for path in files:
             # Литералы контракта выделяются кодом; окружающая инструкция английская.
@@ -52,7 +52,7 @@ class AgentContractTests(unittest.TestCase):
         # Требование русскоязычного результата задаётся в прозе корневого
         # контракта и навыка. Проверяется сам язык, поэтому равноценная
         # переформулировка правила не ломает CI.
-        for path in (ROOT / "AGENTS.md", skill / "SKILL.md"):
+        for path in (ROOT / "AGENTS.md", *sorted((ROOT / ".agents/skills").glob("*/SKILL.md"))):
             self.assertTrue(requires_russian_output(path.read_text(encoding="utf-8")), str(path))
         # Владелец формата описания PR сохраняет все русские заголовки контракта.
         body_contract = (skill / "references/pr-body.md").read_text(encoding="utf-8")
@@ -116,7 +116,7 @@ class AgentContractTests(unittest.TestCase):
         for forbidden in ("head.sha", "head.ref", "refs/pull", "secrets.", ": write", "write-all"):
             self.assertNotIn(forbidden, text)
         runs = re.findall(r"(?m)^\s+run: (.+)$", text)
-        self.assertEqual(runs, ['python .github/scripts/check_pr_body.py --event-path "$GITHUB_EVENT_PATH"'])
+        self.assertEqual(runs, ['python .github/scripts/check_coderabbit_comment.py'])
 
     def test_replaced_head_validator_does_not_change_base_result(self):
         with tempfile.TemporaryDirectory() as temporary:
