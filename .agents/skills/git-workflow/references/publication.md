@@ -63,7 +63,14 @@ a substitute for an implementation or check.
 
 ## Explicit push and remote proof
 
-Read `git ls-remote --refs <remote> refs/heads/<branch>` immediately before push.
+Before pushing, enumerate the actual recipients with
+`git remote get-url --push --all <remote>`. Fetch and push URLs may differ, and
+one remote can have multiple push URLs. Verify the repository identity and
+authorization of every recipient; unexpected destinations block publication.
+Read `git ls-remote --refs <push-url> refs/heads/<branch>` for **each** actual
+recipient immediately before push. A read against the fetch URL does not prove
+what happened at a different push destination. If a push URL cannot be read,
+use a verified equivalent API for that exact repository or report the blocker.
 Compare with known ancestry and expected remote state. Fetch and inspect any
 unknown commits and differences from the common ancestor before proceeding.
 Ordinary divergence does not authorize rewriting history. Use a normal merge
@@ -72,14 +79,18 @@ where appropriate or report a blocker if preserving the work cannot be proved.
 Publish only the task ref, never a bare push governed by `push.default`:
 
 ```sh
-git push --set-upstream <remote> refs/heads/<branch>:refs/heads/<branch>
+git remote get-url --push --all <remote>
+git push --no-follow-tags --set-upstream <remote> refs/heads/<branch>:refs/heads/<branch>
 git rev-parse HEAD
-git ls-remote --refs <remote> refs/heads/<branch>
+git ls-remote --refs <push-url> refs/heads/<branch>
 ```
 
 For later pushes use the same explicit remote/refspec without `--set-upstream`.
-Record the expected commit before mutation and compare the exact SHA with a new
-live remote read afterward. Exit code zero and a matching cached tracking ref
+Disable implicit tag publication with `--no-follow-tags` on ordinary and rewritten
+pushes, even when `push.followTags=true` is configured. Branch publication does
+not authorize tags. Record the expected commit before mutation and compare the
+exact SHA with a new live read from every actual recipient afterward. A partial
+multi-recipient push is incomplete. Exit code zero and a matching cached tracking ref
 are insufficient. A mismatch means publication is incomplete.
 
 On timeout, disconnect or uncertain push/API response, read actual remote state
@@ -99,7 +110,8 @@ branches without requesting permission for each technical step. Before using it:
    or the user explicitly established the dependent branch chain. Similar names,
    an assumed ancestry or a dependent base alone do not prove registration.
 2. Record exact repository, trunk, ordered base/head pairs, affected branches,
-   branch ownership, local SHA values and live expected remote SHA values.
+   branch ownership, local SHA values and live expected remote SHA values for
+   every actual push URL (not only the fetch endpoint).
    Determine the full downstream impact before starting.
 3. Fetch and inspect all affected ancestry and commits. Prove there are no
    unknown commits and no unsaved user changes in affected worktrees/indexes.
@@ -114,7 +126,7 @@ branches without requesting permission for each technical step. Before using it:
    explicit lease bound to the previously recorded live SHA:
 
    ```sh
-   git push --force-with-lease=refs/heads/<branch>:<expected-sha> <remote> refs/heads/<branch>:refs/heads/<branch>
+   git push --no-follow-tags --force-with-lease=refs/heads/<branch>:<expected-sha> <remote> refs/heads/<branch>:refs/heads/<branch>
    ```
 
    Never use bare `--force`, an implicit tracking-ref lease, or a blind push.
@@ -122,6 +134,8 @@ branches without requesting permission for each technical step. Before using it:
    requires inspection of new remote work, not replacing the expected value
    mechanically. A stack manager is acceptable only after verifying equivalent
    ownership, expected-state protection and exact read-back guarantees.
+   If recipients have different expected tips, publish explicitly to each verified
+   push URL with its own recorded lease instead of reusing one SHA for all URLs.
 6. Treat partial multi-branch publication as incomplete. Read all live tips after
    an unknown outcome; resume only after reconciling the actual chain. Do not
    blindly roll back remote refs. Refresh PR descriptions, CI and review evidence

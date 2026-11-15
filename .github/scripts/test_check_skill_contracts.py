@@ -8,6 +8,40 @@ from check_skill_contracts import validate_skill, validate_tree
 
 
 class SkillContractTests(unittest.TestCase):
+    def test_plain_scalar_punctuation_is_valid(self):
+        for ending in ("]", "}", "[", "{", ",", "\\"):
+            with self.subTest(ending=ending):
+                self.write_skill(f"---\nname: sample-skill\ndescription: Process arrays ending in {ending}\n---\n")
+                self.assertEqual(validate_skill(self.file), [])
+
+    def test_indented_yaml_is_parsed(self):
+        self.write_skill("---\nname: sample-skill\ndescription: Demo.\nmetadata:\n  author: [broken\n---\n")
+        self.assertTrue(validate_skill(self.file))
+        self.write_skill("---\nname: sample-skill\ndescription: Demo.\nmetadata:\n  author: sample\n---\n")
+        self.assertEqual(validate_skill(self.file), [])
+
+    def test_frontmatter_types_and_decoded_description_length(self):
+        for fields in ("description: []", "description: 123", "description: true", "description: {a: b}",
+                       "description: Demo.\nmetadata: {author: [a, b]}",
+                       "description: Demo.\nmetadata: []", "description: Demo.\nmetadata: {author: 123}"):
+            with self.subTest(fields=fields):
+                self.write_skill(f"---\nname: sample-skill\n{fields}\n---\n")
+                self.assertTrue(validate_skill(self.file))
+        self.write_skill('---\nname: sample-skill\ndescription: "' + r'\u0061' * 1024 + '"\n---\n')
+        self.assertEqual(validate_skill(self.file), [])
+        self.write_skill('---\nname: "sample-skill"\ndescription: "' + r'\u0061' * 1025 + '"\n---\n')
+        self.assertTrue(any("1024" in error for error in validate_skill(self.file)))
+
+    def test_unsafe_yaml_tags_are_rejected(self):
+        self.write_skill('---\nname: sample-skill\ndescription: !!python/object/apply:builtins.str [unsafe]\n---\n')
+        self.assertTrue(validate_skill(self.file))
+
+    def test_duplicate_yaml_keys_are_rejected(self):
+        for fields in ("description: One.\ndescription: Two.", "description: Demo.\nmetadata: {author: a, author: b}"):
+            with self.subTest(fields=fields):
+                self.write_skill(f"---\nname: sample-skill\n{fields}\n---\n")
+                self.assertTrue(validate_skill(self.file))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -65,7 +99,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertTrue(any("SKILL.md" in x for x in validate_tree(self.root)))
 
     def test_broken_yaml_values_are_rejected(self):
-        for value in ("[broken", '"unterminated', "'unterminated", "{a: 1", "trailing,", '"первая" "вторая"'):
+        for value in ("[broken", '"unterminated', "'unterminated", "{a: 1", '"первая" "вторая"'):
             with self.subTest(value=value):
                 self.write_skill(f"---\nname: sample-skill\ndescription: {value}\n---\n")
                 self.assertTrue(any("неразбираемое" in x for x in validate_skill(self.file)))
@@ -84,7 +118,7 @@ class SkillContractTests(unittest.TestCase):
 
     def test_flow_collections_are_accepted(self):
         # `metadata` — YAML-отображение, поэтому корректные flow-структуры допустимы.
-        for value in ("{author: x}", "{author: [a, b]}", "{author: '}'}"):
+        for value in ("{author: x}", "{author: 'a, b'}", "{author: '}'}"):
             with self.subTest(value=value):
                 self.write_skill(f"---\nname: sample-skill\ndescription: Demo.\nmetadata: {value}\n---\n", body="Без ссылок.")
                 self.assertEqual(validate_skill(self.file), [])
@@ -93,7 +127,7 @@ class SkillContractTests(unittest.TestCase):
         for value in ("{author: x", "[broken", "{author: x} extra", "}"):
             with self.subTest(value=value):
                 self.write_skill(f"---\nname: sample-skill\ndescription: Demo.\nmetadata: {value}\n---\n", body="Без ссылок.")
-                self.assertTrue(any("flow" in x for x in validate_skill(self.file)), value)
+                self.assertTrue(validate_skill(self.file), value)
 
     def test_valid_quoted_and_block_scalars(self):
         self.write_skill('---\nname: sample-skill\ndescription: "Краткое описание."\n---\n', body="Без ссылок.")

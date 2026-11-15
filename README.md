@@ -352,9 +352,11 @@ docker compose exec -T postgres psql -U anketa_parser -d anketa_parser -tAc "SEL
 в [git-workflow](.agents/skills/git-workflow/SKILL.md). Инструкции этих файлов написаны
 на английском; общение, документация, сообщения коммитов и PR остаются русскими.
 
-Проверки контрактов используют только стандартную библиотеку Python 3.12:
+Проверки контрактов используют Python 3.12 и закреплённый PyYAML для безопасного
+разбора frontmatter skills. Установите зависимости в виртуальное окружение:
 
 ```sh
+python -m pip install -r .github/scripts/requirements.txt
 python -m unittest discover -s .github/scripts -p 'test_*.py'
 python .github/scripts/check_skill_contracts.py
 python .github/scripts/check_pr_body.py --body-file .codex/local/pr/<task>/body.md

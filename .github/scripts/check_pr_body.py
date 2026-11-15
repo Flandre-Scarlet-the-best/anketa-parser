@@ -141,7 +141,7 @@ def strip_comments(lines: list[str]) -> list[str]:
                 fence_char = ""
             result.append(line)
             continue
-        if opening := FENCE.match(line):
+        if not inside and (opening := FENCE.match(line)):
             fence_char, fence_len = opening.group(1)[0], len(opening.group(1))
             result.append(line)
             continue
@@ -168,14 +168,16 @@ def strip_comments(lines: list[str]) -> list[str]:
     return result
 
 
-def sections(body: str) -> list[tuple[str, str]]:
-    """Видимые заголовки второго уровня и текст их разделов без код-блоков."""
-    lines = strip_comments(body.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
+def sections(body: str, *, raw: bool = False) -> list[tuple[str, str]]:
+    """Видимые разделы: очищенное содержимое либо исходный диапазон с заголовком."""
+    original = body.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    lines = strip_comments(original)
     found: list[tuple[str, str]] = []
     active: list[str] = []
     fence_char = ""
     fence_len = 0
-    for line in lines:
+    start = 0
+    for index, line in enumerate(lines):
         if fence_char:
             closing = FENCE_CLOSE.match(line)
             if closing and closing.group(1)[0] == fence_char and len(closing.group(1)) >= fence_len:
@@ -189,13 +191,14 @@ def sections(body: str) -> list[tuple[str, str]]:
         match = HEADING.match(line)
         if match:
             if found:
-                found[-1] = (found[-1][0], "\n".join(active))
+                found[-1] = (found[-1][0], "\n".join(original[start:index]).strip() if raw else "\n".join(active))
             found.append((match.group(1).strip(), ""))
             active = []
+            start = index
         elif found:
             active.append(line)
     if found:
-        found[-1] = (found[-1][0], "\n".join(active))
+        found[-1] = (found[-1][0], "\n".join(original[start:]).strip() if raw else "\n".join(active))
     return found
 
 
@@ -233,12 +236,12 @@ def scenario_blocks(content: str) -> list[tuple[str, str]]:
     return [(heading, "\n".join(lines)) for heading, lines in blocks]
 
 
-def validate_performance(content: str) -> list[str]:
+def validate_performance(content: str, raw_section: str | None = None) -> list[str]:
     """Проверить компактный вывод; достоверность результатов требует отдельной проверки."""
     prefix = "## Производительность: "
     errors: list[str] = []
     # Лимиты относятся ко всему разделу вместе с его заголовком.
-    length = len("## Производительность\n") + len(content.strip())
+    length = len(raw_section) if raw_section is not None else len("## Производительность\n") + len(content.strip())
     if length > MAX_PERFORMANCE_LENGTH:
         errors.append(prefix + f"{length} символов, максимум {MAX_PERFORMANCE_LENGTH}; сократите отчёт до выводов")
     found = fields(content)
@@ -292,6 +295,7 @@ def validate(body: str) -> list[str]:
     if len(body) > MAX_BODY_LENGTH:
         return [f"PR body: {len(body)} символов, максимум {MAX_BODY_LENGTH}"]
     blocks = sections(body)
+    raw_blocks = sections(body, raw=True)
     names = [heading for heading, _ in blocks]
     errors: list[str] = []
     for name in REQUIRED:
@@ -306,13 +310,13 @@ def validate(body: str) -> list[str]:
         positions = [names.index(name) for name in REQUIRED]
         if positions != sorted(positions):
             errors.append("Обязательные разделы расположены не в установленном порядке")
-    for name, content in blocks:
+    for index, (name, content) in enumerate(blocks):
         if name in REQUIRED and not content.strip():
             errors.append(f"Пустой обязательный раздел: ## {name}")
         if name in REQUIRED and content.strip().casefold() in {"todo", "tbd", "заполнить", "уточнить"}:
             errors.append(f"Раздел содержит только заглушку: ## {name}")
         elif name == PERFORMANCE and content.strip() and names.count(PERFORMANCE) == 1:
-            errors.extend(validate_performance(content))
+            errors.extend(validate_performance(content, raw_blocks[index][1]))
     return errors
 
 

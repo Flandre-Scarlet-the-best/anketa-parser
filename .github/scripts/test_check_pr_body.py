@@ -59,6 +59,21 @@ def valid_body() -> str:
 
 
 class PrBodyContractTests(unittest.TestCase):
+    def test_fence_inside_html_comment_does_not_hide_real_sections(self):
+        for marker in ("```text", "~~~text"):
+            with self.subTest(marker=marker):
+                self.assertEqual(validate(f"<!--\n{marker}\n-->\n\n" + valid_body()), [])
+
+    def test_performance_raw_markdown_limits(self):
+        for decision, limit in ((NOT_APPLICABLE, 650), (MEASURED, 2200)):
+            for wrapper in ("```text\n{}\n```", "<!-- {} -->"):
+                with self.subTest(limit=limit, wrapper=wrapper):
+                    prefix = decision + "\n\n"
+                    overhead = len("## Производительность\n") + len(prefix) + len(wrapper.format(""))
+                    exact = prefix + wrapper.format("x" * (limit - overhead))
+                    self.assertEqual(validate(body_with(exact)), [])
+                    self.assertTrue(any(str(limit) in error for error in validate(body_with(exact.replace("x", "xx", 1)))))
+
     def test_valid_body(self):
         self.assertEqual(validate(valid_body()), [])
 

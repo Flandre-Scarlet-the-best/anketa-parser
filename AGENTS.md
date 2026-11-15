@@ -101,8 +101,10 @@ python .github/scripts/check_skill_contracts.py
 ```
 
 Choose checks proportionate to the change and run required repository checks.
-The Python contract suite uses the standard library; no application dependency
-or Python package installation is required. A structurally valid document is
+Before running the Python contract suite, install the pinned checker dependency
+with `python -m pip install -r .github/scripts/requirements.txt`, preferably in a
+local virtual environment. PyYAML is used only for safe skill frontmatter parsing;
+the PR body validator still uses the standard library. A structurally valid document is
 not proof of factual accuracy or language quality: read the resulting prose.
 
 Docker smoke is skipped unless `ANKETAPARSER_DOCKER_TESTS=1` is explicitly set;

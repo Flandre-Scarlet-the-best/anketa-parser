@@ -1,93 +1,34 @@
 #!/usr/bin/env python3
-"""Проверка метаданных Agent Skills и локальных ссылок стандартной библиотекой Python."""
+"""Проверка метаданных Agent Skills и локальных ссылок с безопасным разбором YAML."""
 
 import argparse
 import re
 import sys
 from pathlib import Path
 
+import yaml
+
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
-KEY = re.compile(r"^([A-Za-z][A-Za-z0-9_-]*):(?:\s*(.*))?$")
 LINK = re.compile(r"\]\(([^)]+)\)")
 ALLOWED = {"name", "description", "license", "compatibility", "metadata", "allowed-tools"}
-# Все формы блочных скаляров YAML: значение продолжается отступленными строками.
-BLOCK_SCALARS = (">", ">-", ">+", "|", "|-", "|+")
-# Flow-структуры YAML допустимы (`metadata: {author: x}`), недопустимы только
-# незакрытые или несбалансированные: они делают frontmatter неразбираемым.
-FLOW_MAP = {"[": "]", "{": "}"}
-CLOSING = set(FLOW_MAP.values())
 
 
-def flow_error(value: str) -> str | None:
-    """Проверить баланс скобок и остаток после flow-значения."""
-    stack: list[str] = []
-    quote = ""
-    index = 0
-    while index < len(value):
-        char = value[index]
-        if quote:
-            if quote == '"' and char == "\\":
-                index += 2
-                continue
-            if char == quote:
-                # Удвоенная одинарная кавычка — escape внутри одинарного скаляра.
-                if quote == "'" and value[index + 1:index + 2] == "'":
-                    index += 2
-                    continue
-                quote = ""
-            index += 1
-            continue
-        if char in ("'", '"'):
-            quote = char
-        elif char in FLOW_MAP:
-            stack.append(FLOW_MAP[char])
-        elif char in CLOSING:
-            if not stack or stack.pop() != char:
-                return "несбалансированная flow-скобка"
-            if not stack and value[index + 1:].strip():
-                return "текст после flow-структуры"
-        index += 1
-    if quote:
-        return "незакрытая кавычка"
-    if stack:
-        return "незакрытая flow-скобка"
-    return None
+class UniqueSafeLoader(yaml.SafeLoader):
+    """Безопасный загрузчик, запрещающий повторные ключи на любой глубине."""
 
-
-def quoted_error(value: str) -> str | None:
-    """Проверить скаляр в кавычках и вернуть причину нарушения."""
-    quote = value[0]
-    index = 1
-    while index < len(value):
-        char = value[index]
-        if quote == '"' and char == "\\":
-            index += 2
-            continue
-        if char == quote:
-            # В одинарных кавычках удвоенная кавычка — это escape, а не конец значения.
-            if quote == "'" and index + 1 < len(value) and value[index + 1] == "'":
-                index += 2
-                continue
-            return None if not value[index + 1:].strip() else "текст после закрывающей кавычки"
-        index += 1
-    return "незакрытая кавычка"
-
-
-def syntax_error(value: str) -> str | None:
-    """Вернуть причину нарушения синтаксиса скаляра frontmatter."""
-    if value.startswith(("'", '"')):
-        return quoted_error(value)
-    if value.startswith(("[", "{")):
-        return flow_error(value)
-    if value.endswith(("[", "{", "]", "}")):
-        return "незакрытая flow-скобка"
-    if value.endswith(","):
-        return "непарная flow-скобка"
-    if ": " in value or value.endswith(":"):
-        return "неожиданное ':' внутри скаляра"
-    if value.endswith("\\"):
-        return "висячий escape"
-    return None
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                if key in seen:
+                    raise yaml.constructor.ConstructorError(
+                        None, None, "повторяющийся YAML-ключ", key_node.start_mark)
+                seen.add(key)
+            except TypeError as error:
+                raise yaml.constructor.ConstructorError(
+                    None, None, "неподдерживаемый YAML-ключ", key_node.start_mark) from error
+        return super().construct_mapping(node, deep=deep)
 
 
 def validate_skill(path: Path) -> list[str]:
@@ -103,44 +44,35 @@ def validate_skill(path: Path) -> list[str]:
         end = lines.index("---", 1)
     except ValueError:
         return [f"{path}: отсутствует закрывающий ---"]
-    header = lines[1:end]
-    entries: dict[str, tuple[int, str]] = {}
-    for i, line in enumerate(header):
-        if not line or line.startswith((" ", "#")):
-            continue
-        match = KEY.fullmatch(line)
-        if not match:
-            errors.append(f"{path}: неверная запись frontmatter, строка {i + 2}")
-            continue
-        key, value = match.group(1), (match.group(2) or "").strip()
-        if key in entries:
-            errors.append(f"{path}: повторяющийся YAML-ключ {key}")
-        else:
-            entries[key] = (i, value)
+    try:
+        entries = yaml.load("\n".join(lines[1:end]), Loader=UniqueSafeLoader)
+    except yaml.YAMLError as error:
+        mark = getattr(error, "problem_mark", None)
+        where = f", строка {mark.line + 2}" if mark else ""
+        return [f"{path}: неразбираемое значение YAML frontmatter{where}"]
+    if not isinstance(entries, dict) or not all(isinstance(key, str) for key in entries):
+        return [f"{path}: frontmatter должен быть отображением со строковыми ключами"]
+    for key in entries:
         if key not in ALLOWED:
             errors.append(f"{path}: нестандартное поле {key}; условия активации помещай в description")
-        # Блочный скаляр (`|`, `>`) продолжается отступленными строками и
-        # проверяется отдельно при разборе description.
-        if value not in BLOCK_SCALARS:
-            reason = syntax_error(value)
-            if reason:
-                errors.append(f"{path}: неразбираемое значение {key}: {reason}")
-    name = entries.get("name", (-1, ""))[1]
-    if not NAME.fullmatch(name) or len(name) > 64 or name != path.parent.name:
+    name = entries.get("name")
+    if not isinstance(name, str) or not NAME.fullmatch(name) or len(name) > 64 or name != path.parent.name:
         errors.append(f"{path}: name должен совпадать с каталогом и отвечать Agent Skills spec")
-    if "description" not in entries:
-        errors.append(f"{path}: отсутствует description")
-    else:
-        start, value = entries["description"]
-        if value in BLOCK_SCALARS:
-            next_key = next((i for i in range(start + 1, len(header)) if KEY.fullmatch(header[i])), len(header))
-            text = " ".join(line.strip() for line in header[start + 1:next_key] if line.startswith((" ", "\t"))).strip()
-        elif value.startswith(("'", '"')):
-            text = value[1:-1]
-        else:
-            text = value
-        if not text or len(text) > 1024:
-            errors.append(f"{path}: description должен содержать 1–1024 символа")
+    description = entries.get("description")
+    if not isinstance(description, str) or not description.strip() or len(description) > 1024:
+        errors.append(f"{path}: description должен быть строкой из 1–1024 символов")
+    if "metadata" in entries:
+        metadata = entries["metadata"]
+        if not isinstance(metadata, dict) or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in metadata.items()
+        ):
+            errors.append(f"{path}: metadata должен быть отображением строк в строки")
+    for key in ("license", "compatibility", "allowed-tools"):
+        if key in entries and not isinstance(entries[key], str):
+            errors.append(f"{path}: {key} должен быть строкой")
+    compatibility = entries.get("compatibility")
+    if isinstance(compatibility, str) and len(compatibility) > 500:
+        errors.append(f"{path}: compatibility должен содержать не более 500 символов")
     body = "\n".join(lines[end + 1:])
     errors.extend(validate_links(path, path.parent, body))
     return errors

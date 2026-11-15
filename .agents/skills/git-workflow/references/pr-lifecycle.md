@@ -119,7 +119,9 @@ later. Reread the current body independently at handoff. A comment-only change
 does not automatically refresh a PR HEAD required check; `issue_comment` runs in
 default-branch context. Do not represent a default-branch run as PR HEAD evidence.
 If needed, rerun an existing PR workflow only after verifying its event HEAD,
-base and trusted version still match current state, then reread results/content.
+base, body and trusted version still match current state, then reread results/content.
+A rerun reuses the original event payload: it cannot validate a changed body.
+Changed descriptions require a fresh applicable PR event and a new workflow run.
 Otherwise wait for an applicable PR event; do not invent bypass contexts.
 
 Ordinary dependent PRs target their direct base; native stacks route Actions as
