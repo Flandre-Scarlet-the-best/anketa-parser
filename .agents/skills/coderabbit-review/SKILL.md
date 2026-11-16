@@ -64,6 +64,21 @@ start the next iteration before publication and read-back of the preceding one.
 Record the actual reviewed HEAD separately from the fixing commit: a fix is
 reviewed only in a later iteration.
 
+Provider completion, including a clean result, finishes a run, not the whole
+iteration. Before another iteration starts, its candidate HEAD must equal the
+published commit that closed the preceding iteration and differ from that
+iteration's reviewed HEAD. A clean result therefore cannot be followed by
+another credited iteration on the same HEAD without its marker commit/push.
+Retries of an unfinished run retain the current iteration number and earn no
+additional credit; changing mode or using `--fresh` does not close an iteration.
+
+On continuation or resumption, reconcile the last credited iteration with its
+review evidence, published closing commit and journal read-back before invoking
+the provider. If a later run already began across a missing publication step,
+stop and disclose the accounting gap. Preserve the actual run results when
+reconciling the journal; never backfill a marker or use a later fixing commit as
+retroactive proof that the earlier iteration completed.
+
 A genuinely completed review with no necessary fixes still requires one
 meaningful empty marker commit and a confirmed push. This includes zero findings
 and findings all independently rejected as false or stale. Follow the existing

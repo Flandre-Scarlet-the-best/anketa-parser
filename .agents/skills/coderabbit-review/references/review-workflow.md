@@ -116,6 +116,13 @@ actual version-sensitive fields from help and official documentation, not memory
 
 ### 5.1 Invocation and scope
 
+For every iteration after the first, verify through `git-workflow` that local,
+live remote and PR HEAD equal the preceding iteration's published closing
+commit, including its empty marker for a clean result. Compare that commit
+with the preceding reviewed HEAD: they must differ. A missing closing commit or
+journal read-back blocks the next iteration; handle retries and historical gaps
+under the iteration contract in `SKILL.md` rather than counting another run.
+
 Record reviewed HEAD and the resolved comparison identity before invoking the
 provider. An example for help that supports these options is:
 
@@ -331,6 +338,13 @@ updates, authorization or completion. No test may launch a real review.
   "explicit_count_overrides_default": true,
   "clean_shortens_cycle": false,
   "clean_marker_commit": true,
+  "iteration_transition": {
+    "credit": "after-publication-readback",
+    "next_head": "previous-published-commit-different-from-reviewed-head",
+    "retry_credit": 0,
+    "resume": "reconcile-last-credited-iteration",
+    "past_gap": "stop-disclose-no-retroactive-marker"
+  },
   "base": "actual-direct-pr-base",
   "publication_owner": "git-workflow"
 }

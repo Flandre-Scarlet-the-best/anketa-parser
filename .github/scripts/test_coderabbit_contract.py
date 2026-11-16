@@ -153,6 +153,13 @@ class ReviewInstructionTests(unittest.TestCase):
             "explicit_count_overrides_default": True,
             "clean_shortens_cycle": False,
             "clean_marker_commit": True,
+            "iteration_transition": {
+                "credit": "after-publication-readback",
+                "next_head": "previous-published-commit-different-from-reviewed-head",
+                "retry_credit": 0,
+                "resume": "reconcile-last-credited-iteration",
+                "past_gap": "stop-disclose-no-retroactive-marker",
+            },
             "base": "actual-direct-pr-base",
             "publication_owner": "git-workflow",
         }
