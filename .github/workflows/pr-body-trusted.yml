@@ -20,7 +20,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.15.2'
       - name: Проверить опубликованные описание и журнал валидатором base
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
