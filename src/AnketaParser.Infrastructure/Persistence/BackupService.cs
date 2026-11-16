@@ -239,9 +239,8 @@ public sealed class BackupService
         await connection.OpenAsync(ct).ConfigureAwait(false);
         await using var check = new NpgsqlCommand("""
             SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname <> 'public' AND nspname <> 'information_schema' AND nspname !~ '^pg_')
-              OR EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public')
-              OR EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public')
-              OR EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public')
+              OR EXISTS (SELECT 1 FROM pg_depend d JOIN pg_namespace n ON d.refobjid=n.oid
+                WHERE d.refclassid='pg_namespace'::regclass AND n.nspname='public')
               OR EXISTS (SELECT 1 FROM pg_extension WHERE extname<>'plpgsql')
             """, connection);
         if ((bool)(await check.ExecuteScalarAsync(ct).ConfigureAwait(false))!)

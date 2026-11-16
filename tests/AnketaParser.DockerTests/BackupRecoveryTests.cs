@@ -77,6 +77,13 @@ public sealed class BackupRecoveryTests(ComposeImageFixture images)
             Assert.Contains("другую пустую БД", rejected.Message, StringComparison.Ordinal);
             Assert.Equal("не запущено", await Shell("test ! -e /backups/restore-was-run && printf 'не запущено'"));
             Assert.Equal("0", await Sql("test_prepared", "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('product','private')"));
+            await Sql("postgres", "CREATE DATABASE test_nonrelation OWNER product_migrator");
+            await Sql("test_nonrelation", """CREATE COLLATION public.synthetic_order FROM pg_catalog."C" """);
+            var nonrelation = await Assert.ThrowsAsync<InvalidOperationException>(() => Cli("-e", "ANKETAPARSER_Backup__PgRestore=/backups/restore-must-not-run",
+                "-e", $"ANKETAPARSER_Restore__ConnectionString=Host=postgres;Database=test_nonrelation;Username=product_migrator;Password={migrationPassword}",
+                "maintenance", "storage", "restore-empty", name));
+            Assert.Contains("другую пустую БД", nonrelation.Message, StringComparison.Ordinal);
+            Assert.Equal("не запущено", await Shell("test ! -e /backups/restore-was-run && printf 'не запущено'"));
             // Совместимость с состоянием, записанным до появления привязки метаданных к архиву.
             await Shell("sed -i 's/,\"ArchiveLength\":[0-9]*//;s/,\"ArchiveDigest\":\"[A-F0-9]*\"//' /backups/status.json");
             await Sql("postgres", "CREATE DATABASE test_restore OWNER product_migrator");
