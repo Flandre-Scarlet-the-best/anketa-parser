@@ -398,7 +398,7 @@ def validate_links(path: Path, boundary: Path, source: str | None = None) -> lis
             resolved = (path.parent / target).resolve()
             outside = not resolved.is_relative_to(root)
             missing = not resolved.exists()
-        except (OSError, ValueError):
+        except OSError, ValueError:
             outside, missing = True, True
         if outside or missing:
             errors.append(

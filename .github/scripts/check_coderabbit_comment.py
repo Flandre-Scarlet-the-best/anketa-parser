@@ -93,9 +93,9 @@ def get_json(path: str, token: str) -> tuple[JSONValue, str | None]:
             exc.close()
             if not retry:
                 raise CheckError("GitHub API вернул неожиданный HTTP-статус") from None
-        except (OSError, urllib.error.URLError, http.client.HTTPException):
+        except OSError, urllib.error.URLError, http.client.HTTPException:
             retry = True
-        except (ValueError, UnicodeError):
+        except ValueError, UnicodeError:
             raise CheckError("Некорректный JSON GitHub API") from None
         if retry and attempt < 2:
             time.sleep(0.1 * (attempt + 1))
