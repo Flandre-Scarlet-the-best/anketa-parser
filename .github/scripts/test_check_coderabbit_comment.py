@@ -282,6 +282,22 @@ class CommentTests(unittest.TestCase):
                 body = f"{check.MARKER}\n{opening}\n{TABLE}\n\n{closing}"
                 self.assertTrue(check.validate_comments([comment(1, body=body)], 1))
 
+    def test_gfm_terminator_restores_visible_journal(self):
+        for opening, closing in (
+            ("<?test", "?>"),
+            ("<!DECLARATION", ">"),
+            ("<![CDATA[", "]]>"),
+        ):
+            for payload in ("```", "<!--", "- ```"):
+                body = f"{opening}\n{payload}\n{closing}\n{MARKED}"
+                with self.subTest(opening=opening, payload=payload):
+                    self.assertEqual(
+                        check.validate_comments([comment(1, body=body)], 1), []
+                    )
+            self.assertTrue(
+                check.validate_comments([comment(1, body=f"{opening}\n{MARKED}")], 1)
+            )
+
     def test_backtick_info_string_does_not_hide_a_visible_table(self):
         body = f"{check.MARKER}\n```a`b```\n\n{TABLE}\n```"
         self.assertEqual(check.validate_comments([comment(1, body=body)], 1), [])

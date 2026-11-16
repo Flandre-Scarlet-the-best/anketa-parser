@@ -79,6 +79,64 @@ def validate_comment_table(content: str) -> list[str]:
     return validate_coderabbit(visible_comment(content))
 
 
+class HtmlVisibilityTests(unittest.TestCase):
+    def test_hidden_gfm_headings_fail_validate_and_event_cli(self):
+        for opening, closing in (
+            ("<?test", "?>"),
+            ("<!DECLARATION", ">"),
+            ("<![CDATA[", "]]>"),
+        ):
+            for end in (closing, ""):
+                body = valid_body().replace("## Цель", opening + "\n## Цель\n" + end)
+                with self.subTest(opening=opening, end=end):
+                    self.assertIn(
+                        "Отсутствует обязательный заголовок: ## Цель", validate(body)
+                    )
+                    with tempfile.TemporaryDirectory() as temporary:
+                        event = Path(temporary) / "event.json"
+                        _ = event.write_text(
+                            json.dumps({"pull_request": {"body": body}}),
+                            encoding="utf-8",
+                        )
+                        result = subprocess.run(  # noqa: S603
+                            [
+                                sys.executable,
+                                str(Path(__file__).with_name("check_pr_body.py")),
+                                "--event-path",
+                                str(event),
+                            ],
+                            capture_output=True,
+                            check=False,
+                        )
+                        self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_terminators_restore_sections_and_html_owns_inner_fences(self):
+        for opening, closing in (
+            ("<?test", "?>"),
+            ("<!DECLARATION", ">"),
+            ("<![CDATA[", "]]>"),
+        ):
+            for payload in (
+                "## Цель",
+                "```\n## Цель",
+                "- ```\n  ## Цель",
+                "<!--\n## Цель",
+                "\n## Цель\n",
+            ):
+                with self.subTest(opening=opening, payload=payload):
+                    self.assertEqual(
+                        validate(f"{opening}\n{payload}\n{closing}\n" + valid_body()),
+                        [],
+                    )
+            self.assertEqual(validate(f"{opening}{closing}\n" + valid_body()), [])
+            for literal in (
+                f"```\n{opening}\n```",
+                f"`{opening}`",
+                f"<!--\n{opening}\n-->",
+            ):
+                self.assertEqual(validate(literal + "\n\n" + valid_body()), [])
+
+
 class PrBodyContractTests(unittest.TestCase):
     def test_fence_inside_html_comment_does_not_hide_real_sections(self):
         for marker in ("```text", "~~~text"):
@@ -500,7 +558,7 @@ class PrBodyContractTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 1)
             self.assertIn("компактную", proc.stderr)
             self.assertIn("не применимо", proc.stderr)
-            # Исключение dependency-ботов сохраняется и для нового раздела.
+            # Исключение ботов обновления зависимостей сохраняется и для нового раздела.
             _ = event.write_text(
                 json.dumps(
                     {

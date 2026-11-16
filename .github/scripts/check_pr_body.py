@@ -106,6 +106,7 @@ def mask_list_fences(lines: list[str]) -> list[str]:
     outer_char = ""
     outer_len = 0
     in_comment = False
+    html_end = ""
     for line in lines:
         expanded = line.expandtabs(4)
         indent = len(expanded) - len(expanded.lstrip(" "))
@@ -132,6 +133,15 @@ def mask_list_fences(lines: list[str]) -> list[str]:
                     fence_char = ""
                 result.append(" " * len(line))
                 continue
+        if html_end:
+            if html_end in line:
+                html_end = ""
+            result.append(line)
+            continue
+        if not in_comment and (end := html_block_terminator(line)):
+            html_end = "" if end in line else end
+            result.append(line)
+            continue
         # Маркеры внутри комментария не открывают блоки. Сохраняем исходную
         # строку: окончательное удаление комментариев выполняет strip_comments.
         was_in_comment = in_comment
@@ -218,11 +228,26 @@ def _indent_width(line: str) -> int:
     return width
 
 
+def html_block_terminator(line: str) -> str | None:
+    """Закрывающий маркер HTML-блоков GFM типов 3–5 либо None."""
+    if _indent_width(line) >= 4:
+        return None
+    stripped = line.lstrip(" ")
+    if stripped.startswith("<?"):
+        return "?>"
+    if stripped.startswith("<![CDATA["):
+        return "]]>"
+    if re.match(r"<![A-Z]", stripped):
+        return ">"
+    return None
+
+
 def _raw_block(line: str) -> tuple[int, str] | None:
     """Тип raw HTML-блока CommonMark и его тег, либо None.
 
     Тип 1 (`<pre>`, `<script>`, `<style>`, `<textarea>`) длится до собственного
-    закрывающего тега и может содержать пустые строки. Тип 6 (блочные теги)
+    закрывающего тега и может содержать пустые строки. Типы 3–5 завершаются
+    маркерами `?>`, `>` или `]]>`; пустые строки их не прерывают. Тип 6 (блочные теги)
     прерывается пустой строкой или концом документа. Внутри такого блока
     GitHub показывает разметку дословно, поэтому похожие на заголовки строки
     там не являются разделами.
@@ -238,6 +263,8 @@ def _raw_block(line: str) -> tuple[int, str] | None:
     raw = HTML_RAW.match(stripped)
     if raw:
         return 1, raw.group(1).casefold()
+    if terminator := html_block_terminator(line):
+        return 3, terminator
     if HTML_BLOCK.match(stripped):
         return 6, ""
     return None
@@ -306,6 +333,11 @@ def mask_raw_html(lines: list[str]) -> list[str]:
     for line in lines:
         if block is not None:
             kind, tag = block
+            if kind == 3:
+                if tag in line:
+                    block = None
+                result.append(_hide(line))
+                continue
             if kind == 1:
                 # Блок завершает только его собственный закрывающий тег:
                 # `</style>` не закрывает `<pre>`.
@@ -339,7 +371,13 @@ def mask_raw_html(lines: list[str]) -> list[str]:
         if found is not None:
             # Блок, закрывшийся на той же строке, дальше не продолжается.
             kind, tag = found
-            block = None if kind == 1 and _raw_close(line, tag) >= 0 else found
+            if kind == 3:
+                comment = started_inside_comment
+                result[-1] = _hide(line)
+            closed = (kind == 1 and _raw_close(line, tag) >= 0) or (
+                kind == 3 and tag in line
+            )
+            block = None if closed else found
     return result
 
 

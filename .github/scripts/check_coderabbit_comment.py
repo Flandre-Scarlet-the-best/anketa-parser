@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Проверить опубликованные PR body и комментарий CodeRabbit через GitHub API."""
+"""Проверить опубликованные описание PR и комментарий CodeRabbit через GitHub API."""
 
 import http.client
 import json
@@ -71,7 +71,7 @@ def positive_id(value: object) -> TypeGuard[int]:
 
 
 def get_json(path: str, token: str) -> tuple[JSONValue, str | None]:
-    # Адрес собран из константы API и проверенного path; NoRedirect обрывает
+    # Адрес собран из константы API и проверенного пути; NoRedirect обрывает
     # перенаправление, поэтому токен не уходит на чужой хост, а ссылки
     # заголовка Link дополнительно разбираются и проверяются в next_page.
     request = urllib.request.Request(  # noqa: S310
@@ -86,7 +86,7 @@ def get_json(path: str, token: str) -> tuple[JSONValue, str | None]:
     opener = urllib.request.build_opener(NoRedirect)
     for attempt in range(3):
         try:
-            # stubs описывают результат open как Any; для http(s) это HTTPResponse,
+            # В описаниях типов результат open имеет тип Any; для http(s) это HTTPResponse,
             # и его поля проверяются ниже, поэтому тип уточняется один раз здесь.
             with cast(
                 http.client.HTTPResponse, opener.open(request, timeout=30)
@@ -132,7 +132,7 @@ def next_page(link: str | None, path: str, current: int) -> int | None:
     resource = re.fullmatch(r"/repos/[^/]+/[^/]+(/issues/[1-9][0-9]*/comments)", path)
     # GitHub может вернуть каноническую ссылку /repositories/{id}/... вместо
     # /repos/{owner}/{repo}/.... По ссылке не переходим: следующий запрос всё
-    # равно строится из проверенного исходного path.
+    # равно строится из проверенного исходного пути.
     pages: dict[str, int] = {}
     for relation, destination in relations.items():
         try:
@@ -230,20 +230,6 @@ def _comment_snapshot(
     return snapshot
 
 
-def _html_block_terminator(line: str) -> str | None:
-    """Вернуть закрывающий маркер HTML-блоков CommonMark типов 3–5."""
-    if len(line) - len(line.lstrip(" ")) > 3:
-        return None
-    stripped = line.lstrip(" ")
-    if stripped.startswith("<?"):
-        return "?>"
-    if stripped.startswith("<![CDATA["):
-        return "]]>"
-    if re.match(r"<![A-Z]", stripped):
-        return ">"
-    return None
-
-
 def visible_comment(body: str) -> str:
     """Оставить только видимый Markdown вне fenced-блоков и HTML-комментариев."""
     lines = strip_comments(body.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
@@ -252,16 +238,10 @@ def visible_comment(body: str) -> str:
     length = 0
     html_block = False
     raw_tag = ""
-    html_terminator = ""
     for line in lines:
         if raw_tag:
             if re.search(rf"</{raw_tag}\s*>", line, re.IGNORECASE):
                 raw_tag = ""
-            result.append("")
-            continue
-        if html_terminator:
-            if html_terminator in line:
-                html_terminator = ""
             result.append("")
             continue
         if html_block:
@@ -276,10 +256,6 @@ def visible_comment(body: str) -> str:
             result.append("")
         elif opening := fence_open(line):
             char, length = opening
-            result.append("")
-        elif terminator := _html_block_terminator(line):
-            if terminator not in line:
-                html_terminator = terminator
             result.append("")
         elif tag := re.match(
             r"^ {0,3}<(?P<closing>/)?(?P<name>[A-Za-z][A-Za-z0-9-]*)(?:\s|/?>)", line
@@ -436,7 +412,7 @@ def run(env: Mapping[str, str]) -> list[str]:
     comments = list_comments(repository, number, token)
     problems.extend(validate_comments(comments, author_id))
     # PR мог измениться во время постраничного чтения комментариев; не выдавать
-    # результат на основе смешанных версий опубликованных метаданных и body.
+    # результат на основе смешанных версий опубликованных метаданных и описания PR.
     current_data, _ = get_json(f"/repos/{repository}/pulls/{number}", token)
     if not _is_json_object(current_data):
         raise CheckError("Некорректный PR при повторном чтении")
@@ -510,7 +486,7 @@ def main() -> int:
         for problem in problems:
             print("Ошибка: " + safe_message(problem), file=sys.stderr)
         return 1
-    print("Опубликованные PR body и комментарий CodeRabbit соответствуют контракту")
+    print("Опубликованные описание PR и комментарий CodeRabbit соответствуют контракту")
     return 0
 
 
