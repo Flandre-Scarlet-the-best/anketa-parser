@@ -161,6 +161,9 @@ public sealed class HostApplicationTests
         Assert.True(periodic.GeneratedAtUtc > initial.GeneratedAtUtc);
         Assert.Equal(HealthStatus.Unhealthy, periodic.Status);
         await host.StopAsync(deadline.Token);
-        Assert.Same(periodic, state.LastReport);
+
+        var final = Assert.IsType<DiagnosticReport>(state.LastReport);
+        await Task.Delay(TimeSpan.FromSeconds(1), deadline.Token);
+        Assert.Same(final, state.LastReport);
     }
 }

@@ -1,8 +1,12 @@
 using System.Text.Json;
 
+using AnketaParser.Core.Diagnostics;
+using AnketaParser.Infrastructure;
 using AnketaParser.Infrastructure.Configuration;
+using AnketaParser.Infrastructure.Diagnostics;
 
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace AnketaParser.Tests;
@@ -27,6 +31,25 @@ public sealed class ConfigurationTests
         Assert.Equal(20, host.ShutdownTimeoutSeconds);
         Assert.Contains(sources, source => source is { Name: "appsettings.json", Kind: "file" });
         Assert.Contains(sources, source => source.Kind == "environment");
+    }
+
+    [Fact]
+    public void RuntimeSnapshotProviderReadsHostSettingsAfterConfigurationReload()
+    {
+        using var configuration = new ConfigurationManager();
+        configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Host:InstanceName"] = "before-reload",
+        });
+        var services = new ServiceCollection();
+        services.AddAnketaParserInfrastructure(configuration, "Test", []);
+        using var provider = services.BuildServiceProvider();
+        var snapshots = provider.GetRequiredService<IRuntimeSnapshotProvider>();
+
+        Assert.Equal("before-reload", snapshots.Capture().InstanceName);
+        configuration["Host:InstanceName"] = "after-reload";
+        ((IConfigurationRoot)configuration).Reload();
+        Assert.Equal("after-reload", snapshots.Capture().InstanceName);
     }
 
     [Fact]

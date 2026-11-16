@@ -39,16 +39,25 @@ public static class InfrastructureServiceCollectionExtensions
             .Configure(options => BindSettings(configuration.GetSection(HostSettings.SectionName), options))
             .ValidateOnStart();
         services.AddSingleton<IValidateOptions<HostSettings>, HostSettingsValidator>();
+        services.AddSingleton<IOptionsChangeTokenSource<HostSettings>>(
+            new ConfigurationChangeTokenSource<HostSettings>(
+                Options.DefaultName, configuration.GetSection(HostSettings.SectionName)));
 
         services.AddOptions<DatabaseSettings>()
             .Configure(options => BindSettings(configuration.GetSection(DatabaseSettings.SectionName), options))
             .ValidateOnStart();
         services.AddSingleton<IValidateOptions<DatabaseSettings>, DatabaseSettingsValidator>();
+        services.AddSingleton<IOptionsChangeTokenSource<DatabaseSettings>>(
+            new ConfigurationChangeTokenSource<DatabaseSettings>(
+                Options.DefaultName, configuration.GetSection(DatabaseSettings.SectionName)));
 
         services.AddOptions<DiagnosticsSettings>()
             .Configure(options => BindSettings(configuration.GetSection(DiagnosticsSettings.SectionName), options))
             .ValidateOnStart();
         services.AddSingleton<IValidateOptions<DiagnosticsSettings>, DiagnosticsSettingsValidator>();
+        services.AddSingleton<IOptionsChangeTokenSource<DiagnosticsSettings>>(
+            new ConfigurationChangeTokenSource<DiagnosticsSettings>(
+                Options.DefaultName, configuration.GetSection(DiagnosticsSettings.SectionName)));
 
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton(new EnvironmentDescriptor(environmentName));
