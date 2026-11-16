@@ -147,6 +147,10 @@ class CommentTests(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertTrue(check.validate_comments([comment(1, body=body)], 1))
 
+    def test_backtick_info_string_does_not_hide_a_visible_table(self):
+        body = f"{check.MARKER}\n```a`b```\n\n{TABLE}\n```"
+        self.assertEqual(check.validate_comments([comment(1, body=body)], 1), [])
+
     def test_bad_table(self):
         for body in (
             check.MARKER,
@@ -672,9 +676,9 @@ class PublishedPrTests(unittest.TestCase):
             with (
                 self.subTest(actual=actual),
                 patch.object(check, "get_json", return_value=(actual, None)) as get,
-                self.assertRaises(check.CheckError),
             ):
-                check.run(self.env)
+                with self.assertRaises(check.CheckError):
+                    check.run(self.env)
                 self.assertEqual(get.call_count, 1)
 
     def test_missing_event_base_and_failed_reread_fail_closed(self):

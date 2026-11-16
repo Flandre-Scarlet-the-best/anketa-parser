@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import BinaryIO, TypeGuard, cast
 
 from check_pr_body import (
-    FENCE,
     FENCE_CLOSE,
+    _fence_open,
     is_automation_pr,
     strip_comments,
     validate,
@@ -219,8 +219,8 @@ def visible_comment(body):
             if close and close.group(1)[0] == char and len(close.group(1)) >= length:
                 char = ""
             result.append("")
-        elif opening := FENCE.match(line):
-            char, length = opening.group(1)[0], len(opening.group(1))
+        elif opening := _fence_open(line):
+            char, length = opening
             result.append("")
         elif tag := re.match(
             r"^ {0,3}<(?P<closing>/)?(?P<name>[A-Za-z][A-Za-z0-9-]*)(?:\s|/?>)", line
