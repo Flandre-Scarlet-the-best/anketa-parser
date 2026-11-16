@@ -611,12 +611,14 @@ class CodeRabbitTableTests(unittest.TestCase):
                 )
 
     def test_setext_heading_does_not_open_a_single_column_table(self):
-        self.assertEqual(
-            validate_comment_table(
-                coderabbit("x", "---", CR_HEADER, CR_DELIMITER, CR_ROW)
-            ),
-            [],
-        )
+        for underline in ("--", "---"):
+            with self.subTest(underline=underline):
+                self.assertEqual(
+                    validate_comment_table(
+                        coderabbit("x", underline, CR_HEADER, CR_DELIMITER, CR_ROW)
+                    ),
+                    [],
+                )
 
     def test_conditional_coderabbit_table(self):
         body = valid_body() + "\n\n## CodeRabbit review и disposition\nПроверено."

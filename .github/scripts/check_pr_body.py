@@ -476,6 +476,7 @@ CODERABBIT_HEADER = (
 )
 # Ячейка строки-разделителя GFM: дефисы с необязательным выравниванием «:».
 DELIMITER_CELL = re.compile(r"^:?-+:?$")
+SETEXT_HYPHEN_UNDERLINE = re.compile(r"^ {0,3}-+[ \t]*$")
 # Первая ячейка завершённой итерации: номер и reviewed HEAD в code span.
 ITERATION_CELL = re.compile(r"^[1-9]\d*\s*·\s*`[0-9a-f]{7,40}`$")
 
@@ -545,11 +546,16 @@ def table_headers(lines: list[str]) -> list[int]:
         delimiter = (
             table_candidate_row(lines[index + 1]) if index + 1 < len(lines) else None
         )
+        setext_underline = (
+            index + 1 < len(lines)
+            and SETEXT_HYPHEN_UNDERLINE.fullmatch(lines[index + 1]) is not None
+        )
         if row == list(CODERABBIT_HEADER):
             headers.append(index)
         if (
             row is not None
             and delimiter is not None
+            and not setext_underline
             and len(delimiter) == len(row)
             and all(DELIMITER_CELL.fullmatch(cell) for cell in delimiter)
         ):
