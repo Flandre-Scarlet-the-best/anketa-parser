@@ -45,6 +45,8 @@ public static class CliApplication
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(stdout);
         ArgumentNullException.ThrowIfNull(stderr);
+        if (args is ["storage", ..])
+            return await StorageCommands.RunAsync(args, stdout, stderr, contentRootPath, cancellationToken).ConfigureAwait(false);
 
         var info = ApplicationInfo.ForEntryAssembly();
         var invocation = CommandLineParser.Parse(args);

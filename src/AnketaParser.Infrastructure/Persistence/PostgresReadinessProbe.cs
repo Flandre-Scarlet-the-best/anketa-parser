@@ -1,6 +1,7 @@
 using AnketaParser.Core.Diagnostics;
 using AnketaParser.Infrastructure.Configuration;
 
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -64,6 +65,11 @@ public sealed partial class PostgresReadinessProbe : IReadinessProbe
             command.CommandText = "SELECT 1";
             command.CommandTimeout = settings.CommandTimeoutSeconds;
             await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+
+            await using var db = new ProductDbContext(new DbContextOptionsBuilder<ProductDbContext>().UseNpgsql(connection).Options);
+            var schema = await SchemaMaintenance.StatusAsync(db, cancellationToken).ConfigureAwait(false);
+            if (schema != "ready")
+                return ProbeResult.Unhealthy(ProbeName, $"Подключение установлено; прикладная схема: {schema}.", _timeProvider.GetElapsedTime(startedAt));
 
             var version = connection.PostgreSqlVersion;
             return ProbeResult.Healthy(

@@ -27,3 +27,14 @@ not terminate Host on dependency loss. Docker health runs a separate CLI process
 not a query of Host memory. Missing files are allowed; malformed JSON and
 unexpected exceptions do not necessarily yield a diagnostic JSON body.
 Tests are evidence for their assertions, not complete interface coverage.
+
+## Product storage
+
+[Storage contracts](../../src/AnketaParser.Core/Persistence/StorageContracts.cs)
+route to [ProductStore](../../src/AnketaParser.Infrastructure/Persistence/ProductStore.cs),
+[model and migrations](../../src/AnketaParser.Infrastructure/Persistence/) and
+[maintenance commands](../../src/AnketaParser.Cli/StorageCommands.cs).
+[Persistence tests](../../tests/AnketaParser.DockerTests/ProductPersistenceTests.cs)
+and [recovery tests](../../tests/AnketaParser.DockerTests/BackupRecoveryTests.cs)
+require explicit Docker opt-in. [Backup unit tests](../../tests/AnketaParser.Tests/BackupServiceTests.cs)
+cover retention and local failures. Human owner: [storage guide](../../docs/persistence.md).

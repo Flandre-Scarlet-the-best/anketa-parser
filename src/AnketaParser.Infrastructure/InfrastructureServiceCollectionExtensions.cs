@@ -1,8 +1,10 @@
 using AnketaParser.Core.Diagnostics;
+using AnketaParser.Core.Persistence;
 using AnketaParser.Infrastructure.Configuration;
 using AnketaParser.Infrastructure.Diagnostics;
 using AnketaParser.Infrastructure.Persistence;
 
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -60,12 +62,17 @@ public static class InfrastructureServiceCollectionExtensions
                 Options.DefaultName, configuration.GetSection(DiagnosticsSettings.SectionName)));
 
         services.TryAddSingleton(TimeProvider.System);
+        services.AddDbContext<ProductDbContext>((provider, options) =>
+            options.UseNpgsql(provider.GetRequiredService<IOptions<DatabaseSettings>>().Value.ConnectionString));
+        services.AddScoped<IProductStore, ProductStore>();
         services.AddSingleton(new EnvironmentDescriptor(environmentName));
         services.AddSingleton(new ConfigurationSourceSet(configurationSources));
         services.TryAddSingleton<ReadinessStateStore>();
 
         services.TryAddSingleton<IRuntimeSnapshotProvider, RuntimeSnapshotProvider>();
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IReadinessProbe, PostgresReadinessProbe>());
+        if (!string.IsNullOrWhiteSpace(configuration["Backup:Directory"]))
+            services.AddSingleton<IReadinessProbe>(new BackupReadinessProbe(configuration));
         services.TryAddSingleton<DiagnosticsRunner>();
 
         return services;

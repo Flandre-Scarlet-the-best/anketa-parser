@@ -39,6 +39,12 @@ public sealed class ComposeStackSmokeTests
 
         try
         {
+            await compose.RunAsync([.. composePrefix, "up", "-d", "--wait", "postgres"], StartTimeout, _cancellationToken);
+            await compose.RunAsync([.. composePrefix, "build", "maintenance", "host"], StartTimeout, _cancellationToken);
+            await compose.RunAsync([.. composePrefix, "run", "--rm", "-e",
+                $"ANKETAPARSER_Database__ConnectionString=Host=postgres;Database=anketa_parser;Username={DatabaseUser};Password={processEnvironment["POSTGRES_PASSWORD"]}",
+                "maintenance", "storage", "provision"], ShortCommandTimeout, _cancellationToken);
+            await compose.RunAsync([.. composePrefix, "run", "--rm", "maintenance", "storage", "migrate"], ShortCommandTimeout, _cancellationToken);
             // Оба сервиса должны пройти проверки готовности.
             await compose.RunAsync(
                 [.. composePrefix, "up", "-d", "--build", "--wait", "--wait-timeout", "600"],
