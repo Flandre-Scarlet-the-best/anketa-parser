@@ -98,11 +98,12 @@ python3 -m venv .venv
 
 ## Отдельная интеграционная проверка Docker
 
-Тест [ComposeStackIsHealthyAndDatabaseDataSurvivesRestart](../tests/AnketaParser.DockerTests/ComposeStackSmokeTests.cs)
+Тест [ComposeStackIsHealthyAndDatabaseDataSurvivesContainerRecreation](../tests/AnketaParser.DockerTests/ComposeStackSmokeTests.cs)
 включается явно. Он строит образ, создаёт случайный Compose-проект и временный
 файл переменных окружения, ждёт здоровья сервисов, проверяет отсутствие порта PostgreSQL,
-готовность Host, записывает синтетическую строку и проверяет её после
-**перезапуска** БД. Пересоздание контейнера этим тестом не проверяется.
+готовность Host, записывает синтетическую строку и проверяет её после принудительного
+**пересоздания контейнера PostgreSQL** с сохранением именованного тома. Тест сверяет ID
+контейнера до и после операции и повторно проверяет готовность Host.
 В завершение удаляет только свой стек вместе с томом и временным файлом окружения;
 это не инструкция очищать рабочую БД.
 

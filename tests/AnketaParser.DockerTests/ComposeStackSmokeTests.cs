@@ -5,7 +5,7 @@ namespace AnketaParser.DockerTests;
 
 /// <summary>
 /// Сквозной smoke-тест: сборка образа, готовность PostgreSQL, подключение из контейнера приложения и
-/// сохранность данных после перезапуска. Требует Docker и явного включения:
+/// сохранность данных после пересоздания контейнера. Требует Docker и явного включения:
 /// <code>ANKETAPARSER_DOCKER_TESTS=1 dotnet test --project tests/AnketaParser.DockerTests</code>
 /// </summary>
 public sealed class ComposeStackSmokeTests
@@ -18,7 +18,7 @@ public sealed class ComposeStackSmokeTests
     private readonly CancellationToken _cancellationToken = TestContext.Current.CancellationToken;
 
     [Fact]
-    public async Task ComposeStackIsHealthyAndDatabaseDataSurvivesRestart()
+    public async Task ComposeStackIsHealthyAndDatabaseDataSurvivesContainerRecreation()
     {
         if (!string.Equals(Environment.GetEnvironmentVariable(EnableVariable), "1", StringComparison.Ordinal))
         {
@@ -82,13 +82,20 @@ public sealed class ComposeStackSmokeTests
                 composePrefix,
                 "anketa_parser_smoke",
                 "CREATE TABLE smoke_marker (id integer PRIMARY KEY, note text NOT NULL); " +
-                "INSERT INTO smoke_marker (id, note) VALUES (1, 'survives-restart');");
+                "INSERT INTO smoke_marker (id, note) VALUES (1, 'survives-recreation');");
 
-            // Перезапуск контейнера не должен терять данные именованного тома.
+            // Пересоздание контейнера не должно терять данные именованного тома.
             await compose.RunAsync(
-                [.. composePrefix, "restart", "postgres"],
+                [.. composePrefix, "up", "-d", "--no-deps", "--force-recreate", "--wait", "--wait-timeout", "300", "postgres"],
+                StartTimeout,
+                _cancellationToken);
+            var recreatedPostgresContainerId = await compose.RunAsync(
+                [.. composePrefix, "ps", "-q", "postgres"],
                 ShortCommandTimeout,
                 _cancellationToken);
+            Assert.False(string.IsNullOrWhiteSpace(recreatedPostgresContainerId));
+            Assert.NotEqual(postgresContainerId, recreatedPostgresContainerId);
+
             await compose.RunAsync(
                 [.. composePrefix, "up", "-d", "--wait", "--wait-timeout", "300"],
                 StartTimeout,
@@ -98,15 +105,15 @@ public sealed class ComposeStackSmokeTests
                 compose,
                 composePrefix,
                 "anketa_parser_smoke",
-                "SELECT count(*) FROM smoke_marker WHERE note = 'survives-restart';");
+                "SELECT count(*) FROM smoke_marker WHERE note = 'survives-recreation';");
             Assert.Equal("1", count);
 
-            // После перезапуска БД приложение должно остаться готовым.
-            var healthAfterRestart = await compose.RunAsync(
+            // После пересоздания БД приложение должно остаться готовым.
+            var healthAfterRecreation = await compose.RunAsync(
                 ["inspect", "--format", "{{.State.Health.Status}}", hostContainerId],
                 ShortCommandTimeout,
                 _cancellationToken);
-            Assert.Equal("healthy", healthAfterRestart);
+            Assert.Equal("healthy", healthAfterRecreation);
         }
         finally
         {
