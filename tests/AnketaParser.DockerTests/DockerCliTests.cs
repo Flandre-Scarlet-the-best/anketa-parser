@@ -2,6 +2,26 @@ namespace AnketaParser.DockerTests;
 
 public sealed class DockerCliTests
 {
+    [Fact]
+    public async Task RunAsyncPassesConfiguredEnvironmentToChildProcess()
+    {
+        const string variableName = "POSTGRES_USER";
+        const string expectedValue = "smoke_user";
+        var environment = new Dictionary<string, string> { [variableName] = expectedValue };
+        var isWindows = OperatingSystem.IsWindows();
+        var executable = isWindows
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe")
+            : "/bin/sh";
+        var arguments = isWindows
+            ? new[] { "/d", "/c", $"echo %{variableName}%" }
+            : new[] { "-c", $"printf '%s' \"${variableName}\"" };
+        var docker = new DockerCli(Path.GetTempPath(), executable, environment);
+
+        var result = await docker.RunAsync(arguments, TimeSpan.FromSeconds(10), CancellationToken.None);
+
+        Assert.Equal(expectedValue, result);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

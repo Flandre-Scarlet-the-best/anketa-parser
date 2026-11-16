@@ -8,8 +8,23 @@ namespace AnketaParser.DockerTests;
 internal sealed class DockerCli
 {
     private readonly string _workingDirectory;
+    private readonly string _executable;
+    private readonly IReadOnlyDictionary<string, string> _environment;
 
-    public DockerCli(string workingDirectory) => _workingDirectory = workingDirectory;
+    public DockerCli(string workingDirectory, IReadOnlyDictionary<string, string>? environment = null)
+        : this(workingDirectory, "docker", environment)
+    {
+    }
+
+    internal DockerCli(
+        string workingDirectory,
+        string executable,
+        IReadOnlyDictionary<string, string>? environment = null)
+    {
+        _workingDirectory = workingDirectory;
+        _executable = executable;
+        _environment = environment ?? new Dictionary<string, string>();
+    }
 
     public async Task<string> RunAsync(
         IReadOnlyList<string> arguments,
@@ -18,13 +33,18 @@ internal sealed class DockerCli
         bool requireSuccess = true)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var startInfo = new ProcessStartInfo("docker")
+        var startInfo = new ProcessStartInfo(_executable)
         {
             WorkingDirectory = _workingDirectory,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
         };
+
+        foreach (var (name, value) in _environment)
+        {
+            startInfo.Environment[name] = value;
+        }
 
         foreach (var argument in arguments)
         {

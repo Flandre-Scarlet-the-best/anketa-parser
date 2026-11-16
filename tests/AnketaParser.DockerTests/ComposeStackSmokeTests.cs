@@ -26,9 +26,9 @@ public sealed class ComposeStackSmokeTests
         }
 
         var repositoryRoot = FindRepositoryRoot();
-        var environmentFile = CreateEnvironmentFile();
+        var (environmentFile, processEnvironment) = CreateEnvironmentFile();
         var projectName = $"anketa-parser-smoke-{RandomNumberGenerator.GetHexString(6, lowercase: true)}";
-        var compose = new DockerCli(repositoryRoot);
+        var compose = new DockerCli(repositoryRoot, processEnvironment);
         string[] composePrefix =
         [
             "compose",
@@ -155,20 +155,24 @@ public sealed class ComposeStackSmokeTests
         throw new InvalidOperationException("compose.yaml не найден в родительских каталогах теста.");
     }
 
-    private static string CreateEnvironmentFile()
+    private static (string Path, IReadOnlyDictionary<string, string> Variables) CreateEnvironmentFile()
     {
         var path = Path.Combine(
             Path.GetTempPath(),
             string.Create(CultureInfo.InvariantCulture, $"anketa-parser-smoke-{Guid.NewGuid():N}.env"));
 
-        var password = RandomNumberGenerator.GetHexString(24, lowercase: true);
+        var variables = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["POSTGRES_DB"] = "anketa_parser",
+            ["POSTGRES_USER"] = DatabaseUser,
+            ["POSTGRES_PASSWORD"] = RandomNumberGenerator.GetHexString(24, lowercase: true),
+        };
         File.WriteAllText(
             path,
-            $"POSTGRES_DB=anketa_parser{Environment.NewLine}" +
-            $"POSTGRES_USER={DatabaseUser}{Environment.NewLine}" +
-            $"POSTGRES_PASSWORD={password}{Environment.NewLine}");
+            string.Join(Environment.NewLine, variables.Select(pair => $"{pair.Key}={pair.Value}")) +
+            Environment.NewLine);
 
-        return path;
+        return (path, variables);
     }
 
     private static void TryDelete(string path)
