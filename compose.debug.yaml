@@ -1,0 +1,12 @@
+# Явно включаемая локальная отладка: порт PostgreSQL публикуется только на loopback
+# для подключения psql и локальных инструментов без доступа с других машин.
+#
+#   docker compose -f compose.yaml -f compose.debug.yaml up -d postgres
+#
+# Остановка:
+#   docker compose -f compose.yaml -f compose.debug.yaml stop postgres
+
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${ANKETAPARSER_DB_DEBUG_PORT:-55432}:5432"

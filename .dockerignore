@@ -1,0 +1,15 @@
+# Исключаем результаты сборки, тесты и локальные секреты из контекста Docker.
+**/bin/
+**/obj/
+.git/
+.github/
+tests/
+.vs/
+.idea/
+**/.env
+**/.env.*
+**/appsettings.Local.json
+*.user
+*.log
+README.md
+compose*.yaml

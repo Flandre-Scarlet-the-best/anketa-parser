@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AnketaParser.Core</RootNamespace>
+    <AssemblyName>AnketaParser.Core</AssemblyName>
+  </PropertyGroup>
+
+  <!--
+    Core не содержит PackageReference: контракты кодов завершения, проверок готовности
+    и агрегации диагностики не зависят от Telegram, HTTP, PostgreSQL и хостинга.
+  -->
+
+</Project>
