@@ -106,15 +106,20 @@ def block_starts(lines: list[str]) -> list[int]:
     Блок завершают пустая строка (в том числе строка, скрытая как код),
     заголовок, тематический разрыв, подчёркивание setext-заголовка и начало
     пункта списка: код-спан и назначение ссылки действуют только внутри блока.
+    Границы считаются по содержимому после маркеров цитаты, поэтому пустая
+    строка и заголовок внутри цитаты тоже разделяют блоки.
     """
     starts: list[int] = []
     boundary = True
     for number, line in enumerate(lines):
-        if not line.strip():
+        content = line[quote_offset(line, 0) :]
+        if not content.strip():
             boundary = True
             continue
-        single = HEADING.match(line) is not None or BLOCK_LEAF.match(line) is not None
-        if boundary or single or LIST_MARKER.match(line) is not None:
+        single = (
+            HEADING.match(content) is not None or BLOCK_LEAF.match(content) is not None
+        )
+        if boundary or single or LIST_MARKER.match(content) is not None:
             starts.append(number)
         boundary = single
     return starts

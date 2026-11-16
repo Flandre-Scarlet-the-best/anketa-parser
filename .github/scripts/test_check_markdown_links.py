@@ -254,6 +254,18 @@ class MarkdownLinkTests(unittest.TestCase):
             with self.subTest(case=case):
                 self.assertEqual(self.errors(source), [])
 
+    def test_quoted_blocks_are_separated(self) -> None:
+        for case, source, line in (
+            ("blank-line", "> `\n>\n> [x](missing.md)\n>\n> `\n", 3),
+            ("heading", "> # Заголовок `\n> [x](missing.md)\n> `\n", 2),
+        ):
+            with self.subTest(case=case):
+                self.assertEqual(
+                    self.errors(source),
+                    [f"docs/page.md:{line}: цель ссылки не существует: missing.md"],
+                )
+        self.assertEqual(self.errors("> `код\n> [x](absent.md)\n> `\n"), [])
+
     def test_indented_examples_and_list_or_paragraph_continuations(self) -> None:
         self.assertEqual(
             self.errors(
