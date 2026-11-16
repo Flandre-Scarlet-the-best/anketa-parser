@@ -163,8 +163,10 @@ public static class CliApplication
         try
         {
             var configuration = new ConfigurationBuilder();
-            sources = AnketaParserConfiguration.Apply(configuration, contentRoot, environmentName);
-            var configurationRoot = configuration.Build();
+            sources = AnketaParserConfiguration.ExecuteWithConfigurationFileReadErrors(
+                () => AnketaParserConfiguration.Apply(configuration, contentRoot, environmentName));
+            var configurationRoot = AnketaParserConfiguration.ExecuteWithConfigurationFileReadErrors(
+                configuration.Build);
             using var configurationLifetime = configurationRoot as IDisposable;
 
             var services = new ServiceCollection();

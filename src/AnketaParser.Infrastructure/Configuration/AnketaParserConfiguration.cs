@@ -24,6 +24,27 @@ public static class AnketaParserConfiguration
     /// <summary>Необязательный локальный файл, исключённый из Git.</summary>
     public const string LocalSettingsFileName = "appsettings.Local.json";
 
+    /// <summary>
+    /// Выполняет построение, которое читает JSON-конфигурацию, и безопасно классифицирует ошибки
+    /// открытия файла.
+    /// </summary>
+    /// <typeparam name="T">Тип результата операции.</typeparam>
+    /// <param name="build">Операция построения конфигурации.</param>
+    /// <returns>Результат операции.</returns>
+    public static T ExecuteWithConfigurationFileReadErrors<T>(Func<T> build)
+    {
+        ArgumentNullException.ThrowIfNull(build);
+
+        try
+        {
+            return build();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw CreateJsonFileReadFailureException();
+        }
+    }
+
     /// <summary>Определяет среду хостинга по <c>DOTNET_ENVIRONMENT</c>.</summary>
     public static string ResolveEnvironmentName()
     {
@@ -69,10 +90,7 @@ public static class AnketaParserConfiguration
                     {
                         if (context.Exception is IOException or UnauthorizedAccessException or InvalidDataException or FormatException)
                         {
-                            throw new OptionsValidationException(
-                                Options.DefaultName,
-                                typeof(AnketaParserConfiguration),
-                                ["Не удалось прочитать файл настроек JSON: проверьте синтаксис и права доступа."]);
+                            throw CreateJsonFileReadFailureException();
                         }
                     };
                 });
@@ -90,4 +108,9 @@ public static class AnketaParserConfiguration
 
         return sources;
     }
+
+    private static OptionsValidationException CreateJsonFileReadFailureException() => new(
+        Options.DefaultName,
+        typeof(AnketaParserConfiguration),
+        ["Не удалось прочитать файл настроек JSON: проверьте синтаксис и права доступа."]);
 }

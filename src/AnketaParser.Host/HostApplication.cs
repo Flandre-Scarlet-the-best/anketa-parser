@@ -79,10 +79,8 @@ public static class HostApplication
         }));
 
         builder.Configuration.Sources.Clear();
-        var configurationSources = AnketaParserConfiguration.Apply(
-            builder.Configuration,
-            contentRoot,
-            environmentName);
+        var configurationSources = AnketaParserConfiguration.ExecuteWithConfigurationFileReadErrors(
+            () => AnketaParserConfiguration.Apply(builder.Configuration, contentRoot, environmentName));
 
         builder.Logging.ClearProviders();
         builder.Logging.AddConfiguration(builder.Configuration.GetSection("Logging"));
@@ -102,7 +100,7 @@ public static class HostApplication
         builder.Services.AddHostedService<StartupDiagnosticsService>();
         builder.Services.AddHostedService<ReadinessMonitorService>();
 
-        var host = builder.Build();
+        var host = AnketaParserConfiguration.ExecuteWithConfigurationFileReadErrors(builder.Build);
         try
         {
             // Проверяем настройки до запуска Generic Host, который логирует исключения старта целиком.

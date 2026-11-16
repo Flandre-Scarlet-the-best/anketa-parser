@@ -6,8 +6,11 @@ using AnketaParser.Infrastructure.Configuration;
 using AnketaParser.Infrastructure.Diagnostics;
 
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Configuration.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Primitives;
 
 namespace AnketaParser.Tests;
 
@@ -62,6 +65,29 @@ public sealed class ConfigurationTests
         Assert.Empty(configuration.GetSection(HostSettings.SectionName).GetChildren());
         Assert.Single(sources);
         Assert.DoesNotContain(sources, source => source.Kind == "file");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void JsonFileOpenFailuresBecomeSafeConfigurationValidationErrors(bool unauthorized)
+    {
+        using var root = new Support.TemporaryContentRoot("{}");
+        var builder = new ConfigurationBuilder();
+        _ = AnketaParserConfiguration.Apply(builder, root.Path, "Production");
+        var fileProvider = new ThrowingFileProvider(unauthorized);
+        foreach (var source in builder.Sources.OfType<JsonConfigurationSource>())
+        {
+            source.FileProvider = fileProvider;
+        }
+
+        var exception = Assert.Throws<OptionsValidationException>(
+            () => AnketaParserConfiguration.ExecuteWithConfigurationFileReadErrors(builder.Build));
+
+        Assert.Equal(
+            "Не удалось прочитать файл настроек JSON: проверьте синтаксис и права доступа.",
+            Assert.Single(exception.Failures));
+        Assert.DoesNotContain("sensitive path", string.Join(Environment.NewLine, exception.Failures), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -162,5 +188,44 @@ public sealed class ConfigurationTests
         var sources = AnketaParserConfiguration.Apply(builder, contentRoot, "Production");
         configuration = builder.Build();
         return sources;
+    }
+
+    private sealed class ThrowingFileProvider(bool unauthorized) : IFileProvider
+    {
+        public IFileInfo GetFileInfo(string subpath) => new ThrowingFileInfo(subpath, unauthorized);
+
+        public IDirectoryContents GetDirectoryContents(string subpath) => EmptyDirectoryContents.Instance;
+
+        public IChangeToken Watch(string filter) => NullChangeToken.Singleton;
+    }
+
+    private sealed class ThrowingFileInfo(string name, bool unauthorized) : IFileInfo
+    {
+        public bool Exists => true;
+
+        public long Length => 1;
+
+        public string? PhysicalPath => null;
+
+        public string Name => name;
+
+        public DateTimeOffset LastModified => DateTimeOffset.UnixEpoch;
+
+        public bool IsDirectory => false;
+
+        public Stream CreateReadStream() => unauthorized
+            ? throw new UnauthorizedAccessException("sensitive path")
+            : throw new IOException("sensitive path");
+    }
+
+    private sealed class EmptyDirectoryContents : IDirectoryContents
+    {
+        public static EmptyDirectoryContents Instance { get; } = new();
+
+        public bool Exists => false;
+
+        public IEnumerator<IFileInfo> GetEnumerator() => Enumerable.Empty<IFileInfo>().GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 }
