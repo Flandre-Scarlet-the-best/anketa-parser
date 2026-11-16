@@ -66,6 +66,26 @@ class MarkdownLinkTests(unittest.TestCase):
             ["docs/page.md:5: цель ссылки не существует: gone.md"],
         )
 
+    def test_footnotes_are_not_reference_destinations(self) -> None:
+        for case, definition, reference_line in (
+            ("single-line", "[^1]: Это пояснение.\n", 5),
+            ("multiline", "[^1]: Это пояснение.\n    Продолжение сноски.\n", 6),
+        ):
+            with self.subTest(case=case):
+                self.assertEqual(self.errors("Примечание[^1].\n\n" + definition), [])
+                self.assertEqual(
+                    self.errors(
+                        "[нет](inline.md)\n\n"
+                        + definition
+                        + "\n[метка]: reference.md\n"
+                    ),
+                    [
+                        "docs/page.md:1: цель ссылки не существует: inline.md",
+                        f"docs/page.md:{reference_line}: "
+                        + "цель ссылки не существует: reference.md",
+                    ],
+                )
+
     def test_missing_image_is_reported(self) -> None:
         self.assertEqual(
             self.errors("![нет](missing.png)"),
@@ -111,6 +131,39 @@ class MarkdownLinkTests(unittest.TestCase):
             ["docs/page.md:4: цель ссылки не существует: gone.md"],
         )
 
+    def test_backtick_escape_parity_preserves_active_links(self) -> None:
+        for count in range(5):
+            with self.subTest(backslashes=count):
+                slashes = "\\" * count
+                source = f"{slashes}`[пример](missing.md){slashes}`\n[нет](gone.md)\n"
+                expected = ["docs/page.md:2: цель ссылки не существует: gone.md"]
+                if count % 2:
+                    expected.insert(
+                        0, "docs/page.md:1: цель ссылки не существует: missing.md"
+                    )
+                self.assertEqual(self.errors(source), expected)
+
+    def test_escaped_backtick_does_not_consume_following_real_span(self) -> None:
+        self.assertEqual(
+            self.errors("\\`[нет](missing.md) `[пример](absent.md)`\n[нет](gone.md)\n"),
+            [
+                "docs/page.md:1: цель ссылки не существует: missing.md",
+                "docs/page.md:2: цель ссылки не существует: gone.md",
+            ],
+        )
+
+    def test_backslash_inside_code_does_not_escape_closing_backtick(self) -> None:
+        self.assertEqual(
+            self.errors("`[пример](absent.md)\\` [нет](missing.md)\n"),
+            ["docs/page.md:1: цель ссылки не существует: missing.md"],
+        )
+
+    def test_escaped_first_backtick_leaves_remaining_run_as_delimiter(self) -> None:
+        self.assertEqual(
+            self.errors("\\``[пример](absent.md)` [нет](missing.md)\n"),
+            ["docs/page.md:1: цель ссылки не существует: missing.md"],
+        )
+
     def test_blank_line_and_unmatched_backtick_do_not_hide_links(self) -> None:
         self.assertEqual(
             self.errors("Один `символ\n\n[нет](gone.md)\n"),
@@ -136,6 +189,96 @@ class MarkdownLinkTests(unittest.TestCase):
             self.errors("- ```md\n  [x](absent.md)\n\n[нет](gone.md)\n"),
             ["docs/page.md:4: цель ссылки не существует: gone.md"],
         )
+
+    def test_list_relative_indented_code_and_adjacent_links(self) -> None:
+        for case, marker in (
+            ("dash", "- "),
+            ("plus", "+ "),
+            ("star", "* "),
+            ("ordered", "1. "),
+            ("wide-ordered", "12) "),
+            ("indented-marker", "  - "),
+        ):
+            with self.subTest(case=case):
+                indent = " " * len(marker)
+                self.assertEqual(
+                    self.errors(
+                        f"{marker}Пункт\n\n{indent}    [пример](absent.md)\n\n"
+                        + f"{indent}    [пример](also-absent.md)\n\n"
+                        + f"{indent}[продолжение](missing.md)\n\n[абзац](gone.md)\n"
+                    ),
+                    [
+                        "docs/page.md:7: цель ссылки не существует: missing.md",
+                        "docs/page.md:9: цель ссылки не существует: gone.md",
+                    ],
+                )
+
+    def test_nested_list_code_dedents_to_parent_and_document(self) -> None:
+        self.assertEqual(
+            self.errors(
+                "- Внешний пункт\n  1. Вложенный\n\n"
+                + "         [пример](absent.md)\n"
+                + "     [продолжение](nested.md)\n\n"
+                + "  [родитель](parent.md)\n\n[абзац](gone.md)\n"
+            ),
+            [
+                "docs/page.md:5: цель ссылки не существует: nested.md",
+                "docs/page.md:7: цель ссылки не существует: parent.md",
+                "docs/page.md:9: цель ссылки не существует: gone.md",
+            ],
+        )
+
+    def test_list_indentation_does_not_hide_paragraph_or_following_code(self) -> None:
+        self.assertEqual(
+            self.errors(
+                "- Пункт\n      [продолжение](missing.md)\n\n"
+                + "Абзац\n    [продолжение](gone.md)\n\n"
+                + "    [пример](absent.md)\n\n[ссылка](last.md)\n"
+            ),
+            [
+                "docs/page.md:2: цель ссылки не существует: missing.md",
+                "docs/page.md:5: цель ссылки не существует: gone.md",
+                "docs/page.md:9: цель ссылки не существует: last.md",
+            ],
+        )
+
+    def test_lazy_list_continuation_preserves_container_for_later_code(self) -> None:
+        self.assertEqual(
+            self.errors(
+                "- Пункт\n[продолжение](missing.md)\n\n"
+                + "      [пример](absent.md)\n\n[абзац](gone.md)\n"
+            ),
+            [
+                "docs/page.md:2: цель ссылки не существует: missing.md",
+                "docs/page.md:6: цель ссылки не существует: gone.md",
+            ],
+        )
+        self.assertEqual(
+            self.errors(
+                "123. Пункт\nПродолжение\n\n     [ссылка](missing.md)\n\n"
+                + "         [пример](absent.md)\n\n[абзац](gone.md)\n"
+            ),
+            [
+                "docs/page.md:4: цель ссылки не существует: missing.md",
+                "docs/page.md:8: цель ссылки не существует: gone.md",
+            ],
+        )
+
+    def test_code_at_start_of_list_item_and_nested_fences(self) -> None:
+        for case, source, last_line in (
+            ("initial-code", "-     [пример](absent.md)\n\n", 3),
+            (
+                "nested-closed",
+                "- Пункт\n  1. ```md\n     [пример](absent.md)\n     ```\n\n",
+                6,
+            ),
+            ("nested-unclosed", "- Пункт\n  1. ```md\n     [пример](absent.md)\n\n", 5),
+        ):
+            with self.subTest(case=case):
+                self.assertEqual(
+                    self.errors(source + "[абзац](gone.md)\n"),
+                    [f"docs/page.md:{last_line}: цель ссылки не существует: gone.md"],
+                )
 
     def test_even_backslashes_leave_real_link_visible(self) -> None:
         self.assertEqual(

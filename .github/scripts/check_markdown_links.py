@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Проверка локальных назначений ссылок во всём отслеживаемом Markdown.
+"""Проверка локальных назначений ссылок в отслеживаемых файлах .md.
 
 Обход Git, номера строк и границы репозитория адаптированы из
 Flandre-Scarlet-the-best/anki-deck-toolkit (.github/scripts/check_markdown_links.py).
@@ -26,11 +26,12 @@ from check_skill_contracts import (
 
 # Разбор контейнеров и fenced-блоков общий; многострочные спаны и отступный код
 # нужны общему Markdown, но не меняют уже действующую проверку skills.
-CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n).)*?(?<!`)\1(?!`)", re.DOTALL)
+BACKTICKS = re.compile(r"`+")
+PARAGRAPH_BREAK = re.compile(r"\n[ \t]*\n")
 COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
 INLINE = re.compile(r"!?\[(?:[^\[\]\n]|\n(?![ \t]*\n)|\[[^\[\]\n]*\])*\]\(")
 REFERENCE = re.compile(
-    r"^ {0,3}\[[^\]\n]+\]:[ \t]*(?:\n[ \t]*)?(<[^<>\n]*>|\S+)", re.MULTILINE
+    r"^ {0,3}\[(?!\^)[^\]\n]+\]:[ \t]*(?:\n[ \t]*)?(<[^<>\n]*>|\S+)", re.MULTILINE
 )
 
 
@@ -39,13 +40,37 @@ def blank_text(text: str) -> str:
     return "".join("\n" if char == "\n" else " " for char in text)
 
 
+def mask_code_spans(text: str) -> str:
+    """Учесть экранирование открывающего символа и равную длину границ кода."""
+    position = 0
+    while opener := BACKTICKS.search(text, position):
+        start = opener.start() + int(escaped(text, opener.start()))
+        length = opener.end() - start
+        position = opener.end()
+        if not length:
+            continue
+        boundary = PARAGRAPH_BREAK.search(text, position)
+        end = boundary.start() if boundary else len(text)
+        for closer in BACKTICKS.finditer(text, position, end):
+            # Внутри кода обратная косая черта уже не экранирует границу.
+            if closer.end() - closer.start() == length:
+                text = (
+                    text[:start]
+                    + blank_text(text[start : closer.end()])
+                    + text[closer.end() :]
+                )
+                position = closer.end()
+                break
+    return text
+
+
 def visible_text(text: str) -> str:
     """Убрать код и комментарии, не скрывая обычные продолжения списков."""
     lines: list[str] = []
     fence: tuple[str, int, int] | None = None
-    indented = False
+    indented: int | None = None
     previous_blank = True
-    in_list = False
+    containers: list[int] = []
     for raw in text.splitlines():
         line = raw.expandtabs(4)
         if fence is not None:
@@ -56,34 +81,55 @@ def visible_text(text: str) -> str:
                     fence = None
                 lines.append(blank_text(line))
                 continue
-        if (opened := fence_open(line)) is not None:
-            fence = opened
+        blank = not line.strip()
+        indentation = len(line) - len(line.lstrip(" "))
+        if indented is not None and (blank or indentation >= indented):
+            lines.append(blank_text(line))
+            continue
+        # Продолжение абзаца может опускать отступ списка; после пустой строки
+        # или начала нового блока уменьшение отступа уже закрывает контейнер.
+        if not blank and (
+            previous_blank
+            or indented is not None
+            or LIST_MARKER.match(line)
+            or fence_open(line)
+            or re.match(r" {0,3}(?:#{1,6}(?: |$)|>)", line)
+        ):
+            while containers and indentation < containers[-1]:
+                _ = containers.pop()
+        indented = None
+        column = containers[-1] if containers and indentation >= containers[-1] else 0
+        starts_item = False
+        while marker := LIST_MARKER.match(line[column:]):
+            # Более четырёх пробелов после маркера: один разделяет пункт,
+            # остальные принадлежат содержимому, в том числе отступному коду.
+            token = marker.group().rstrip(" ")
+            padding = marker.end() - len(token)
+            column += len(token) + (padding if padding <= 4 else 1)
+            containers.append(column)
+            starts_item = True
+        if (
+            not blank
+            and line[column:].startswith("    ")
+            and (previous_blank or starts_item)
+        ):
+            indented = column + 4
+            lines.append(blank_text(line))
+            continue
+        if (opened := fence_open(line[column:])) is not None:
+            fence = opened[0], opened[1], column + opened[2]
             lines.append(blank_text(line))
             previous_blank = True
             continue
-        blank = not line.strip()
-        if indented and (blank or line.startswith("    ")):
-            lines.append(blank_text(line))
-            continue
-        indented = False
-        if not blank and line.startswith("    ") and previous_blank and not in_list:
-            indented = True
-            lines.append(blank_text(line))
-            continue
-        if LIST_MARKER.match(line):
-            in_list = True
-        elif previous_blank and line[:1] not in ("", " ", "\t"):
-            in_list = False
         previous_blank = blank
         lines.append(line)
-    visible = "\n".join(lines)
-    visible = CODE_SPAN.sub(lambda match: blank_text(match.group()), visible)
+    visible = mask_code_spans("\n".join(lines))
     visible = COMMENT.sub(lambda match: blank_text(match.group()), visible)
     return AUTOLINK.sub(lambda match: blank_text(match.group()), visible)
 
 
 def escaped(text: str, index: int) -> bool:
-    """Скобка экранирована нечётным числом обратных косых черт."""
+    """Символ экранирован нечётным числом обратных косых черт."""
     count = 0
     while index > count and text[index - count - 1] == "\\":
         count += 1

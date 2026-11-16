@@ -3,6 +3,8 @@
 import fnmatch
 import json
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from typing import ClassVar, NotRequired, TypedDict, cast, override
@@ -96,6 +98,34 @@ def expand_braces(pattern: str) -> list[str]:
             pattern[: match.start()] + option + pattern[match.end() :]
         )
     ]
+
+
+def tracked_paths(root: Path) -> list[str]:
+    """Фактические файлы из индекса Git без ручного перечня каталогов."""
+    output = subprocess.run(  # noqa: S603
+        ["git", "-C", str(root), "ls-files", "-z"],  # noqa: S607
+        check=True,
+        capture_output=True,
+    ).stdout
+    return [
+        name
+        for name in output.decode("utf-8").split("\0")
+        if name and (root / name).is_file()
+    ]
+
+
+def unmatched_path_rules(rules: list[PathInstruction], paths: list[str]) -> list[str]:
+    """Найти правила, которым не соответствует ни один реальный файл."""
+    unmatched: list[str] = []
+    for rule in rules:
+        patterns = expand_braces(rule["path"])
+        # **/ также допускает ноль каталогов в glob провайдера.
+        patterns += [p[3:] for p in patterns if p.startswith("**/")]
+        if not any(
+            fnmatch.fnmatchcase(path, pattern) for path in paths for pattern in patterns
+        ):
+            unmatched.append(rule["path"])
+    return unmatched
 
 
 def review_contract(text: str) -> object:
@@ -226,32 +256,46 @@ class ProviderConfigurationTests(unittest.TestCase):
             self.assertTrue((ROOT / guideline["files"]).is_file(), guideline)
 
     def test_each_path_rule_matches_real_owned_paths(self):
-        paths = [
-            path.relative_to(ROOT).as_posix()
-            for directory in (
-                "src",
-                "tests",
-                ".github",
-                ".agents",
-                "docs",
-                ".codex/context",
-            )
-            for path in (ROOT / directory).rglob("*")
-            if path.is_file() and not {"bin", "obj", "__pycache__"} & set(path.parts)
-        ]
-        paths += [path.name for path in ROOT.iterdir() if path.is_file()]
-        for rule in self.config["reviews"]["path_instructions"]:
-            patterns = expand_braces(rule["path"])
-            # **/ также допускает ноль каталогов в glob провайдера.
-            patterns += [p[3:] for p in patterns if p.startswith("**/")]
-            with self.subTest(pattern=rule["path"]):
-                self.assertTrue(
-                    any(
-                        fnmatch.fnmatchcase(path, pattern)
-                        for path in paths
-                        for pattern in patterns
-                    )
+        paths = tracked_paths(ROOT)
+        self.assertTrue(paths, "Индекс должен содержать реальные файлы")
+        self.assertEqual(
+            unmatched_path_rules(self.config["reviews"]["path_instructions"], paths),
+            [],
+        )
+
+    def test_documentation_has_dedicated_path_rules(self):
+        rules = {rule["path"] for rule in self.config["reviews"]["path_instructions"]}
+        self.assertTrue({"docs/**", ".codex/context/**"} <= rules)
+
+    def test_path_rules_follow_new_tracked_directories_and_reject_missing_targets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            page = root / "новая область/guide.md"
+            page.parent.mkdir()
+            _ = page.write_text("# Руководство\n", encoding="utf-8")
+            rules: list[PathInstruction] = [
+                {"path": "новая область/**"},
+                {"path": "absent/**"},
+            ]
+            for args in (("init", "-q"), ("add", "--", "новая область")):
+                _ = subprocess.run(  # noqa: S603
+                    ["git", "-C", str(root), *args],  # noqa: S607
+                    check=True,
+                    capture_output=True,
                 )
+                if args[0] == "init":
+                    self.assertEqual(
+                        unmatched_path_rules(rules, tracked_paths(root)),
+                        ["новая область/**", "absent/**"],
+                    )
+            paths = tracked_paths(root)
+            self.assertEqual(paths, ["новая область/guide.md"])
+            self.assertEqual(unmatched_path_rules(rules, paths), ["absent/**"])
+            page.unlink()
+            self.assertEqual(
+                unmatched_path_rules(rules, tracked_paths(root)),
+                ["новая область/**", "absent/**"],
+            )
 
     def test_candidate_and_trusted_invoke_live_validator_with_read_only_token(self):
         for filename, event in (

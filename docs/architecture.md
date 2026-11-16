@@ -26,8 +26,8 @@ flowchart TD
 | Infrastructure | Общая конфигурация, валидаторы, проба Npgsql, снимок процесса, последнее состояние готовности | [Исходники](../src/AnketaParser.Infrastructure/) |
 | Host | Generic Host — управление запуском и остановкой; начальная диагностика и периодический монитор | [HostApplication](../src/AnketaParser.Host/HostApplication.cs) |
 | Cli | Разбор аргументов, справка, версия, текст и JSON диагностики | [CliApplication](../src/AnketaParser.Cli/CliApplication.cs) |
-| Unit-тесты | Контракты без внешних сервисов | [AnketaParser.Tests](../tests/AnketaParser.Tests/) |
-| Docker smoke | Изолированный запуск настоящих контейнеров и проверка сохранности тестовых данных | [AnketaParser.DockerTests](../tests/AnketaParser.DockerTests/) |
+| Модульные тесты | Контракты без внешних сервисов | [AnketaParser.Tests](../tests/AnketaParser.Tests/) |
+| Интеграционная проверка Docker | Изолированный запуск настоящих контейнеров и проверка сохранности тестовых данных | [AnketaParser.DockerTests](../tests/AnketaParser.DockerTests/) |
 
 `AddAnketaParserInfrastructure` регистрирует адаптеры; композиция остаётся в
 исполняемых проектах. Хост и CLI используют один `DiagnosticsRunner`, поэтому

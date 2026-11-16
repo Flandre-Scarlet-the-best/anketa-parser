@@ -63,7 +63,7 @@ docker compose logs -f host
 | Объект | Поведение |
 | --- | --- |
 | `postgres` | `postgres:18.6-alpine`, том `postgres-data` в `/var/lib/postgresql`; `pg_isready` каждые 5 секунд, таймаут 5 секунд, 20 попыток, начальный период 10 секунд |
-| `host` | Сборка SDK → runtime с locked restore, пользователь `APP_UID`, `no-new-privileges`, `init: true`; старт после здоровой PostgreSQL |
+| `host` | Сборка SDK → среда выполнения с восстановлением `--locked-mode`, пользователь `APP_UID`, `no-new-privileges`, `init: true`; старт после здоровой PostgreSQL |
 | Проверка Host | Новый CLI `doctor --json` каждые 30 секунд, таймаут 15 секунд, 3 попытки, начальный период 20 секунд |
 | Сеть `backend` | Общая сеть без публикации портов; отдельной изоляции исходящего трафика `internal: true` нет |
 | Перезапуск | `restart: unless-stopped`; остановка Host получает 30 секунд |
