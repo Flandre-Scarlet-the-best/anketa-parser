@@ -288,6 +288,9 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("Token")
+                        .IsUnique();
+
                     b.HasIndex("JobId", "Number")
                         .IsUnique();
 

@@ -38,6 +38,8 @@ public sealed class BackupService
             settings.Weekly < 0 || settings.Monthly < 0 || settings.MaxBytes < 1 || settings.RestoreJobs is < 1 or > 16)
             throw new ArgumentException("Некорректные настройки резервирования.", nameof(settings));
         _settings = settings;
+        if (!string.IsNullOrWhiteSpace(settings.ConnectionString))
+            PostgresToolConnection.Validate(new NpgsqlConnectionStringBuilder(settings.ConnectionString));
     }
 
     private string StatePath => Path.Combine(_settings.Directory, "status.json");
@@ -116,24 +118,25 @@ public sealed class BackupService
     private void RotateCore()
     {
         var files = List().Select(name => new FileInfo(Path.Combine(_settings.Directory, name))).OrderByDescending(x => x.LastWriteTimeUtc).ThenByDescending(x => x.Name, StringComparer.Ordinal).ToArray();
+        var managed = files.Where(x => IsManagedArchive(x.Name) && File.Exists(x.FullName + ".sha256")).ToArray();
         var keep = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var file in files.GroupBy(x => x.LastWriteTimeUtc.Date).Take(_settings.Daily).Select(x => x.First())
-            .Concat(files.GroupBy(x => System.Globalization.ISOWeek.GetYear(x.LastWriteTimeUtc).ToString(System.Globalization.CultureInfo.InvariantCulture) + "-" + System.Globalization.ISOWeek.GetWeekOfYear(x.LastWriteTimeUtc).ToString(System.Globalization.CultureInfo.InvariantCulture)).Take(_settings.Weekly).Select(x => x.First()))
-            .Concat(files.GroupBy(x => (x.LastWriteTimeUtc.Year, x.LastWriteTimeUtc.Month)).Take(_settings.Monthly).Select(x => x.First())))
+        foreach (var file in managed.GroupBy(x => x.LastWriteTimeUtc.Date).Take(_settings.Daily).Select(x => x.First())
+            .Concat(managed.GroupBy(x => System.Globalization.ISOWeek.GetYear(x.LastWriteTimeUtc).ToString(System.Globalization.CultureInfo.InvariantCulture) + "-" + System.Globalization.ISOWeek.GetWeekOfYear(x.LastWriteTimeUtc).ToString(System.Globalization.CultureInfo.InvariantCulture)).Take(_settings.Weekly).Select(x => x.First()))
+            .Concat(managed.GroupBy(x => (x.LastWriteTimeUtc.Year, x.LastWriteTimeUtc.Month)).Take(_settings.Monthly).Select(x => x.First())))
             keep.Add(file.Name);
         var state = Status();
         if (state.Archive is not null) keep.Add(state.Archive);
         foreach (var file in files.Where(x => File.Exists(x.FullName + ".verified"))) keep.Add(file.Name);
-        foreach (var file in files.Where(x => !keep.Contains(x.Name))) DeleteArchive(file);
+        foreach (var file in managed.Where(x => !keep.Contains(x.Name))) DeleteArchive(file);
         var remaining = files.Where(x => x.Exists).ToList();
         long total = remaining.Sum(x => x.Length);
         foreach (var file in remaining.AsEnumerable().Reverse())
         {
             if (total <= _settings.MaxBytes) break;
-            if (file.Name == state.Archive || File.Exists(file.FullName + ".verified")) continue;
+            if (!managed.Contains(file) || file.Name == state.Archive || File.Exists(file.FullName + ".verified")) continue;
             total -= file.Length; DeleteArchive(file);
         }
-        if (total > _settings.MaxBytes) throw new IOException("Лимит занят защищёнными копиями; требуется увеличение ёмкости или ручной перенос.");
+        if (total > _settings.MaxBytes) throw new IOException("Лимит занят защищёнными или сторонними копиями; требуется увеличение ёмкости или ручной перенос.");
     }
 
     private static void DeleteArchive(FileInfo file)
@@ -157,7 +160,7 @@ public sealed class BackupService
         await VerifyAsync(name, ct).ConfigureAwait(false);
         var source = new NpgsqlConnectionStringBuilder(_settings.ConnectionString);
         var target = new NpgsqlConnectionStringBuilder(targetConnectionString);
-        if (source.Database == target.Database) throw new InvalidOperationException("Для восстановления требуется другая БД.");
+        if (PostgresToolConnection.IsSameDatabase(source, target)) throw new InvalidOperationException("Для восстановления требуется другая БД.");
         await using var connection = new NpgsqlConnection(targetConnectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
         await using var check = new NpgsqlCommand("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%' AND c.relkind IN ('r','p','v','m','S')", connection);
@@ -175,9 +178,19 @@ public sealed class BackupService
         WriteState(state with { LastRestoreVerified = DateTimeOffset.UtcNow });
     }
 
+    public static bool IsArchiveName(string name) => !string.IsNullOrWhiteSpace(name) &&
+        name.IndexOfAny(['/', '\\']) < 0 && name.IndexOfAny(Path.GetInvalidFileNameChars()) < 0 &&
+        Path.GetFileName(name) == name && name.EndsWith(".dump", StringComparison.Ordinal);
+
+    // Формат имени совпадает с RunAsync: UTC-метка с семью долями секунды и UUID без дефисов.
+    private static bool IsManagedArchive(string name) => name.Length == 60 && name[22] == '-' &&
+        DateTime.TryParseExact(name[..22], "yyyyMMddTHHmmssfffffff", System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None, out _) &&
+        Guid.TryParseExact(name.AsSpan(23, 32), "N", out _) && name.EndsWith(".dump", StringComparison.Ordinal);
+
     private string ArchivePath(string name)
     {
-        if (Path.GetFileName(name) != name || !name.EndsWith(".dump", StringComparison.Ordinal)) throw new ArgumentException("Требуется имя архива из списка.", nameof(name));
+        if (!IsArchiveName(name)) throw new ArgumentException("Требуется имя архива из списка.", nameof(name));
         return Path.Combine(_settings.Directory, name);
     }
 
@@ -209,10 +222,7 @@ public sealed class BackupService
         foreach (var argument in arguments) info.ArgumentList.Add(argument);
         if (connectionString is not null)
         {
-            var cs = new NpgsqlConnectionStringBuilder(connectionString);
-            info.Environment["PGHOST"] = cs.Host; info.Environment["PGPORT"] = cs.Port.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            info.Environment["PGDATABASE"] = cs.Database; info.Environment["PGUSER"] = cs.Username; info.Environment["PGPASSWORD"] = cs.Password;
-            info.Environment["PGCONNECT_TIMEOUT"] = "10";
+            PostgresToolConnection.Apply(info, new NpgsqlConnectionStringBuilder(connectionString));
         }
         using var process = new Process { StartInfo = info };
         process.Start();

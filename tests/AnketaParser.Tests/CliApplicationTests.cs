@@ -7,6 +7,34 @@ namespace AnketaParser.Tests;
 
 public sealed class CliApplicationTests
 {
+    [Theory]
+    [InlineData("Host", "ShutdownTimeoutSeconds")]
+    [InlineData("Database", "ConnectTimeoutSeconds")]
+    [InlineData("Diagnostics", "ProbeTimeoutSeconds")]
+    public async Task StorageUsesSharedTypedValidators(string section, string key)
+    {
+        using var root = new Support.TemporaryContentRoot($$"""
+            { "{{section}}": { "{{key}}": 0 }, "Backup": { "Directory": "unused" } }
+            """);
+        var result = await RunAsync(["storage", "backup-list"], root.Path);
+        Assert.Equal(ExitCodes.InvalidConfiguration, result.ExitCode);
+        Assert.Empty(result.Stdout);
+    }
+
+    [Theory]
+    [InlineData("backup-verify", "../outside.dump")]
+    [InlineData("restore-empty", "../outside.dump")]
+    [InlineData("backup-verify", "outside.txt")]
+    public async Task StorageInvalidArchiveIsUsageError(string command, string archive)
+    {
+        using var root = new Support.TemporaryContentRoot("""
+            { "Backup": { "Directory": "unused" } }
+            """);
+        var result = await RunAsync(["storage", command, archive], root.Path);
+        Assert.Equal(ExitCodes.InvalidUsage, result.ExitCode);
+        Assert.Empty(result.Stdout);
+    }
+
     private static async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(
         string[] args,
         string? contentRootPath = null)

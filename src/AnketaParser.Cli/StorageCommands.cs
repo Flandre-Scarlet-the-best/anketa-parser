@@ -1,12 +1,15 @@
 using System.Text.Json;
 
 using AnketaParser.Core;
+using AnketaParser.Infrastructure;
 using AnketaParser.Infrastructure.Configuration;
 using AnketaParser.Infrastructure.Persistence;
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace AnketaParser.Cli;
 
@@ -16,11 +19,23 @@ internal static partial class StorageCommands
     {
         try
         {
+            if (args is ["storage", "backup-verify" or "restore-empty", var name] && !BackupService.IsArchiveName(name))
+            {
+                await stderr.WriteLineAsync("Требуется имя архива .dump без пути.").ConfigureAwait(false);
+                return ExitCodes.InvalidUsage;
+            }
             var builder = new ConfigurationBuilder();
-            AnketaParserConfiguration.Apply(builder, contentRoot ?? AppContext.BaseDirectory, AnketaParserConfiguration.ResolveEnvironmentName());
+            var environment = AnketaParserConfiguration.ResolveEnvironmentName();
+            var sources = AnketaParserConfiguration.Apply(builder, contentRoot ?? AppContext.BaseDirectory, environment);
             var config = builder.Build();
             using var configLifetime = config as IDisposable;
-            var database = config.GetSection("Database").Get<DatabaseSettings>() ?? new();
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddAnketaParserInfrastructure(config, environment, sources);
+            await using var provider = services.BuildServiceProvider();
+            _ = provider.GetRequiredService<IOptions<HostSettings>>().Value;
+            var database = provider.GetRequiredService<IOptions<DatabaseSettings>>().Value;
+            _ = provider.GetRequiredService<IOptions<DiagnosticsSettings>>().Value;
             var settings = config.GetSection("Backup").Get<BackupSettings>() ?? new();
             switch (args)
             {
@@ -79,7 +94,7 @@ internal static partial class StorageCommands
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             await stderr.WriteLineAsync($"Операция хранения не выполнена ({exception.GetType().Name}); секреты и сообщения зависимостей скрыты.").ConfigureAwait(false);
-            return exception is ArgumentException ? ExitCodes.InvalidConfiguration : ExitCodes.DependencyUnavailable;
+            return exception is ArgumentException or OptionsValidationException ? ExitCodes.InvalidConfiguration : ExitCodes.DependencyUnavailable;
         }
     }
 

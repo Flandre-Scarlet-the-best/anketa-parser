@@ -24,6 +24,7 @@ public sealed class ProductDbContext(DbContextOptions<ProductDbContext> options)
         modelBuilder.Entity<ProcessingJob>().HasIndex(x => new { x.RevisionId, x.ProcessorVersion }).IsUnique();
         modelBuilder.Entity<ProcessingJob>().HasIndex(x => new { x.State, x.AvailableAt, x.LeaseUntil });
         modelBuilder.Entity<JobAttempt>().HasIndex(x => new { x.JobId, x.Number }).IsUnique();
+        modelBuilder.Entity<JobAttempt>().HasIndex(x => x.Token).IsUnique();
         modelBuilder.Entity<Profile>().HasIndex(x => new { x.PostId, x.State, x.CreatedAt });
         modelBuilder.Entity<ProfileLink>().HasIndex(x => new { x.AnonId, x.UnlinkedAt });
         modelBuilder.Entity<ContactObservation>().HasIndex(x => new { x.ContactId, x.RevisionId });

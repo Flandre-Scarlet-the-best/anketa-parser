@@ -11,11 +11,13 @@ public sealed class BackupRecoveryTests(ComposeImageFixture images)
         var ct = TestContext.Current.CancellationToken;
         var root = images.RepositoryRoot;
         var password = Guid.NewGuid().ToString("N");
+        var migrationPassword = Guid.NewGuid().ToString("N");
         var docker = new DockerCli(root, new Dictionary<string, string>
         {
             ["POSTGRES_PASSWORD"] = password,
             ["POSTGRES_USER"] = "test_admin",
             ["POSTGRES_DB"] = "test_product",
+            ["PRODUCT_MIGRATION_PASSWORD"] = migrationPassword,
         });
         var project = "anketa-backup-test-" + Guid.NewGuid().ToString("N");
         string[] prefix = ["compose", "-p", project, "-f", Path.Combine(root, "compose.yaml")];
@@ -56,9 +58,9 @@ public sealed class BackupRecoveryTests(ComposeImageFixture images)
             await Cli("maintenance", "storage", "backup-verify", name);
             await Sql("postgres", "CREATE DATABASE test_restore OWNER product_migrator");
             await Assert.ThrowsAsync<InvalidOperationException>(() => Cli("-e", "ANKETAPARSER_Backup__PgRestore=/bin/false",
-                "-e", $"ANKETAPARSER_Restore__ConnectionString=Host=postgres;Database=test_restore;Username=product_migrator;Password=local-migration-password",
+                "-e", $"ANKETAPARSER_Restore__ConnectionString=Host=postgres;Database=test_restore;Username=product_migrator;Password={migrationPassword}",
                 "maintenance", "storage", "restore-empty", name));
-            await Cli("-e", "ANKETAPARSER_Restore__ConnectionString=Host=postgres;Database=test_restore;Username=product_migrator;Password=local-migration-password",
+            await Cli("-e", $"ANKETAPARSER_Restore__ConnectionString=Host=postgres;Database=test_restore;Username=product_migrator;Password={migrationPassword}",
                 "maintenance", "storage", "restore-empty", name);
             const string fingerprint = """
                 SELECT json_build_array(
@@ -77,7 +79,7 @@ public sealed class BackupRecoveryTests(ComposeImageFixture images)
                 """;
             Assert.Equal(await Sql("test_product", fingerprint), await Sql("test_restore", fingerprint));
             await Assert.ThrowsAsync<InvalidOperationException>(() => Cli("-e",
-                "ANKETAPARSER_Restore__ConnectionString=Host=postgres;Database=test_restore;Username=product_migrator;Password=local-migration-password",
+                $"ANKETAPARSER_Restore__ConnectionString=Host=postgres;Database=test_restore;Username=product_migrator;Password={migrationPassword}",
                 "maintenance", "storage", "restore-empty", name));
             await Assert.ThrowsAsync<InvalidOperationException>(() => Cli("-e", "ANKETAPARSER_Backup__PgDump=/bin/false", "maintenance", "storage", "backup"));
             await Assert.ThrowsAsync<InvalidOperationException>(() => Cli("-e", "ANKETAPARSER_Backup__MaxBytes=1", "maintenance", "storage", "backup"));
@@ -86,7 +88,9 @@ public sealed class BackupRecoveryTests(ComposeImageFixture images)
             Assert.Contains(name, await Cli("maintenance", "storage", "backup-list"), StringComparison.Ordinal);
             await Cli("maintenance", "storage", "backup-verify", name);
             var status = await Cli("maintenance", "storage", "backup-status");
-            Assert.Contains("LastRestoreVerified", status, StringComparison.Ordinal);
+            using var statusDocument = JsonDocument.Parse(status);
+            Assert.True(statusDocument.RootElement.GetProperty("LastRestoreVerified").TryGetDateTimeOffset(out var restoredAt));
+            Assert.InRange(restoredAt, DateTimeOffset.UtcNow.AddMinutes(-10), DateTimeOffset.UtcNow);
             Assert.Contains("backup_failed", status, StringComparison.Ordinal);
             await docker.RunAsync([.. prefix, "run", "--rm", "--entrypoint", "/bin/sh", "maintenance", "-c",
                 "printf broken > /backups/corrupt.dump; printf bad > /backups/corrupt.dump.sha256"], timeout, ct);

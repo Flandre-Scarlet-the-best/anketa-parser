@@ -12,6 +12,61 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     [Fact]
+    public async Task ExpiredFinalLeaseClosesAttemptAndRejectsStaleCompletion()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var store = new ProductStore(db);
+        var revision = await Import(store, "1");
+        var id = await store.EnqueueAsync(revision, "synthetic-final", 1, Ct);
+        var lease = (await store.ClaimAsync(TimeSpan.FromMinutes(1), Ct))!;
+        await db.Database.ExecuteSqlInterpolatedAsync($"""UPDATE product."ProcessingJob" SET "LeaseUntil"={DateTimeOffset.UtcNow.AddSeconds(-1)} WHERE "Id"={id}""", Ct);
+        Assert.Null(await store.ClaimAsync(TimeSpan.FromMinutes(1), Ct));
+        db.ChangeTracker.Clear();
+        var job = await db.Set<ProcessingJob>().SingleAsync(Ct);
+        Assert.Equal("failed", job.State);
+        Assert.Null(job.LeaseToken);
+        Assert.Null(job.LeaseUntil);
+        var attempt = await db.Set<JobAttempt>().SingleAsync(Ct);
+        Assert.NotNull(attempt.FinishedAt);
+        Assert.Equal("lease_expired", attempt.FailureCategory);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.CompleteAsync(lease, null, Ct));
+    }
+
+    [Fact]
+    public async Task UsedVerificationIdentityCannotChangeButNewEvidenceCanBeRecorded()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var store = new ProductStore(db);
+        var revision = await Import(store, "1");
+        var profile = await store.AnalyzeAsync(Analysis(revision), Ct);
+        var first = await Contact(store, revision, "telegram", "first");
+        var second = await Contact(store, revision, "telegram", "second");
+        await store.ConfirmTelegramAsync(first, 10001, null, "проверка первого контакта", Ct);
+        await store.ConfirmTelegramAsync(second, 10001, null, "проверка второго контакта", Ct);
+        var anon = await store.LinkAsync(profile, first, Guid.Empty, LinkConfidence.VerifiedAccount, "проверка", Ct);
+        await store.LinkAsync(profile, second, anon, LinkConfidence.VerifiedAccount, "тот же аккаунт", Ct);
+        var otherAccount = await store.ConfirmTelegramAsync(first, 10002, null, "новое независимое подтверждение", Ct);
+        var used = await db.Set<ContactVerification>().SingleAsync(x => x.ContactId == second, Ct);
+        var originalAccount = used.AccountId;
+        var accountError = await Assert.ThrowsAsync<PostgresException>(() => db.Database.ExecuteSqlInterpolatedAsync(
+            $"""UPDATE product."ContactVerification" SET "AccountId"={otherAccount} WHERE "Id"={used.Id}""", Ct));
+        Assert.Equal(PostgresErrorCodes.CheckViolation, accountError.SqlState);
+        var contactError = await Assert.ThrowsAsync<PostgresException>(() => db.Database.ExecuteSqlInterpolatedAsync(
+            $"""UPDATE product."ContactVerification" SET "ContactId"={first} WHERE "Id"={used.Id}""", Ct));
+        Assert.Equal(PostgresErrorCodes.CheckViolation, contactError.SqlState);
+        await db.Database.ExecuteSqlInterpolatedAsync($"""UPDATE product."ContactVerification" SET "Provenance"='уточнённое доказательство' WHERE "Id"={used.Id}""", Ct);
+        db.ChangeTracker.Clear();
+        var unchanged = await db.Set<ContactVerification>().SingleAsync(x => x.Id == used.Id, Ct);
+        Assert.Equal(originalAccount, unchanged.AccountId);
+        Assert.Equal(second, unchanged.ContactId);
+        Assert.Equal("уточнённое доказательство", unchanged.Provenance);
+    }
+
+    [Fact]
     public async Task ConcurrentImportPreservesRevisionsAndUnknownFields()
     {
         RequireDocker();
@@ -139,6 +194,10 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
         Assert.Equal("failed", (await db.Set<ProcessingJob>().SingleAsync(Ct)).State);
         Assert.Equal(2, await db.Set<JobAttempt>().CountAsync(Ct));
         Assert.All(await db.Set<JobAttempt>().ToArrayAsync(Ct), x => Assert.NotNull(x.FinishedAt));
+        var duplicate = await Assert.ThrowsAsync<PostgresException>(() => db.Database.ExecuteSqlInterpolatedAsync(
+            $"""UPDATE product."JobAttempt" SET "Token"={first.Token} WHERE "Token"={second.Token}""", Ct));
+        Assert.Equal(PostgresErrorCodes.UniqueViolation, duplicate.SqlState);
+        Assert.Equal("IX_JobAttempt_Token", duplicate.ConstraintName);
         Assert.NotEqual(Guid.Empty, await Import(store, "2"));
     }
 

@@ -1,7 +1,7 @@
 namespace AnketaParser.Core.Persistence;
 
-public enum ProfileState { Candidate, Reviewed, Published, Rejected, Archived }
-public enum LinkConfidence { Suggested, VerifiedAccount }
+public enum ProfileState { Candidate = 0, Reviewed = 1, Published = 2, Rejected = 3, Archived = 4 }
+public enum LinkConfidence { Suggested = 0, VerifiedAccount = 1 }
 public enum OwnershipCheckResult { Unknown, Confirmed, Refuted }
 public sealed record PersonalBlacklistItem(Guid Id, Guid AnonId, string Reason, DateTimeOffset AddedAt);
 public sealed record PostInput(string Source, string ExternalId, string Url, string Content, DateTimeOffset? PublishedAt, string RetrievalMetadata = "{}");

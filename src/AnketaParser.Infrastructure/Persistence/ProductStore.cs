@@ -258,8 +258,12 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         // Исчерпанный последний захват после падения также становится терминальным.
         await db.Database.ExecuteSqlInterpolatedAsync($"""
-            UPDATE product."ProcessingJob" SET "State"='failed',"LeaseToken"=NULL,"LeaseUntil"=NULL,"FailureCategory"='lease_expired'
-            WHERE "State"='running' AND "LeaseUntil"<={Now} AND "Attempts">="MaxAttempts"
+            WITH exhausted AS (
+                UPDATE product."ProcessingJob" SET "State"='failed',"LeaseToken"=NULL,"LeaseUntil"=NULL,"FailureCategory"='lease_expired'
+                WHERE "State"='running' AND "LeaseUntil"<={Now} AND "Attempts">="MaxAttempts"
+                RETURNING "Id")
+            UPDATE product."JobAttempt" SET "FinishedAt"={Now},"FailureCategory"='lease_expired'
+            WHERE "FinishedAt" IS NULL AND "JobId" IN (SELECT "Id" FROM exhausted)
             """, cancellationToken).ConfigureAwait(false);
         var jobs = await db.Set<ProcessingJob>().FromSqlInterpolated($"""
             SELECT * FROM product."ProcessingJob"
