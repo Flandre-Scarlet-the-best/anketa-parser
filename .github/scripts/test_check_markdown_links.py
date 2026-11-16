@@ -170,6 +170,32 @@ class MarkdownLinkTests(unittest.TestCase):
             ["docs/page.md:3: цель ссылки не существует: gone.md"],
         )
 
+    def test_code_span_does_not_cross_block_boundary(self) -> None:
+        self.assertEqual(
+            self.errors(
+                "# Первый заголовок `\n[нет](missing.md)\n# Второй заголовок `\n"
+            ),
+            ["docs/page.md:2: цель ссылки не существует: missing.md"],
+        )
+        self.assertEqual(self.errors("# Заголовок `[нет](absent.md)`\n"), [])
+
+    def test_comment_content_is_not_parsed_as_code_span(self) -> None:
+        self.assertEqual(
+            self.errors("<!-- ` -->\n[нет](missing.md)\n`пример`\n"),
+            ["docs/page.md:2: цель ссылки не существует: missing.md"],
+        )
+        self.assertEqual(
+            self.errors("`<!--`\n[нет](missing.md)\n"),
+            ["docs/page.md:2: цель ссылки не существует: missing.md"],
+        )
+
+    def test_reference_definition_does_not_interrupt_paragraph(self) -> None:
+        self.assertEqual(self.errors("Описание формата:\n[ключ]: missing.md\n"), [])
+        self.assertEqual(
+            self.errors("Описание формата:\n\n[ключ]: missing.md\n"),
+            ["docs/page.md:3: цель ссылки не существует: missing.md"],
+        )
+
     def test_indented_examples_and_list_or_paragraph_continuations(self) -> None:
         self.assertEqual(
             self.errors(

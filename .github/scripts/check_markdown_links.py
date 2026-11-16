@@ -27,8 +27,14 @@ from check_skill_contracts import (
 # Разбор контейнеров и fenced-блоков общий; многострочные спаны и отступный код
 # нужны общему Markdown, но не меняют уже действующую проверку skills.
 BACKTICKS = re.compile(r"`+")
-PARAGRAPH_BREAK = re.compile(r"\n[ \t]*\n")
-COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
+COMMENT_OPEN = "<!--"
+COMMENT_CLOSE = "-->"
+# Заголовок и тематический разрыв (включая подчёркивание setext-заголовка) сами
+# завершают блок, поэтому код-спан, ссылка и определение не могут их пересекать.
+HEADING = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
+BLOCK_LEAF = re.compile(
+    r" {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|=+|-+)[ \t]*$"
+)
 INLINE = re.compile(r"!?\[(?:[^\[\]\n]|\n(?![ \t]*\n)|\[[^\[\]\n]*\])*\]\(")
 REFERENCE = re.compile(
     r"^ {0,3}\[(?!\^)[^\]\n]+\]:[ \t]*(?:\n[ \t]*)?(<[^<>\n]*>|\S+)", re.MULTILINE
@@ -40,32 +46,93 @@ def blank_text(text: str) -> str:
     return "".join("\n" if char == "\n" else " " for char in text)
 
 
-def mask_code_spans(text: str) -> str:
-    """Учесть экранирование открывающего символа и равную длину границ кода."""
+def hide(text: str, start: int, end: int) -> str:
+    """Скрыть диапазон литерала, сохраняя смещения и номера строк."""
+    return text[:start] + blank_text(text[start:end]) + text[end:]
+
+
+def mask_inline(text: str, blocks: list[tuple[int, int]]) -> str:
+    """Скрыть код-спаны и HTML-комментарии внутри границ Markdown-блоков.
+
+    Код-спан не пересекает границу блока, поэтому закрывающая граница ищется
+    только внутри блока: незакрытая кавычка заголовка не соединяется с кавычкой
+    следующего заголовка. Внутри блока первым обрабатывается то, что начинается
+    раньше, — код-спан или комментарий. Незакрытый комментарий, как и прежде,
+    продолжается до `-->` или конца документа.
+    """
+    masked = text
+    hidden_until = 0
     position = 0
-    while opener := BACKTICKS.search(text, position):
-        start = opener.start() + int(escaped(text, opener.start()))
-        length = opener.end() - start
-        position = opener.end()
-        if not length:
-            continue
-        boundary = PARAGRAPH_BREAK.search(text, position)
-        end = boundary.start() if boundary else len(text)
-        for closer in BACKTICKS.finditer(text, position, end):
-            # Внутри кода обратная косая черта уже не экранирует границу.
-            if closer.end() - closer.start() == length:
-                text = (
-                    text[:start]
-                    + blank_text(text[start : closer.end()])
-                    + text[closer.end() :]
+    for start, end in blocks:
+        position = max(position, start)
+        while position < end:
+            if position < hidden_until:
+                position = min(hidden_until, end)
+                continue
+            if text.startswith(COMMENT_OPEN, position):
+                closing = text.find(COMMENT_CLOSE, position + len(COMMENT_OPEN))
+                hidden_until = (
+                    len(text) if closing < 0 else closing + len(COMMENT_CLOSE)
                 )
-                position = closer.end()
+                masked = hide(masked, position, hidden_until)
+                position = hidden_until
+                continue
+            opener = BACKTICKS.search(masked, position, end)
+            if opener is None:
                 break
-    return text
+            # Экранирование открывающего символа и равная длина границ кода.
+            inner = opener.start() + int(escaped(masked, opener.start()))
+            length = opener.end() - inner
+            position = opener.end()
+            if not length:
+                continue
+            for closer in BACKTICKS.finditer(masked, position, end):
+                # Внутри кода обратная косая черта уже не экранирует границу.
+                if closer.end() - closer.start() == length:
+                    masked = hide(masked, inner, closer.end())
+                    position = closer.end()
+                    break
+    return masked
 
 
-def visible_text(text: str) -> str:
-    """Убрать код и комментарии, не скрывая обычные продолжения списков."""
+def block_starts(lines: list[str]) -> list[int]:
+    """Номера строк, с которых начинается новый Markdown-блок.
+
+    Блок завершают пустая строка (в том числе строка, скрытая как код),
+    заголовок, тематический разрыв, подчёркивание setext-заголовка и начало
+    пункта списка: код-спан и назначение ссылки действуют только внутри блока.
+    """
+    starts: list[int] = []
+    boundary = True
+    for number, line in enumerate(lines):
+        if not line.strip():
+            boundary = True
+            continue
+        single = HEADING.match(line) is not None or BLOCK_LEAF.match(line) is not None
+        if boundary or single or LIST_MARKER.match(line) is not None:
+            starts.append(number)
+        boundary = single
+    return starts
+
+
+def block_spans(lines: list[str], starts: list[int]) -> list[tuple[int, int]]:
+    """Смещения блоков в тексте, склеенном переводами строк."""
+    offsets: list[int] = []
+    offset = 0
+    for line in lines:
+        offsets.append(offset)
+        offset += len(line) + 1
+    total = max(offset - 1, 0)
+    spans: list[tuple[int, int]] = []
+    for index, number in enumerate(starts):
+        begin = offsets[number]
+        end = offsets[starts[index + 1]] - 1 if index + 1 < len(starts) else total
+        spans.append((begin, end))
+    return spans
+
+
+def visible_lines(text: str) -> list[str]:
+    """Разметить строки: скрыть fenced-код и отступный код, не скрывая списки."""
     lines: list[str] = []
     fence: tuple[str, int, int] | None = None
     indented: int | None = None
@@ -123,9 +190,16 @@ def visible_text(text: str) -> str:
             continue
         previous_blank = blank
         lines.append(line)
-    visible = mask_code_spans("\n".join(lines))
-    visible = COMMENT.sub(lambda match: blank_text(match.group()), visible)
-    return AUTOLINK.sub(lambda match: blank_text(match.group()), visible)
+    return lines
+
+
+def visible_document(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """Убрать код и комментарии, вернув видимый текст и границы блоков."""
+    lines = visible_lines(text)
+    spans = block_spans(lines, block_starts(lines))
+    visible = mask_inline("\n".join(lines), spans)
+    visible = AUTOLINK.sub(lambda match: blank_text(match.group()), visible)
+    return visible, spans
 
 
 def escaped(text: str, index: int) -> bool:
@@ -142,27 +216,46 @@ def destinations(text: str) -> list[tuple[int, str]]:
     Определения проверяются независимо от использования; ссылки по метке
     разрешаются внутри своего документа и используют тот же адрес определения.
     """
-    visible = visible_text(text)
+    visible, spans = visible_document(text)
     found: list[tuple[int, str]] = []
-    for match in INLINE.finditer(visible):
-        bracket = match.start() + match.group().index("[")
-        if escaped(visible, bracket):
-            continue
-        position = match.end() - 1
-        parsed = inline_destination(visible, position)
-        if parsed is None or not closes_link(visible, parsed[1]):
-            continue
-        address_start = position + 1
-        while visible[address_start : address_start + 1] in (" ", "\t", "\n"):
-            address_start += 1
-        number = visible.count("\n", 0, address_start) + 1
-        found.append((number, parsed[0]))
-    for match in REFERENCE.finditer(visible):
+    for start, end in spans:
+        for match in INLINE.finditer(visible, start, end):
+            bracket = match.start() + match.group().index("[")
+            if escaped(visible, bracket):
+                continue
+            position = match.end() - 1
+            parsed = inline_destination(visible, position)
+            if parsed is None or not closes_link(visible, parsed[1]):
+                continue
+            address_start = position + 1
+            while visible[address_start : address_start + 1] in (" ", "\t", "\n"):
+                address_start += 1
+            number = visible.count("\n", 0, address_start) + 1
+            found.append((number, parsed[0]))
+        found.extend(reference_destinations(visible, start, end))
+    return sorted(found)
+
+
+def reference_destinations(visible: str, start: int, end: int) -> list[tuple[int, str]]:
+    """Определения ссылок, допустимые в начале блока и после предыдущего.
+
+    Определение не может прерывать абзац, поэтому проверяются только позиции от
+    начала блока, а подряд идущие определения образуют один ряд в его начале.
+    """
+    found: list[tuple[int, str]] = []
+    position = start
+    while position < end:
+        match = REFERENCE.match(visible, position, end)
+        if match is None:
+            break
         bracket = match.start() + match.group().index("[")
         if not escaped(visible, bracket):
             address = match.group(1).removeprefix("<").removesuffix(">")
             found.append((visible.count("\n", 0, match.start(1)) + 1, address))
-    return sorted(found)
+        position = match.end()
+        while position < end and visible[position] in " \t\n":
+            position += 1
+    return found
 
 
 def local_target(root: Path, page: Path, address: str) -> Path | None:
