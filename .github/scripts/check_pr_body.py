@@ -43,10 +43,10 @@ FENCE_CLOSE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
 HTML_RAW = re.compile(r"^<(pre|script|style|textarea)(?=[\s/>])", re.IGNORECASE)
 HTML_BLOCK = re.compile(
     r"^</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|"
-    r"details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|"
-    r"h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|"
-    r"optgroup|option|p|param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|"
-    r"track|ul)(?=[\s/>]|$)",
+    + r"details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|"
+    + r"h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|"
+    + r"optgroup|option|p|param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|"
+    + r"track|ul)(?=[\s/>]|$)",
     re.IGNORECASE,
 )
 
@@ -156,7 +156,7 @@ def mask_list_fences(lines: list[str]) -> list[str]:
         indent = len(expanded) - len(expanded.lstrip(" "))
         if expanded.strip():
             while indents and indent < indents[-1]:
-                indents.pop()
+                _ = indents.pop()
         base = indents[-1] if indents else 0
         relative = expanded[base:]
         marker = re.match(r"^ {0,3}(?:[-*+]|\d{1,9}[.)]) +", relative)
@@ -435,7 +435,7 @@ def substantive(values: list[str], minimum: int) -> bool:
 def _unescaped_pipe_positions(line: str) -> list[int]:
     """Позиции разделителей ячеек, перед которыми чётное число обратных косых черт."""
     backslash = chr(92)
-    positions = []
+    positions: list[int] = []
     for index, char in enumerate(line):
         if char != "|":
             continue
@@ -456,8 +456,8 @@ def table_cells(row: str) -> list[str]:
     positions = _unescaped_pipe_positions(line)
     if positions and positions[-1] == len(line) - 1:
         line = line[:-1]
-        positions.pop()
-    cells = []
+        _ = positions.pop()
+    cells: list[str] = []
     start = 0
     for position in positions:
         cells.append(line[start:position].strip())
@@ -533,7 +533,7 @@ def table_candidate_row(line: str) -> list[str] | None:
 
 def table_headers(lines: list[str]) -> list[int]:
     """Найти заголовки GFM-таблиц, не считая строку внутри уже открытой таблицы."""
-    headers = []
+    headers: list[int] = []
     table_open = False
     index = 0
     while index < len(lines):
@@ -613,7 +613,7 @@ def validate_coderabbit(content: str) -> list[str]:
         if not iteration_match or not all(row[1:]):
             errors.append(
                 "Строка таблицы CodeRabbit не связана с итерацией и reviewed HEAD "
-                f"или содержит пустые ячейки: {line.strip()}"
+                + f"или содержит пустые ячейки: {line.strip()}"
             )
             continue
         iteration = row[0].split("·", 1)[0].strip()
@@ -831,12 +831,12 @@ class Arguments(argparse.Namespace):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument(
+    _ = source.add_argument(
         "--body-file",
         type=Path,
         help="локальный Markdown-источник описания PR до публикации",
     )
-    source.add_argument(
+    _ = source.add_argument(
         "--event-path",
         type=Path,
         help="JSON события GitHub pull_request или pull_request_target",

@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import BinaryIO, TypeGuard, cast
+from typing import IO, TypeGuard, cast, override
 
 from check_pr_body import (
     FENCE_CLOSE,
@@ -45,7 +45,16 @@ class CheckError(Exception):
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     # Токен никогда не отправляется на иной адрес после перенаправления.
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
+    @override
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: http.client.HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
         return None
 
 
@@ -77,15 +86,17 @@ def get_json(path: str, token: str) -> tuple[JSONValue, str | None]:
     opener = urllib.request.build_opener(NoRedirect)
     for attempt in range(3):
         try:
-            with opener.open(request, timeout=30) as response:
+            # stubs описывают результат open как Any; для http(s) это HTTPResponse,
+            # и его поля проверяются ниже, поэтому тип уточняется один раз здесь.
+            with cast(
+                http.client.HTTPResponse, opener.open(request, timeout=30)
+            ) as response:
                 if 500 <= response.status <= 599:
                     retry = True
                 elif response.status != 200:
                     raise CheckError("GitHub API вернул неожиданный HTTP-статус")
                 else:
-                    # HTTP-ответ и тестовый поток возвращают бинарное содержимое.
-                    response_stream = cast(BinaryIO, response)
-                    payload = _parse_json(response_stream.read())
+                    payload = _parse_json(response.read())
                     return payload, response.headers.get("Link")
         except urllib.error.HTTPError as exc:
             # HTTPError также содержит открытый ответ; закрыть до повтора или отказа.
@@ -107,12 +118,12 @@ def get_json(path: str, token: str) -> tuple[JSONValue, str | None]:
     raise CheckError("Не удалось получить ответ GitHub API после повторов")
 
 
-def next_page(link, path, current):
+def next_page(link: str | None, path: str, current: int) -> int | None:
     """Проверить Link, не переходя по недоверенному URL с токеном."""
     if link is None:
         return None
     links = link.split(",")
-    relations = {}
+    relations: dict[str, str] = {}
     for item in links:
         match = LINK.fullmatch(item)
         if not match or match.group(2) in relations:
@@ -122,7 +133,7 @@ def next_page(link, path, current):
     # GitHub может вернуть каноническую ссылку /repositories/{id}/... вместо
     # /repos/{owner}/{repo}/.... По ссылке не переходим: следующий запрос всё
     # равно строится из проверенного исходного path.
-    pages = {}
+    pages: dict[str, int] = {}
     for relation, destination in relations.items():
         try:
             url = urllib.parse.urlsplit(destination)
@@ -233,10 +244,10 @@ def _html_block_terminator(line: str) -> str | None:
     return None
 
 
-def visible_comment(body):
+def visible_comment(body: str) -> str:
     """Оставить только видимый Markdown вне fenced-блоков и HTML-комментариев."""
     lines = strip_comments(body.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
-    result = []
+    result: list[str] = []
     char = ""
     length = 0
     html_block = False
@@ -484,12 +495,12 @@ def run(env: Mapping[str, str]) -> list[str]:
     return problems
 
 
-def safe_message(message):
+def safe_message(message: object) -> str:
     # Не позволять данным из PR сформировать команду workflow или управляющие строки.
     return "".join(c if ord(c) >= 32 and ord(c) != 127 else " " for c in str(message))
 
 
-def main():
+def main() -> int:
     try:
         problems = run(os.environ)
     except CheckError as exc:

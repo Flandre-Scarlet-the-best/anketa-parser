@@ -4,7 +4,9 @@
 import argparse
 import re
 import sys
+from collections.abc import Hashable, Sequence
 from pathlib import Path
+from typing import TypeGuard, cast, override
 from urllib.parse import unquote
 
 import yaml
@@ -39,21 +41,56 @@ class UniqueSafeLoader(yaml.SafeLoader):
     ключей на всех уровнях вложенности.
     """
 
-    def construct_mapping(self, node, deep=False):
-        seen = set()
-        for key_node, _ in node.value:
-            key = self.construct_object(key_node, deep=deep)
+    @override
+    def construct_mapping(
+        self, node: yaml.MappingNode, deep: bool = False
+    ) -> dict[Hashable, object]:
+        # stubs описывают CollectionNode.value и Node.start_mark как Any, хотя
+        # отображение YAML — это пары узлов с метками разбора; уточняем один раз.
+        pairs = cast(Sequence[tuple[yaml.Node, yaml.Node]], node.value)
+        seen: set[Hashable] = set()
+        for key_node, _ in pairs:
+            # Результат construct_object в stubs не аннотирован: ключ YAML —
+            # хешируемое значение, а нехешируемый ключ отвергается ниже.
+            key = cast(Hashable, self.construct_object(key_node, deep=deep))
+            mark = cast(yaml.Mark, key_node.start_mark)
             try:
                 if key in seen:
                     raise yaml.constructor.ConstructorError(
-                        None, None, "повторяющийся YAML-ключ", key_node.start_mark
+                        None, None, "повторяющийся YAML-ключ", mark
                     )
                 seen.add(key)
             except TypeError as error:
                 raise yaml.constructor.ConstructorError(
-                    None, None, "неподдерживаемый YAML-ключ", key_node.start_mark
+                    None, None, "неподдерживаемый YAML-ключ", mark
                 ) from error
         return super().construct_mapping(node, deep=deep)
+
+
+def _load_frontmatter(source: str) -> object:
+    """Разобрать frontmatter безопасным загрузчиком, вернув значение как object.
+
+    stubs PyYAML описывают результат load как Any; единственное уточнение типа
+    сделано здесь, а структура проверяется ниже обычными isinstance.
+    """
+    return cast(object, yaml.load(source, Loader=UniqueSafeLoader))  # noqa: S506
+
+
+def _is_string_keyed_mapping(value: object) -> TypeGuard[dict[str, object]]:
+    """Отображение, все ключи которого — строки."""
+    if not isinstance(value, dict):
+        return False
+    return all(isinstance(key, str) for key in cast(dict[object, object], value))
+
+
+def _is_string_mapping(value: object) -> TypeGuard[dict[str, str]]:
+    """Отображение строк в строки; иное содержимое недопустимо в metadata."""
+    if not isinstance(value, dict):
+        return False
+    return all(
+        isinstance(key, str) and isinstance(item, str)
+        for key, item in cast(dict[object, object], value).items()
+    )
 
 
 def validate_skill(path: Path) -> list[str]:
@@ -72,14 +109,12 @@ def validate_skill(path: Path) -> list[str]:
     try:
         # UniqueSafeLoader не опаснее yaml.safe_load: он наследует SafeLoader и не
         # создаёт произвольные объекты, а лишь запрещает повторные ключи.
-        entries = yaml.load("\n".join(lines[1:end]), Loader=UniqueSafeLoader)  # noqa: S506
+        entries = _load_frontmatter("\n".join(lines[1:end]))
     except yaml.YAMLError as error:
-        mark = getattr(error, "problem_mark", None)
+        mark = error.problem_mark if isinstance(error, yaml.MarkedYAMLError) else None
         where = f", строка {mark.line + 2}" if mark else ""
         return [f"{path}: неразбираемое значение YAML frontmatter{where}"]
-    if not isinstance(entries, dict) or not all(
-        isinstance(key, str) for key in entries
-    ):
+    if not _is_string_keyed_mapping(entries):
         return [f"{path}: frontmatter должен быть отображением со строковыми ключами"]
     for key in entries:
         if key not in ALLOWED:
@@ -105,10 +140,7 @@ def validate_skill(path: Path) -> list[str]:
         errors.append(f"{path}: description должен быть строкой из 1–1024 символов")
     if "metadata" in entries:
         metadata = entries["metadata"]
-        if not isinstance(metadata, dict) or not all(
-            isinstance(key, str) and isinstance(value, str)
-            for key, value in metadata.items()
-        ):
+        if not _is_string_mapping(metadata):
             errors.append(f"{path}: metadata должен быть отображением строк в строки")
     for key in ("license", "compatibility", "allowed-tools"):
         if key in entries and not isinstance(entries[key], str):
@@ -437,10 +469,16 @@ def validate_tree(root: Path) -> list[str]:
     return errors
 
 
+class Arguments(argparse.Namespace):
+    def __init__(self) -> None:
+        super().__init__()
+        self.root: Path = Path()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=Path.cwd())
-    args = parser.parse_args()
+    _ = parser.add_argument("--root", type=Path, default=Path.cwd())
+    args = parser.parse_args(namespace=Arguments())
     errors = validate_tree(args.root)
     if errors:
         for error in errors:
