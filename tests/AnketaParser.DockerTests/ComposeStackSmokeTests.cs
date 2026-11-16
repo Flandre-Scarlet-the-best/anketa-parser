@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace AnketaParser.DockerTests;
 
@@ -76,6 +77,18 @@ public sealed class ComposeStackSmokeTests
                 ShortCommandTimeout,
                 _cancellationToken);
             Assert.Equal("healthy", health);
+
+            // Копия должна появиться от фонового сервиса без ручной команды backup.
+            var automaticBackupCreated = false;
+            for (var attempt = 0; attempt < 15 && !automaticBackupCreated; attempt++)
+            {
+                var status = await compose.RunAsync([.. composePrefix, "run", "--rm", "maintenance", "storage", "backup-status"],
+                    ShortCommandTimeout, _cancellationToken);
+                using var backup = JsonDocument.Parse(status);
+                automaticBackupCreated = backup.RootElement.GetProperty("LastSuccess").ValueKind == JsonValueKind.String;
+                if (!automaticBackupCreated) await Task.Delay(TimeSpan.FromSeconds(1), _cancellationToken);
+            }
+            Assert.True(automaticBackupCreated, "Фоновый сервис должен создать резервную копию автоматически.");
 
             // Маркер хранится в одноразовой тестовой БД и не создаёт продуктовую схему.
             await RunPsqlAsync(
