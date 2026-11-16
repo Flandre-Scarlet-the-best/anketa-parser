@@ -116,7 +116,7 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         return account.Id;
     }
 
-    public async Task<Guid> LinkAsync(Guid profileId, Guid contactId, Guid anonId, LinkConfidence confidence, string provenance, CancellationToken cancellationToken)
+    public async Task<ProfileLinkResult> LinkAsync(Guid profileId, Guid contactId, Guid anonId, LinkConfidence confidence, string provenance, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(provenance);
         if (anonId == Guid.Empty)
@@ -131,22 +131,62 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         var link = new ProfileLink { ProfileId = profileId, ContactId = contactId, AnonId = anonId, Confidence = confidence, VerificationId = verificationId, Provenance = provenance, LinkedAt = Now };
         db.Add(link);
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        return anonId;
+        return new(link.Id, anonId);
     }
 
     public async Task UnlinkAsync(Guid linkId, string reason, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await LockAsync("link:" + linkId, cancellationToken).ConfigureAwait(false);
         var link = await db.Set<ProfileLink>().SingleAsync(x => x.Id == linkId, cancellationToken).ConfigureAwait(false);
-        link.UnlinkedAt = Now; link.UnlinkReason = reason;
+        await db.Entry(link).ReloadAsync(cancellationToken).ConfigureAwait(false);
+        if (link.UnlinkedAt is null)
+        {
+            link.UnlinkedAt = Now; link.UnlinkReason = reason;
+        }
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task ReviewAsync(Guid profileId, string actor, string reason, CancellationToken cancellationToken) =>
+        ModerateAsync(profileId, ProfileState.Reviewed, actor, reason, cancellationToken);
+
+    public Task RejectAsync(Guid profileId, string actor, string reason, CancellationToken cancellationToken) =>
+        ModerateAsync(profileId, ProfileState.Rejected, actor, reason, cancellationToken);
+
+    private async Task ModerateAsync(Guid profileId, ProfileState state, string actor, string reason, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        await using var transaction = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+        await LockAsync("profile:" + profileId, ct).ConfigureAwait(false);
+        var profile = await db.Set<Profile>().SingleAsync(x => x.Id == profileId, ct).ConfigureAwait(false);
+        await db.Entry(profile).ReloadAsync(ct).ConfigureAwait(false);
+        if (profile.State == ProfileState.Archived ||
+            await db.Set<OriginalPost>().AnyAsync(x => x.Id == profile.PostId && x.Excluded, ct).ConfigureAwait(false) ||
+            (state == ProfileState.Reviewed && profile.State is not (ProfileState.Candidate or ProfileState.Rejected)))
+            throw new InvalidOperationException("Переход состояния анкеты недопустим.");
+        if (profile.State != state)
+        {
+            profile.State = state;
+            db.Add(new ModerationDecision { ProfileId = profileId, Actor = actor, Action = state == ProfileState.Reviewed ? "review" : "reject", Reason = reason, CreatedAt = Now });
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(ct).ConfigureAwait(false);
     }
 
     public async Task PublishAsync(Guid profileId, CancellationToken cancellationToken)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await LockAsync("profile:" + profileId, cancellationToken).ConfigureAwait(false);
         var profile = await db.Set<Profile>().SingleAsync(x => x.Id == profileId, cancellationToken).ConfigureAwait(false);
+        await db.Entry(profile).ReloadAsync(cancellationToken).ConfigureAwait(false);
+        if (profile.State == ProfileState.Rejected)
+            throw new InvalidOperationException("Отклонённая анкета требует явной повторной проверки перед публикацией.");
         profile.State = ProfileState.Published;
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task ArchiveAsync(Guid profileId, string actor, string reason, CancellationToken cancellationToken)

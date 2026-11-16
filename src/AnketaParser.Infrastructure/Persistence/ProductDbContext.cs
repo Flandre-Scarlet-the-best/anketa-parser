@@ -74,7 +74,7 @@ public sealed class ProductDbContext(DbContextOptions<ProductDbContext> options)
         builder.Entity<T>().HasOne<TPrincipal>().WithMany().HasForeignKey(property).OnDelete(DeleteBehavior.Restrict);
 }
 
-/// <summary>Создание модели для tooling не требует подключения или секрета.</summary>
+/// <summary>Создание модели для инструментов EF Core не требует подключения или секрета.</summary>
 public sealed class ProductDesignTimeFactory : IDesignTimeDbContextFactory<ProductDbContext>
 {
     public ProductDbContext CreateDbContext(string[] args) =>

@@ -12,6 +12,89 @@ public sealed class BackupServiceTests : IDisposable
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "anketa-backup-unit-" + Guid.NewGuid().ToString("N"));
 
     [Theory]
+    [InlineData("valid", Core.Diagnostics.ProbeStatus.Healthy)]
+    [InlineData("missing_archive", Core.Diagnostics.ProbeStatus.Skipped)]
+    [InlineData("changed_length", Core.Diagnostics.ProbeStatus.Skipped)]
+    [InlineData("missing_checksum", Core.Diagnostics.ProbeStatus.Skipped)]
+    [InlineData("changed_checksum", Core.Diagnostics.ProbeStatus.Skipped)]
+    [InlineData("missing_verification", Core.Diagnostics.ProbeStatus.Skipped)]
+    [InlineData("other_archive", Core.Diagnostics.ProbeStatus.Skipped)]
+    [InlineData("old_verification", Core.Diagnostics.ProbeStatus.Skipped)]
+    [InlineData("old_backup", Core.Diagnostics.ProbeStatus.Skipped)]
+    [InlineData("latest_failure", Core.Diagnostics.ProbeStatus.Skipped)]
+    [InlineData("invalid_status", Core.Diagnostics.ProbeStatus.Skipped)]
+    public async Task ReadinessRequiresAvailableArchiveAndMatchingRestoreEvidence(string scenario, Core.Diagnostics.ProbeStatus expected)
+    {
+        Directory.CreateDirectory(_directory);
+        var path = Path.Combine(_directory, "latest.dump");
+        File.WriteAllText(path, "синтетический архив");
+        var now = DateTimeOffset.UtcNow;
+        var verifiedAt = scenario == "old_verification" ? now.AddDays(-3) : now;
+        var digest = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
+        var state = new BackupState(scenario == "old_backup" ? now.AddDays(-3) : now,
+            scenario == "latest_failure" ? now.AddSeconds(1) : null, null, "latest.dump", verifiedAt)
+        { ArchiveLength = new FileInfo(path).Length, ArchiveDigest = digest };
+        File.WriteAllText(path + ".sha256", digest);
+        File.WriteAllText(path + ".verified", JsonSerializer.Serialize(new RestoreVerification(
+            scenario == "other_archive" ? "older.dump" : "latest.dump", state.ArchiveLength.Value, digest, verifiedAt)));
+        File.WriteAllText(Path.Combine(_directory, "status.json"), scenario == "invalid_status" ? "{неверный JSON}" : JsonSerializer.Serialize(state));
+        if (scenario == "missing_archive") File.Delete(path);
+        if (scenario == "changed_length") File.AppendAllText(path, "изменение");
+        if (scenario == "missing_checksum") File.Delete(path + ".sha256");
+        if (scenario == "changed_checksum") File.WriteAllText(path + ".sha256", new string('0', 64));
+        if (scenario == "missing_verification") File.Delete(path + ".verified");
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Backup:Directory"] = _directory,
+        }).Build();
+        var result = await new BackupReadinessProbe(configuration).CheckAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(expected, result.Status);
+        Assert.DoesNotContain(_directory, result.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExternalCopyObservesCancellationDuringWrite()
+    {
+        using var cancellation = new CancellationTokenSource();
+        Directory.CreateDirectory(_directory);
+        var path = Path.Combine(_directory, "copy.partial");
+        await File.WriteAllBytesAsync(path, new byte[100_000], TestContext.Current.CancellationToken);
+        await using var source = File.OpenRead(path);
+        await using var destination = new BlockingWriteStream();
+        var copy = BackupService.CopyArchiveAsync(source, destination, cancellation.Token);
+        await destination.Started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => copy.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        Assert.Equal(0, destination.Length);
+    }
+
+    private sealed class BlockingWriteStream : MemoryStream
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            WriteAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            Started.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task FreshDatesWithoutArchiveCannotAdvertiseHealthy()
+    {
+        Directory.CreateDirectory(_directory);
+        var now = DateTimeOffset.UtcNow;
+        File.WriteAllText(Path.Combine(_directory, "status.json"), JsonSerializer.Serialize(new BackupState(now, null, null, "missing.dump", now)));
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Backup:Directory"] = _directory,
+        }).Build();
+        Assert.Equal(Core.Diagnostics.ProbeStatus.Skipped,
+            (await new BackupReadinessProbe(configuration).CheckAsync(TestContext.Current.CancellationToken)).Status);
+    }
+
+    [Theory]
     [InlineData(long.MaxValue)]
     [InlineData(1L)]
     public void RotationPreservesUnknownArchiveAndChecksum(long maxBytes)

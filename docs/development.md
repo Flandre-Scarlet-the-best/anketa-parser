@@ -38,7 +38,8 @@ docker compose config --quiet
 без изменения зависимостей.
 `format --verify-no-changes` проверяет стиль, не переписывая файлы. Сборка должна
 пройти строгую политику. Тесты используют Microsoft.Testing.Platform и xUnit v3;
-Интеграционная проверка Docker по умолчанию пропускается. Следующая успешная команда не отменяет
+При локальном запуске без ANKETAPARSER_DOCKER_TESTS=1 интеграционные проверки
+Docker пропускаются. Следующая успешная команда не отменяет
 предыдущий сбой.
 
 ## Контракты Python и Markdown
@@ -144,7 +145,10 @@ ANKETAPARSER_DOCKER_TESTS=1 dotnet test --project tests/AnketaParser.DockerTests
 [ci.yml](../.github/workflows/ci.yml) владеет командами и событиями: push в `main`,
 PR с любой базой и `merge_group`. Задание контрактов запускает unittest, Ruff,
 BasedPyright с охватом, проверки skills и Markdown; задание сборки — .NET и Compose.
-По умолчанию живая интеграционная проверка Docker в CI не включена.
+Задание сборки отдельно включает ANKETAPARSER_DOCKER_TESTS=1 и выполняет весь набор
+AnketaParser.DockerTests: изолированную PostgreSQL, права и полное восстановление.
+Проверка docker compose config валидирует только описание контейнеров и не заменяет
+эти тесты.
 
 Публикацией, описанием PR и границами кандидатной и доверенной проверок владеет
 [git-workflow](../.agents/skills/git-workflow/SKILL.md), выполнением явно

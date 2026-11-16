@@ -22,9 +22,16 @@ internal static class PostgresToolConnection
     internal static void Apply(ProcessStartInfo info, NpgsqlConnectionStringBuilder cs)
     {
         Validate(cs);
-        info.Environment.Remove("PGHOSTADDR");
-        info.Environment.Remove("PGSERVICE");
-        info.Environment.Remove("PGSERVICEFILE");
+        // Только параметры подключения libpq: локализация и настройки сеанса сохраняются.
+        foreach (var name in new[]
+        {
+            "PGHOSTADDR", "PGSERVICE", "PGSERVICEFILE", "PGSYSCONFDIR", "PGPASSFILE", "PGREQUIREAUTH",
+            "PGOPTIONS", "PGAPPNAME", "PGREQUIRESSL", "PGSSLCOMPRESSION", "PGSSLCERT", "PGSSLKEY",
+            "PGSSLCERTMODE", "PGSSLROOTCERT", "PGSSLCRL", "PGSSLCRLDIR", "PGSSLSNI",
+            "PGREQUIREPEER", "PGSSLMINPROTOCOLVERSION", "PGSSLMAXPROTOCOLVERSION", "PGGSSLIB",
+            "PGGSSDELEGATION", "PGCLIENTENCODING", "PGTARGETSESSIONATTRS", "PGLOADBALANCEHOSTS",
+            "PGMINPROTOCOLVERSION", "PGMAXPROTOCOLVERSION",
+        }) info.Environment.Remove(name);
         info.Environment["PGHOST"] = cs.Host;
         info.Environment["PGPORT"] = cs.Port.ToString(CultureInfo.InvariantCulture);
         info.Environment["PGDATABASE"] = cs.Database;
@@ -45,10 +52,16 @@ internal static class PostgresToolConnection
         SetIfConfigured(info, "PGSSLCERT", cs.SslCertificate);
         SetIfConfigured(info, "PGSSLKEY", cs.SslKey);
         SetIfConfigured(info, "PGPASSFILE", cs.Passfile);
+        SetIfConfigured(info, "PGOPTIONS", cs.Options);
+        SetIfConfigured(info, "PGAPPNAME", cs.ApplicationName);
+        SetIfConfigured(info, "PGCLIENTENCODING", cs.ClientEncoding);
+        SetIfConfigured(info, "PGTARGETSESSIONATTRS", cs.TargetSessionAttributes);
+        info.Environment["PGLOADBALANCEHOSTS"] = cs.LoadBalanceHosts ? "random" : "disable";
     }
 
     private static void SetIfConfigured(ProcessStartInfo info, string name, string? value)
     {
         if (!string.IsNullOrEmpty(value)) info.Environment[name] = value;
+        else info.Environment.Remove(name);
     }
 }

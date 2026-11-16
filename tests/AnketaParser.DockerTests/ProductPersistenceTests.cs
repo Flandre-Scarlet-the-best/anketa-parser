@@ -2,6 +2,7 @@ using AnketaParser.Core.Persistence;
 using AnketaParser.Infrastructure.Persistence;
 
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 using Npgsql;
 
@@ -10,6 +11,85 @@ namespace AnketaParser.DockerTests;
 public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClassFixture<PostgresTestCluster>
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    [Fact]
+    public async Task TypedLinksAreAddressableAndRepeatedUnlinkPreservesHistory()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        using var services = new ServiceCollection().AddScoped<IProductStore>(_ => new ProductStore(db)).BuildServiceProvider();
+        var store = services.GetRequiredService<IProductStore>();
+        var revision = await store.ImportAsync(new("synthetic", "1", "https://example.invalid/1", "Синтетический пост", null), Ct);
+        var profile = await store.AnalyzeAsync(Analysis(revision), Ct);
+        var contact = await store.RegisterContactAsync(new(revision, "discord", "example", "example", 0.5m, "упоминание"), Ct);
+        var first = await store.LinkAsync(profile, contact, Guid.Empty, LinkConfidence.Suggested, "неподтверждённая связь", Ct);
+        var second = await store.LinkAsync(profile, contact, first.AnonId, LinkConfidence.Suggested, "другое основание", Ct);
+        Assert.NotEqual(first.LinkId, second.LinkId);
+        Assert.Equal(first.AnonId, second.AnonId);
+        await store.PublishAsync(profile, Ct);
+        await store.UnlinkAsync(first.LinkId, "первоначальная причина", Ct);
+        var original = await db.Set<ProfileLink>().AsNoTracking().SingleAsync(x => x.Id == first.LinkId, Ct);
+        await Task.WhenAll(Enumerable.Range(0, 4).Select(async _ =>
+        {
+            await using var concurrent = database.Open();
+            await new ProductStore(concurrent).UnlinkAsync(first.LinkId, "повторная причина", Ct);
+        }));
+        var unchanged = await db.Set<ProfileLink>().AsNoTracking().SingleAsync(x => x.Id == first.LinkId, Ct);
+        Assert.NotNull(original.UnlinkedAt);
+        Assert.Equal(original.UnlinkedAt, unchanged.UnlinkedAt);
+        Assert.Equal("первоначальная причина", unchanged.UnlinkReason);
+        Assert.Equal("неподтверждённая связь", unchanged.Provenance);
+        Assert.Null((await db.Set<ProfileLink>().AsNoTracking().SingleAsync(x => x.Id == second.LinkId, Ct)).UnlinkedAt);
+        Assert.Equal(profile, (await store.LatestAsync(first.AnonId, Ct))!.Id);
+        await store.UnlinkAsync(second.LinkId, "отмена оставшейся связи", Ct);
+        Assert.Null(await store.LatestAsync(first.AnonId, Ct));
+        Assert.Equal(1, await db.Set<Anon>().CountAsync(Ct));
+        Assert.Equal(1, await db.Set<Profile>().CountAsync(Ct));
+    }
+
+    [Fact]
+    public async Task TypedReviewAndRejectionRequireExplicitReconsiderationAndPreserveExclusion()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        using var services = new ServiceCollection().AddScoped<IProductStore>(_ => new ProductStore(db)).BuildServiceProvider();
+        var store = services.GetRequiredService<IProductStore>();
+        var input = new PostInput("synthetic", "1", "https://example.invalid/1", "Синтетический пост", null);
+        var revision = await store.ImportAsync(input, Ct);
+        var profile = await store.AnalyzeAsync(Analysis(revision), Ct);
+        var contact = await store.RegisterContactAsync(new(revision, "email", "x@example.invalid", "x@example.invalid", 0.3m, "упоминание"), Ct);
+        var link = await store.LinkAsync(profile, contact, Guid.Empty, LinkConfidence.Suggested, "совпадение не доказывает личность", Ct);
+        Assert.Equal(ProfileState.Candidate, (await db.Set<Profile>().AsNoTracking().SingleAsync(Ct)).State);
+        await Assert.ThrowsAsync<ArgumentException>(() => store.ReviewAsync(profile, "", "основание", Ct));
+        await Assert.ThrowsAsync<ArgumentException>(() => store.RejectAsync(profile, "оператор", "", Ct));
+        await store.ReviewAsync(profile, "оператор", "проверено вручную", Ct);
+        Assert.Equal(ProfileState.Reviewed, (await db.Set<Profile>().AsNoTracking().SingleAsync(Ct)).State);
+        Assert.Null(await store.LatestAsync(link.AnonId, Ct));
+        await store.PublishAsync(profile, Ct);
+        await store.RejectAsync(profile, "оператор", "неверные сведения", Ct);
+        await store.RejectAsync(profile, "другой оператор", "повтор", Ct);
+        Assert.Equal(ProfileState.Rejected, (await db.Set<Profile>().AsNoTracking().SingleAsync(Ct)).State);
+        Assert.Null(await store.LatestAsync(link.AnonId, Ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.PublishAsync(profile, Ct));
+        await store.ReviewAsync(profile, "оператор", "повторная проверка", Ct);
+        await store.PublishAsync(profile, Ct);
+        var user = await store.RegisterBotUserAsync(30001, Ct);
+        await store.ComplainAsync(user, profile, contact, "сомнение", Ct);
+        Assert.Equal(profile, (await store.LatestAsync(link.AnonId, Ct))!.Id);
+        await store.ArchiveAsync(profile, "оператор", "подтверждённая подделка", Ct);
+        Assert.Null(await store.LatestAsync(link.AnonId, Ct));
+        Assert.Equal(revision, await store.ImportAsync(input, Ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.ReviewAsync(profile, "оператор", "обход архива", Ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.RejectAsync(profile, "оператор", "обход архива", Ct));
+        await Assert.ThrowsAsync<DbUpdateException>(() => store.PublishAsync(profile, Ct));
+        db.ChangeTracker.Clear();
+        var history = await db.Set<ModerationDecision>().OrderBy(x => x.CreatedAt).ToArrayAsync(Ct);
+        Assert.Equal(["review", "reject", "review", "archive"], history.Select(x => x.Action));
+        Assert.Equal(["проверено вручную", "неверные сведения", "повторная проверка", "подтверждённая подделка"], history.Select(x => x.Reason));
+        Assert.All(history, x => Assert.Equal("оператор", x.Actor));
+    }
 
     [Fact]
     public async Task ExpiredFinalLeaseClosesAttemptAndRejectsStaleCompletion()
@@ -47,7 +127,7 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
         var second = await Contact(store, revision, "telegram", "second");
         await store.ConfirmTelegramAsync(first, 10001, null, "проверка первого контакта", Ct);
         await store.ConfirmTelegramAsync(second, 10001, null, "проверка второго контакта", Ct);
-        var anon = await store.LinkAsync(profile, first, Guid.Empty, LinkConfidence.VerifiedAccount, "проверка", Ct);
+        var anon = (await store.LinkAsync(profile, first, Guid.Empty, LinkConfidence.VerifiedAccount, "проверка", Ct)).AnonId;
         await store.LinkAsync(profile, second, anon, LinkConfidence.VerifiedAccount, "тот же аккаунт", Ct);
         var otherAccount = await store.ConfirmTelegramAsync(first, 10002, null, "новое независимое подтверждение", Ct);
         var used = await db.Set<ContactVerification>().SingleAsync(x => x.ContactId == second, Ct);
@@ -110,7 +190,7 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
         Assert.NotEqual(account, second);
         Assert.Equal(3, await db.Set<TelegramUsername>().CountAsync(Ct));
         Assert.Equal(2, await db.Set<TelegramUsername>().CountAsync(x => x.ValidTo == null, Ct));
-        var anon = await store.LinkAsync(profile, telegram, Guid.Empty, LinkConfidence.VerifiedAccount, "проверен аккаунт, авторство неизвестно", Ct);
+        var anon = (await store.LinkAsync(profile, telegram, Guid.Empty, LinkConfidence.VerifiedAccount, "проверен аккаунт, авторство неизвестно", Ct)).AnonId;
         await store.LinkAsync(profile, other, anon, LinkConfidence.Suggested, "неоднозначность", Ct);
         await Assert.ThrowsAsync<DbUpdateException>(() => store.LinkAsync(profile, email, anon, LinkConfidence.VerifiedAccount, "нельзя подтвердить по email", Ct));
         db.ChangeTracker.Clear();
@@ -131,7 +211,7 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
         var revision = await Import(store, "1");
         var profile = await store.AnalyzeAsync(Analysis(revision), Ct);
         var contact = await Contact(store, revision, "discord", "synthetic");
-        var anon = await store.LinkAsync(profile, contact, Guid.Empty, LinkConfidence.Suggested, "публичное упоминание", Ct);
+        var anon = (await store.LinkAsync(profile, contact, Guid.Empty, LinkConfidence.Suggested, "публичное упоминание", Ct)).AnonId;
         await store.PublishAsync(profile, Ct);
         var nextRevision = await Import(store, "2");
         var next = await store.AnalyzeAsync(Analysis(nextRevision), Ct);

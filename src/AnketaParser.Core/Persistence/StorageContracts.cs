@@ -9,6 +9,7 @@ public sealed record AnalysisInput(Guid RevisionId, string Processor, string Sch
 public sealed record ContactInput(Guid RevisionId, string Platform, string RawValue, string NormalizedValue, decimal Confidence, string Provenance);
 public sealed record PublicProfile(Guid Id, int? Age, string? Location, string? GenderDescription, string? Interests, string? Goals);
 public sealed record JobLease(Guid JobId, Guid Token, Guid RevisionId, int Attempt, DateTimeOffset ExpiresAt);
+public sealed record ProfileLinkResult(Guid LinkId, Guid AnonId);
 
 /// <summary>Единый контракт хранения для будущих интерфейсов; технические Telegram ID не входят в публичную выдачу.</summary>
 public interface IProductStore
@@ -17,8 +18,10 @@ public interface IProductStore
     Task<Guid> AnalyzeAsync(AnalysisInput input, CancellationToken cancellationToken);
     Task<Guid> RegisterContactAsync(ContactInput input, CancellationToken cancellationToken);
     Task<Guid> ConfirmTelegramAsync(Guid contactId, long technicalId, string? username, string provenance, CancellationToken cancellationToken);
-    Task<Guid> LinkAsync(Guid profileId, Guid contactId, Guid anonId, LinkConfidence confidence, string provenance, CancellationToken cancellationToken);
+    Task<ProfileLinkResult> LinkAsync(Guid profileId, Guid contactId, Guid anonId, LinkConfidence confidence, string provenance, CancellationToken cancellationToken);
     Task UnlinkAsync(Guid linkId, string reason, CancellationToken cancellationToken);
+    Task ReviewAsync(Guid profileId, string actor, string reason, CancellationToken cancellationToken);
+    Task RejectAsync(Guid profileId, string actor, string reason, CancellationToken cancellationToken);
     Task PublishAsync(Guid profileId, CancellationToken cancellationToken);
     Task ArchiveAsync(Guid profileId, string actor, string reason, CancellationToken cancellationToken);
     Task<PublicProfile?> LatestAsync(Guid anonId, CancellationToken cancellationToken);

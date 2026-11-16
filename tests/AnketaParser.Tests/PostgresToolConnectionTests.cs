@@ -8,6 +8,44 @@ namespace AnketaParser.Tests;
 
 public sealed class PostgresToolConnectionTests
 {
+    [Fact]
+    public void ToolConnectionRemovesInheritedConnectionOverridesAndPreservesLocale()
+    {
+        var info = new ProcessStartInfo("pg_dump");
+        string[] overrides = ["PGSSLROOTCERT", "PGSSLCERT", "PGSSLKEY", "PGPASSFILE", "PGSERVICEFILE", "PGSYSCONFDIR",
+            "PGSSLCRL", "PGSSLCRLDIR", "PGSSLCERTMODE", "PGSSLMINPROTOCOLVERSION", "PGSSLMAXPROTOCOLVERSION",
+            "PGOPTIONS", "PGAPPNAME", "PGREQUIREAUTH", "PGREQUIREPEER", "PGTARGETSESSIONATTRS",
+            "PGSSLSNI", "PGSSLCOMPRESSION", "PGGSSLIB", "PGGSSDELEGATION", "PGMINPROTOCOLVERSION", "PGMAXPROTOCOLVERSION", "PGCLIENTENCODING"];
+        foreach (var key in overrides) info.Environment[key] = "чужая настройка";
+        info.Environment["PGLOADBALANCEHOSTS"] = "чужая настройка";
+        info.Environment["PGLOCALEDIR"] = "локализация";
+        PostgresToolConnection.Apply(info, new NpgsqlConnectionStringBuilder { Host = "primary", Database = "product", Username = "backup" });
+        Assert.All(overrides, key => Assert.False(info.Environment.ContainsKey(key), key));
+        Assert.Equal("локализация", info.Environment["PGLOCALEDIR"]);
+        Assert.Equal("disable", info.Environment["PGLOADBALANCEHOSTS"]);
+        Assert.Empty(info.ArgumentList);
+    }
+
+    [Fact]
+    public void ToolConnectionTransfersExplicitSessionOptions()
+    {
+        var info = new ProcessStartInfo("pg_restore");
+        PostgresToolConnection.Apply(info, new NpgsqlConnectionStringBuilder
+        {
+            Host = "primary",
+            Options = "-c statement_timeout=10000",
+            ApplicationName = "maintenance",
+            TargetSessionAttributes = "primary",
+            LoadBalanceHosts = true,
+            ClientEncoding = "UTF8",
+        });
+        Assert.Equal("-c statement_timeout=10000", info.Environment["PGOPTIONS"]);
+        Assert.Equal("maintenance", info.Environment["PGAPPNAME"]);
+        Assert.Equal("primary", info.Environment["PGTARGETSESSIONATTRS"]);
+        Assert.Equal("random", info.Environment["PGLOADBALANCEHOSTS"]);
+        Assert.Equal("UTF8", info.Environment["PGCLIENTENCODING"]);
+    }
+
     [Theory]
     [InlineData("primary", 5432, "product", true)]
     [InlineData("PRIMARY", 5432, "product", true)]

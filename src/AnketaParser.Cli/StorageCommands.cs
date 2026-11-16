@@ -15,8 +15,21 @@ namespace AnketaParser.Cli;
 
 internal static partial class StorageCommands
 {
+    private const string Usage = "Команды storage: help, provision, migrate, schema, backup, backup-status, backup-list, backup-rotate, backup-verify <имя>, restore-empty <имя>, backup-daemon.";
+
     public static async Task<int> RunAsync(string[] args, TextWriter stdout, TextWriter stderr, string? contentRoot, CancellationToken ct)
     {
+        if (args is ["storage", "help" or "--help" or "-h"])
+        {
+            await stdout.WriteLineAsync(Usage).ConfigureAwait(false);
+            return ExitCodes.Success;
+        }
+        if (args is not (["storage", "provision" or "migrate" or "schema" or "backup" or "backup-status" or "backup-list" or "backup-rotate" or "backup-daemon"] or
+            ["storage", "backup-verify" or "restore-empty", _]))
+        {
+            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
+            return ExitCodes.InvalidUsage;
+        }
         try
         {
             if (args is ["storage", "backup-verify" or "restore-empty", var name] && !BackupService.IsArchiveName(name))
@@ -85,11 +98,21 @@ internal static partial class StorageCommands
                         return ExitCodes.Success;
                     }
                 default:
-                    await stderr.WriteLineAsync("Команды storage: provision, migrate, schema, backup, backup-status, backup-list, backup-rotate, backup-verify <имя>, restore-empty <имя>, backup-daemon.").ConfigureAwait(false);
+                    await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
                     return ExitCodes.InvalidUsage;
             }
             await stdout.WriteLineAsync("{\"status\":\"ok\"}").ConfigureAwait(false);
             return ExitCodes.Success;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await stderr.WriteLineAsync("Операция хранения остановлена.").ConfigureAwait(false);
+            return ExitCodes.Success;
+        }
+        catch (RestoreTargetException exception)
+        {
+            await stderr.WriteLineAsync(exception.Message).ConfigureAwait(false);
+            return ExitCodes.DependencyUnavailable;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

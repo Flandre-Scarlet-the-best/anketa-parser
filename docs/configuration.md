@@ -104,6 +104,7 @@ ANKETAPARSER_Host__InstanceName=local-check dotnet run --project src/AnketaParse
 
 ## Настройки хранилища
 
-Секции Backup, Provision и Restore используют тот же pipeline. Их параметры и
+Секции Backup, Provision и Restore используют тот же порядок загрузки
+конфигурации. Их параметры и
 права описаны в [регламенте хранения](persistence.md). Host не использует
 секреты Provision/Restore; Compose передаёт их только обслуживающим операциям.

@@ -7,6 +7,22 @@ namespace AnketaParser.Tests;
 
 public sealed class CliApplicationTests
 {
+    [Fact]
+    public async Task StorageHelpBypassesInvalidConfigurationAndUnknownCommandIsUsageError()
+    {
+        using var root = new Support.TemporaryContentRoot("{}");
+        foreach (var json in new[] { "{}", "{неверный JSON}", """{"Database":{"ConnectionString":"invalid"},"Backup":{"Directory":null,"TimeoutSeconds":0}}""" })
+        {
+            await File.WriteAllTextAsync(Path.Combine(root.Path, "appsettings.json"), json, TestContext.Current.CancellationToken);
+            var result = await RunAsync(["storage", "help"], root.Path);
+            Assert.Equal(ExitCodes.Success, result.ExitCode);
+            Assert.Contains("restore-empty", result.Stdout, StringComparison.Ordinal);
+            Assert.Contains("backup-daemon", result.Stdout, StringComparison.Ordinal);
+            Assert.Empty(result.Stderr);
+            Assert.Equal(ExitCodes.InvalidUsage, (await RunAsync(["storage", "unknown"], root.Path)).ExitCode);
+        }
+    }
+
     [Theory]
     [InlineData("Host", "ShutdownTimeoutSeconds")]
     [InlineData("Database", "ConnectTimeoutSeconds")]

@@ -33,7 +33,7 @@ internal static class HelpText
               4  настроенная зависимость недоступна
 
             Конфигурация:
-              appsettings.json, appsettings.<DOTNET_ENVIRONMENT>.json and appsettings.Local.json
+              appsettings.json, appsettings.<DOTNET_ENVIRONMENT>.json и appsettings.Local.json
               рядом с программой, затем переменные окружения с префиксом ANKETAPARSER_
               (вложенные ключи разделяются двойным подчёркиванием, например
               ANKETAPARSER_Database__ConnectionString).
