@@ -520,6 +520,36 @@ def table_row(line: str, *, in_table: bool = False) -> list[str] | None:
     return table_cells(line)
 
 
+def table_headers(lines: list[str]) -> list[int]:
+    """Найти заголовки GFM-таблиц, не считая строку внутри уже открытой таблицы."""
+    headers = []
+    table_open = False
+    index = 0
+    while index < len(lines):
+        if table_open:
+            if table_row(lines[index], in_table=True) is not None:
+                index += 1
+                continue
+            table_open = False
+
+        row = table_row(lines[index])
+        delimiter = table_row(lines[index + 1]) if index + 1 < len(lines) else None
+        if row == list(CODERABBIT_HEADER):
+            headers.append(index)
+        if (
+            row is not None
+            and _unescaped_pipe_positions(lines[index])
+            and delimiter is not None
+            and len(delimiter) == len(row)
+            and all(DELIMITER_CELL.fullmatch(cell) for cell in delimiter)
+        ):
+            table_open = True
+            index += 2
+            continue
+        index += 1
+    return headers
+
+
 def validate_coderabbit(content: str) -> list[str]:
     """Проверить видимую непрерывную таблицу и машинные значения disposition.
 
@@ -528,9 +558,7 @@ def validate_coderabbit(content: str) -> list[str]:
     итерации с reviewed HEAD и одно из разрешённых значений «Решение».
     """
     lines = content.split("\n")
-    header = [
-        n for n, line in enumerate(lines) if table_row(line) == list(CODERABBIT_HEADER)
-    ]
+    header = table_headers(lines)
     if not header:
         return ["В разделе CodeRabbit отсутствует заголовок накопительной таблицы"]
     if len(header) > 1:

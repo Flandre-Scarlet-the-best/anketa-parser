@@ -596,6 +596,14 @@ class CodeRabbitTableTests(unittest.TestCase):
         self.assertEqual(validate(body), [])
         self.assertTrue(any("таблицы" in e for e in validate_comment_table(body)))
 
+    def test_coderabbit_header_inside_an_open_table_is_not_a_header(self):
+        errors = validate_comment_table(
+            coderabbit("| x |", "| - |", CR_HEADER, CR_DELIMITER, CR_ROW)
+        )
+        self.assertTrue(
+            any("отсутствует заголовок" in error for error in errors), errors
+        )
+
     def test_conditional_coderabbit_table(self):
         body = valid_body() + "\n\n## CodeRabbit review и disposition\nПроверено."
         self.assertEqual(validate(body), [])
