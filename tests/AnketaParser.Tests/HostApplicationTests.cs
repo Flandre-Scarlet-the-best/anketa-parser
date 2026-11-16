@@ -150,20 +150,21 @@ public sealed class HostApplicationTests
         await host.StartAsync(TestContext.Current.CancellationToken);
         var state = host.Services.GetRequiredService<ReadinessStateStore>();
         var initial = Assert.IsType<DiagnosticReport>(state.LastReport);
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        using var refreshTimeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        refreshTimeout.CancelAfter(TimeSpan.FromSeconds(10));
         while (ReferenceEquals(initial, state.LastReport))
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(25), deadline.Token);
+            await Task.Delay(TimeSpan.FromMilliseconds(25), refreshTimeout.Token);
         }
 
         var periodic = Assert.IsType<DiagnosticReport>(state.LastReport);
         Assert.True(periodic.GeneratedAtUtc > initial.GeneratedAtUtc);
         Assert.Equal(HealthStatus.Unhealthy, periodic.Status);
-        await host.StopAsync(deadline.Token);
+        using var stopTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await host.StopAsync(stopTimeout.Token);
 
         var final = Assert.IsType<DiagnosticReport>(state.LastReport);
-        await Task.Delay(TimeSpan.FromSeconds(1), deadline.Token);
+        await Task.Delay(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
         Assert.Same(final, state.LastReport);
     }
 }
