@@ -80,7 +80,7 @@ public sealed class DiagnosticsRunnerTests
 
         var probe = Assert.Single(report.Probes);
         Assert.Equal(ProbeStatus.Unhealthy, probe.Status);
-        Assert.Contains("did not finish", probe.Detail, StringComparison.Ordinal);
+        Assert.Contains("не завершена", probe.Detail, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -97,5 +97,79 @@ public sealed class DiagnosticsRunnerTests
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => runner.RunAsync(NoSources, TimeSpan.FromSeconds(30), cts.Token));
+    }
+
+    [Fact]
+    public async Task InjectedTimeControlsTimeoutDurationAndReportTimestamp()
+    {
+        var clock = new Support.ManualTimeProvider();
+        var runner = new DiagnosticsRunner(
+            [new Support.StubProbe("slow", async token =>
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException();
+            })], new Support.StubRuntimeSnapshotProvider(), clock);
+
+        var pending = runner.RunAsync(NoSources, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        clock.Advance(TimeSpan.FromSeconds(4));
+        Assert.False(pending.IsCompleted);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        var report = await pending.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        var result = Assert.Single(report.Probes);
+        Assert.Equal(ProbeStatus.Unhealthy, result.Status);
+        Assert.Contains("не завершена", result.Detail, StringComparison.Ordinal);
+        Assert.Equal(TimeSpan.FromSeconds(5), result.Duration);
+        Assert.Equal(DateTimeOffset.UnixEpoch.AddSeconds(5), report.GeneratedAtUtc);
+    }
+
+    [Fact]
+    public async Task InjectedTimeMeasuresUnexpectedFailure()
+    {
+        var clock = new Support.ManualTimeProvider();
+        var runner = new DiagnosticsRunner(
+            [new Support.StubProbe("failed", _ =>
+            {
+                clock.Advance(TimeSpan.FromSeconds(2));
+                throw new InvalidOperationException("secret-sentinel");
+            })], new Support.StubRuntimeSnapshotProvider(), clock);
+
+        var result = Assert.Single((await runner.RunAsync(NoSources, TimeSpan.FromSeconds(10),
+            TestContext.Current.CancellationToken)).Probes);
+
+        Assert.Equal(TimeSpan.FromSeconds(2), result.Duration);
+        Assert.Contains("InvalidOperationException", result.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-sentinel", result.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task UnrelatedCancellationIsFailureRatherThanTimeout()
+    {
+        var runner = CreateRunner(new Support.StubProbe("failed", _ => throw new OperationCanceledException("secret-sentinel")));
+        var result = Assert.Single((await runner.RunAsync(NoSources, TimeSpan.FromSeconds(10),
+            TestContext.Current.CancellationToken)).Probes);
+
+        Assert.Equal(ProbeStatus.Unhealthy, result.Status);
+        Assert.Contains("OperationCanceledException", result.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-sentinel", result.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CallerCancellationWinsWhenProbeDeadlineAlsoExpires()
+    {
+        var clock = new Support.ManualTimeProvider();
+        using var caller = new CancellationTokenSource();
+        var runner = new DiagnosticsRunner(
+            [new Support.StubProbe("slow", async token =>
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                throw new InvalidOperationException();
+            })], new Support.StubRuntimeSnapshotProvider(), clock);
+
+        var pending = runner.RunAsync(NoSources, TimeSpan.FromSeconds(5), caller.Token);
+        await caller.CancelAsync();
+        clock.Advance(TimeSpan.FromSeconds(5));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
     }
 }

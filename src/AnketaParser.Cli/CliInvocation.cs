@@ -1,25 +1,25 @@
 namespace AnketaParser.Cli;
 
-/// <summary>Supported CLI commands.</summary>
+/// <summary>Поддерживаемые команды CLI.</summary>
 internal enum CliCommand
 {
-    /// <summary>Show usage information.</summary>
+    /// <summary>Показать справку.</summary>
     Help,
 
-    /// <summary>Print the tool version.</summary>
+    /// <summary>Показать версию инструмента.</summary>
     Version,
 
-    /// <summary>Diagnose configuration, runtime and dependencies.</summary>
+    /// <summary>Проверить конфигурацию, среду выполнения и зависимости.</summary>
     Doctor,
 }
 
 /// <summary>
-/// Parsed command line. Invalid input is represented instead of thrown so that the CLI can answer with
-/// a documented exit code and, in machine-readable mode, a single JSON error document.
+/// Результат разбора аргументов. Ошибка представлена данными для возврата документированного кода и
+/// единственного JSON-документа в машинном режиме.
 /// </summary>
-/// <param name="Command">Selected command.</param>
-/// <param name="IsMachineReadable">Whether <c>--json</c> was requested.</param>
-/// <param name="Error">Usage error message, when the input was invalid.</param>
+/// <param name="Command">Выбранная команда.</param>
+/// <param name="IsMachineReadable">Признак флага <c>--json</c>.</param>
+/// <param name="Error">Сообщение об ошибке аргументов.</param>
 internal sealed record CliInvocation(CliCommand Command, bool IsMachineReadable, string? Error)
 {
     public bool IsValid => Error is null;

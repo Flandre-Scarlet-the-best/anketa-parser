@@ -1,25 +1,26 @@
 namespace AnketaParser.Cli;
 
-/// <summary>
-/// Minimal, dependency-free argument parser. It understands one optional command and the global
-/// <c>--json</c> flag; everything else is a documented usage error.
-/// </summary>
+/// <summary>Разбирает одну необязательную команду и глобальный флаг <c>--json</c> без сторонних зависимостей.</summary>
 internal static class CommandLineParser
 {
     public static CliInvocation Parse(IReadOnlyList<string> args)
     {
         ArgumentNullException.ThrowIfNull(args);
 
-        var isJson = false;
+        var isJson = args.Contains("--json", StringComparer.Ordinal);
         var command = CliCommand.Help;
         var commandSeen = false;
 
         foreach (var arg in args)
         {
+            if (commandSeen && arg is "-h" or "--help" or "help" or "-v" or "--version" or "version" or "doctor")
+            {
+                return CliInvocation.Invalid("Допускается только одна команда.", isJson);
+            }
+
             switch (arg)
             {
                 case "--json":
-                    isJson = true;
                     continue;
                 case "-h" or "--help" or "help":
                     command = CliCommand.Help;
@@ -37,15 +38,15 @@ internal static class CommandLineParser
 
             if (arg.StartsWith('-'))
             {
-                return CliInvocation.Invalid($"Unknown option '{arg}'.", isJson);
+                return CliInvocation.Invalid("Неизвестный параметр. См. --help.", isJson);
             }
 
             if (commandSeen)
             {
-                return CliInvocation.Invalid($"Unexpected argument '{arg}'.", isJson);
+                return CliInvocation.Invalid("Лишний аргумент. См. --help.", isJson);
             }
 
-            return CliInvocation.Invalid($"Unknown command '{arg}'.", isJson);
+            return CliInvocation.Invalid("Неизвестная команда. См. --help.", isJson);
         }
 
         return new CliInvocation(command, isJson, Error: null);

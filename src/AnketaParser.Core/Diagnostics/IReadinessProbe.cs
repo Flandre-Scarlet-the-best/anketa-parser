@@ -1,17 +1,17 @@
 namespace AnketaParser.Core.Diagnostics;
 
 /// <summary>
-/// A readiness probe for one external dependency. Implementations live in the infrastructure
-/// layer; the contract itself knows nothing about PostgreSQL, browsers or other transports.
+/// Проверка одной внешней зависимости. Реализации принадлежат инфраструктурному слою; контракт не
+/// зависит от транспорта.
 /// </summary>
 public interface IReadinessProbe
 {
-    /// <summary>Stable, machine-readable probe name.</summary>
+    /// <summary>Стабильное машинное имя проверки.</summary>
     string Name { get; }
 
     /// <summary>
-    /// Checks the dependency. Implementations must not throw for expected dependency failures;
-    /// they return <see cref="ProbeStatus.Unhealthy"/> with a secret-free detail instead.
+    /// Проверяет зависимость. Ожидаемые отказы возвращаются как <see cref="ProbeStatus.Unhealthy"/> с
+    /// безопасным описанием.
     /// </summary>
     Task<ProbeResult> CheckAsync(CancellationToken cancellationToken);
 }

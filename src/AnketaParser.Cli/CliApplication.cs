@@ -17,8 +17,8 @@ using Microsoft.Extensions.Options;
 namespace AnketaParser.Cli;
 
 /// <summary>
-/// Entry point logic of the agent/administrator CLI. Split from <c>Program</c> so that tests can run
-/// commands in-process and assert on stdout, stderr and exit codes.
+/// Логика CLI агента и администратора. Отделена от <c>Program</c> для проверки потоков и кодов
+/// завершения в тестах.
 /// </summary>
 public static class CliApplication
 {
@@ -28,15 +28,13 @@ public static class CliApplication
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    /// <summary>
-    /// Runs one CLI invocation.
-    /// </summary>
-    /// <param name="args">Command line arguments.</param>
-    /// <param name="stdout">Machine-readable output stream.</param>
-    /// <param name="stderr">Human diagnostics stream.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <param name="contentRootPath">Optional content root override, used by tests.</param>
-    /// <returns>Process exit code.</returns>
+    /// <summary>Выполняет один вызов CLI.</summary>
+    /// <param name="args">Аргументы командной строки.</param>
+    /// <param name="stdout">Поток машинного отчёта.</param>
+    /// <param name="stderr">Поток человекочитаемой диагностики.</param>
+    /// <param name="cancellationToken">Токен отмены.</param>
+    /// <param name="contentRootPath">Каталог настроек, переопределяемый в тестах.</param>
+    /// <returns>Код завершения процесса.</returns>
     public static async Task<int> RunAsync(
         string[] args,
         TextWriter stdout,
@@ -73,7 +71,7 @@ public static class CliApplication
                     .ConfigureAwait(false);
 
             default:
-                await stderr.WriteLineAsync($"Unsupported command '{invocation.Command}'.").ConfigureAwait(false);
+                await stderr.WriteLineAsync($"Неподдерживаемая команда '{invocation.Command}'.").ConfigureAwait(false);
                 return ExitCodes.UnexpectedError;
         }
     }
@@ -85,10 +83,10 @@ public static class CliApplication
         TextWriter stderr,
         CancellationToken cancellationToken)
     {
-        var message = invocation.Error ?? "Invalid command line usage.";
-        await stderr.WriteLineAsync($"error: {message}").ConfigureAwait(false);
+        var message = invocation.Error ?? "Неверные аргументы командной строки.";
+        await stderr.WriteLineAsync($"Ошибка: {message}").ConfigureAwait(false);
         await stderr
-            .WriteLineAsync("Run 'anketa-parser-cli --help' to see supported commands and options.")
+            .WriteLineAsync($"Список команд и параметров: {HelpText.LaunchCommand} --help (из каталога CLI).")
             .ConfigureAwait(false);
         await stderr.FlushAsync(cancellationToken).ConfigureAwait(false);
 
@@ -139,7 +137,7 @@ public static class CliApplication
 
         var payload = new
         {
-            schemaVersion = 1,
+            schemaVersion = DiagnosticsDocument.CurrentSchemaVersion,
             tool = info.ProductName,
             toolVersion = info.Version,
             command = "version",
@@ -160,37 +158,39 @@ public static class CliApplication
     {
         var contentRoot = contentRootPath ?? AppContext.BaseDirectory;
         var environmentName = AnketaParserConfiguration.ResolveEnvironmentName();
-
-        var configuration = new ConfigurationBuilder();
-        var sources = AnketaParserConfiguration.Apply(configuration, contentRoot, environmentName);
-        var configurationRoot = configuration.Build();
-
-        var services = new ServiceCollection();
-        services.AddLogging(builder =>
-        {
-            builder.ClearProviders();
-            builder.AddConfiguration(configurationRoot.GetSection("Logging"));
-            builder.AddSimpleConsole(options =>
-            {
-                options.SingleLine = true;
-                options.IncludeScopes = false;
-            });
-            // CLI diagnostics must never pollute the machine-readable stdout stream.
-            builder.AddFilter<ConsoleLoggerProvider>((_, level) => level >= LogLevel.Warning);
-        });
-        services.Configure<ConsoleLoggerOptions>(options =>
-            options.LogToStandardErrorThreshold = LogLevel.Trace);
-
-        services.AddAnketaParserInfrastructure(configurationRoot, environmentName, sources);
-        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions
-        {
-            ValidateOnBuild = false,
-            ValidateScopes = true,
-        });
+        IReadOnlyList<ConfigurationSourceInfo> sources = [];
 
         try
         {
-            var hostSettings = provider.GetRequiredService<IOptions<HostSettings>>().Value;
+            var configuration = new ConfigurationBuilder();
+            sources = AnketaParserConfiguration.Apply(configuration, contentRoot, environmentName);
+            var configurationRoot = configuration.Build();
+            using var configurationLifetime = configurationRoot as IDisposable;
+
+            var services = new ServiceCollection();
+            services.AddLogging(builder =>
+            {
+                builder.ClearProviders();
+                builder.AddConfiguration(configurationRoot.GetSection("Logging"));
+                builder.AddSimpleConsole(options =>
+                {
+                    options.SingleLine = true;
+                    options.IncludeScopes = false;
+                });
+                // Логи CLI не должны попадать в stdout машинного отчёта.
+                builder.AddFilter<ConsoleLoggerProvider>((_, level) => level >= LogLevel.Warning);
+            });
+            services.Configure<ConsoleLoggerOptions>(options =>
+                options.LogToStandardErrorThreshold = LogLevel.Trace);
+
+            services.AddAnketaParserInfrastructure(configurationRoot, environmentName, sources);
+            await using var provider = services.BuildServiceProvider(new ServiceProviderOptions
+            {
+                ValidateOnBuild = false,
+                ValidateScopes = true,
+            });
+
+            _ = provider.GetRequiredService<IOptions<HostSettings>>().Value;
             var databaseSettings = provider.GetRequiredService<IOptions<DatabaseSettings>>().Value;
             var diagnosticsSettings = provider.GetRequiredService<IOptions<DiagnosticsSettings>>().Value;
 
@@ -219,7 +219,7 @@ public static class CliApplication
         catch (OptionsValidationException exception)
         {
             var exitCode = ExitCodes.InvalidConfiguration;
-            await stderr.WriteLineAsync("error: configuration is invalid.").ConfigureAwait(false);
+            await stderr.WriteLineAsync("Ошибка: конфигурация некорректна.").ConfigureAwait(false);
             foreach (var failure in exception.Failures)
             {
                 await stderr.WriteLineAsync($"  - {failure}").ConfigureAwait(false);
@@ -263,7 +263,7 @@ public static class CliApplication
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             await stderr
-                .WriteLineAsync($"error: unexpected failure: {exception.GetType().Name}: {exception.Message}")
+                .WriteLineAsync($"Ошибка: внутренний сбой ({exception.GetType().Name}).")
                 .ConfigureAwait(false);
             return ExitCodes.UnexpectedError;
         }
@@ -343,31 +343,31 @@ public static class CliApplication
         TextWriter stdout,
         CancellationToken cancellationToken)
     {
-        await stdout.WriteLineAsync($"status      : {document.Status}").ConfigureAwait(false);
+        await stdout.WriteLineAsync($"статус      : {document.Status}").ConfigureAwait(false);
         await stdout
-            .WriteLineAsync($"environment : {report.Runtime.EnvironmentName} (instance {report.Runtime.InstanceName})")
+            .WriteLineAsync($"окружение   : {report.Runtime.EnvironmentName} (экземпляр {report.Runtime.InstanceName})")
             .ConfigureAwait(false);
         await stdout
-            .WriteLineAsync($"runtime     : {report.Runtime.FrameworkDescription} on {report.Runtime.OsDescription}")
+            .WriteLineAsync($"среда       : {report.Runtime.FrameworkDescription} в {report.Runtime.OsDescription}")
             .ConfigureAwait(false);
         await stdout
-            .WriteLineAsync($"container   : {report.Runtime.IsContainer}")
+            .WriteLineAsync($"контейнер   : {report.Runtime.IsContainer}")
             .ConfigureAwait(false);
         await stdout
-            .WriteLineAsync($"pid / uptime: {report.Runtime.ProcessId} / {report.Runtime.Uptime?.ToString() ?? "unknown"}")
+            .WriteLineAsync($"PID / время : {report.Runtime.ProcessId} / {report.Runtime.Uptime?.ToString() ?? "неизвестно"}")
             .ConfigureAwait(false);
         await stdout
-            .WriteLineAsync($"database    : {document.Configuration.Database.Target} (required: {document.Configuration.Database.Required})")
+            .WriteLineAsync($"база данных : {document.Configuration.Database.Target} (обязательна: {document.Configuration.Database.Required})")
             .ConfigureAwait(false);
         await stdout
             .WriteLineAsync(
-                $"sources     : {string.Join(", ", report.ConfigurationSources.Select(static source => source.Name))}")
+                $"источники   : {string.Join(", ", report.ConfigurationSources.Select(static source => source.Name))}")
             .ConfigureAwait(false);
 
         foreach (var probe in document.Probes)
         {
             await stdout
-                .WriteLineAsync($"probe {probe.Name,-10}: {probe.Status} ({probe.DurationMs:0.###} ms) {probe.Detail}")
+                .WriteLineAsync($"проверка {probe.Name,-10}: {probe.Status} ({probe.DurationMs:0.###} мс) {probe.Detail}")
                 .ConfigureAwait(false);
         }
 
@@ -375,7 +375,7 @@ public static class CliApplication
 
         if (report.Status == HealthStatus.Unhealthy)
         {
-            await stderr.WriteLineAsync("error: a configured dependency is unavailable.").ConfigureAwait(false);
+            await stderr.WriteLineAsync("Ошибка: настроенная зависимость недоступна.").ConfigureAwait(false);
         }
     }
 

@@ -3,8 +3,8 @@ using System.Text.Json.Serialization;
 namespace AnketaParser.Cli;
 
 /// <summary>
-/// Stable machine-readable contract of the CLI. Field names and semantics are part of the public
-/// interface and are covered by tests; <see cref="SchemaVersion"/> is bumped on breaking changes.
+/// Стабильный машинный контракт CLI. Имена и семантика полей публичны; несовместимые изменения требуют
+/// повышения <see cref="SchemaVersion"/>.
 /// </summary>
 internal sealed record DiagnosticsDocument
 {

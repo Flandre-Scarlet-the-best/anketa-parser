@@ -1,10 +1,9 @@
-# Explicitly enabled local-debugging override.
-# Publishes the PostgreSQL port on the loopback interface only, so that psql or a local tool can
-# connect while the database stays unreachable from other machines.
+# Явно включаемая локальная отладка: порт PostgreSQL публикуется только на loopback
+# для подключения psql и локальных инструментов без доступа с других машин.
 #
 #   docker compose -f compose.yaml -f compose.debug.yaml up -d postgres
 #
-# Stop with:
+# Остановка:
 #   docker compose -f compose.yaml -f compose.debug.yaml stop postgres
 
 services:

@@ -1,5 +1,5 @@
 namespace AnketaParser.Infrastructure.Configuration;
 
-/// <summary>Effective hosting environment name, resolved once per process.</summary>
-/// <param name="Name">Environment name such as <c>Production</c> or <c>Development</c>.</param>
+/// <summary>Среда хостинга, определённая при создании приложения.</summary>
+/// <param name="Name">Среда, например <c>Production</c> или <c>Development</c>.</param>
 public sealed record EnvironmentDescriptor(string Name);

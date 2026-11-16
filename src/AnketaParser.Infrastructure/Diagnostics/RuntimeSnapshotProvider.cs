@@ -7,17 +7,14 @@ using Microsoft.Extensions.Options;
 
 namespace AnketaParser.Infrastructure.Diagnostics;
 
-/// <summary>
-/// Reads process, machine and container state for diagnostics. Never touches configuration
-/// values that could be secret.
-/// </summary>
+/// <summary>Читает диагностические сведения о процессе, машине и контейнере без секретных настроек.</summary>
 public sealed class RuntimeSnapshotProvider : IRuntimeSnapshotProvider
 {
     private readonly EnvironmentDescriptor _environment;
     private readonly IOptionsMonitor<HostSettings> _hostSettings;
     private readonly TimeProvider _timeProvider;
 
-    /// <summary>Creates the provider.</summary>
+    /// <summary>Создаёт поставщик сведений о среде выполнения.</summary>
     public RuntimeSnapshotProvider(
         EnvironmentDescriptor environment,
         IOptionsMonitor<HostSettings> hostSettings,

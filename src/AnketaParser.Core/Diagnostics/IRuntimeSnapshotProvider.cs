@@ -1,11 +1,11 @@
 namespace AnketaParser.Core.Diagnostics;
 
 /// <summary>
-/// Provides a secret-free snapshot of the current runtime. Implemented in the infrastructure
-/// layer because it reads process, machine and container state.
+/// Предоставляет безопасные сведения о среде выполнения. Инфраструктурная реализация читает состояние
+/// процесса, машины и контейнера.
 /// </summary>
 public interface IRuntimeSnapshotProvider
 {
-    /// <summary>Captures the current runtime state.</summary>
+    /// <summary>Читает текущее состояние среды выполнения.</summary>
     RuntimeSnapshot Capture();
 }

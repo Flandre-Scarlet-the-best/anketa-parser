@@ -9,9 +9,8 @@ using Microsoft.Extensions.Options;
 namespace AnketaParser.Host;
 
 /// <summary>
-/// Runs infrastructure diagnostics once during startup, logs a secret-free report and records the
-/// aggregate status. When <c>Database:Required</c> is enabled, an unhealthy dependency aborts startup
-/// instead of letting the process pretend to be ready.
+/// Проверяет инфраструктуру при старте, записывает безопасный отчёт и общий статус. При
+/// <c>Database:Required</c> недоступность зависимости прерывает запуск.
 /// </summary>
 internal sealed partial class StartupDiagnosticsService : IHostedService
 {
@@ -95,7 +94,7 @@ internal sealed partial class StartupDiagnosticsService : IHostedService
         {
             LogRequiredDependencyUnavailable(failures);
             _lifetime.StopApplication();
-            throw new DependencyUnavailableException($"Required dependency is unavailable. {failures}");
+            throw new DependencyUnavailableException($"Обязательная зависимость недоступна. {failures}");
         }
 
         LogDegradedState(failures);
@@ -106,13 +105,13 @@ internal sealed partial class StartupDiagnosticsService : IHostedService
     [LoggerMessage(
         EventId = 1001,
         Level = LogLevel.Warning,
-        Message = "Startup diagnostics are disabled (Host:StartupDiagnosticsEnabled = false); readiness is not verified.")]
+        Message = "Начальная диагностика отключена (Host:StartupDiagnosticsEnabled = false); готовность не проверена.")]
     private partial void LogDiagnosticsDisabled();
 
     [LoggerMessage(
         EventId = 1002,
         Level = LogLevel.Information,
-        Message = "Infrastructure diagnostics completed with status {Status} (instance {InstanceName}, environment {EnvironmentName}, pid {ProcessId}, container {IsContainer}).")]
+        Message = "Диагностика инфраструктуры завершена: статус {Status} (экземпляр {InstanceName}, окружение {EnvironmentName}, PID {ProcessId}, контейнер {IsContainer}).")]
     private partial void LogDiagnosticsCompleted(
         HealthStatus status,
         string instanceName,
@@ -122,18 +121,18 @@ internal sealed partial class StartupDiagnosticsService : IHostedService
 
     [LoggerMessage(
         EventId = 1003,
-        Message = "Probe {ProbeName} reported {ProbeStatus} in {Elapsed}: {ProbeDetail}")]
+        Message = "Проверка {ProbeName}: статус {ProbeStatus}, длительность {Elapsed}: {ProbeDetail}")]
     private partial void LogProbeResult(LogLevel level, string probeName, ProbeStatus probeStatus, TimeSpan elapsed, string probeDetail);
 
     [LoggerMessage(
         EventId = 1004,
         Level = LogLevel.Critical,
-        Message = "A required dependency is unavailable; the host stops instead of reporting a false ready state. {Failures}")]
+        Message = "Обязательная зависимость недоступна; хост останавливается. {Failures}")]
     private partial void LogRequiredDependencyUnavailable(string failures);
 
     [LoggerMessage(
         EventId = 1005,
         Level = LogLevel.Warning,
-        Message = "Dependency check failed but Database:Required is false, so the host keeps running in a degraded state. {Failures}")]
+        Message = "Проверка зависимости завершилась отказом; Database:Required равен false, хост продолжает работу с нарушенной готовностью. {Failures}")]
     private partial void LogDegradedState(string failures);
 }

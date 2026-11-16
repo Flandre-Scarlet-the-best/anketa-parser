@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 using AnketaParser.Infrastructure.Configuration;
 
 using Microsoft.Extensions.Configuration;
@@ -40,31 +42,23 @@ public sealed class ConfigurationTests
     }
 
     [Fact]
-    public void EnvironmentVariablesOverrideJsonFile()
+    public async Task EnvironmentVariablesOverrideJsonFile()
     {
-        using var root = new Support.TemporaryContentRoot("""
-            { "Host": { "InstanceName": "from-json" } }
-            """);
-
         const string variable = "ANKETAPARSER_Host__InstanceName";
-        Environment.SetEnvironmentVariable(variable, "from-environment");
-        try
-        {
-            Build(root.Path, out var configuration);
-            var host = configuration.GetSection(HostSettings.SectionName).Get<HostSettings>();
+        var original = Environment.GetEnvironmentVariable(variable);
+        var result = await Support.ApplicationProcess.RunAsync(
+            "Cli", """{ "Host": { "InstanceName": "from-json" } }""", ["doctor", "--json"],
+            new Dictionary<string, string?> { [variable] = "from-environment" });
 
-            Assert.NotNull(host);
-            Assert.Equal("from-environment", host.InstanceName);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(variable, null);
-        }
+        Assert.Equal(0, result.ExitCode);
+        using var document = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("from-environment", document.RootElement.GetProperty("runtime").GetProperty("instanceName").GetString());
+        Assert.Equal(original, Environment.GetEnvironmentVariable(variable));
     }
 
     [Theory]
-    [InlineData(0, "Host:ShutdownTimeoutSeconds must be between 1 and 600 but was 0.")]
-    [InlineData(-5, "Host:ShutdownTimeoutSeconds must be between 1 and 600 but was -5.")]
+    [InlineData(0, "Host:ShutdownTimeoutSeconds должен быть в диапазоне от 1 до 600.")]
+    [InlineData(-5, "Host:ShutdownTimeoutSeconds должен быть в диапазоне от 1 до 600.")]
     public void InvalidShutdownTimeoutIsRejected(int value, string expectedFailure)
     {
         var result = ValidateHostSettings(new HostSettings { ShutdownTimeoutSeconds = value });
@@ -79,7 +73,7 @@ public sealed class ConfigurationTests
         var result = ValidateHostSettings(new HostSettings { InstanceName = "   " });
 
         Assert.False(result.Succeeded);
-        Assert.Contains("Host:InstanceName must not be empty.", result.Failures ?? []);
+        Assert.Contains("Host:InstanceName не должен быть пустым.", result.Failures ?? []);
     }
 
     [Fact]
@@ -92,7 +86,7 @@ public sealed class ConfigurationTests
         Assert.False(result.Succeeded);
         Assert.Contains(
             result.Failures!,
-            failure => failure.Contains("Database:Required is true", StringComparison.Ordinal));
+            failure => failure.Contains("Database:Required равен true", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -106,7 +100,7 @@ public sealed class ConfigurationTests
         Assert.False(result.Succeeded);
         var failure = Assert.Single(result.Failures!);
         Assert.DoesNotContain("super-secret", failure, StringComparison.Ordinal);
-        Assert.Contains("Database:ConnectionString is not a valid PostgreSQL connection string", failure, StringComparison.Ordinal);
+        Assert.Contains("Database:ConnectionString не является корректной строкой подключения PostgreSQL", failure, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -131,7 +125,7 @@ public sealed class ConfigurationTests
             new DiagnosticsSettings { ProbeTimeoutSeconds = 0 });
 
         Assert.False(result.Succeeded);
-        Assert.Contains("Diagnostics:ProbeTimeoutSeconds must be between 1 and 120 but was 0.", result.Failures ?? []);
+        Assert.Contains("Diagnostics:ProbeTimeoutSeconds должен быть в диапазоне от 1 до 120.", result.Failures ?? []);
     }
 
     private static ValidateOptionsResult ValidateHostSettings(HostSettings settings) =>

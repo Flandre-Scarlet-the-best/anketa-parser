@@ -1,13 +1,12 @@
-# anketa-parser: infrastructure host and its PostgreSQL boundary.
+# anketa-parser: инфраструктурный хост и PostgreSQL.
 #
-# No service publishes ports by default. PostgreSQL is reachable only through the compose network,
-# and the host exposes no HTTP or administrative API. For local debugging of the database use the
-# explicit loopback override:
+# По умолчанию порты не публикуются, PostgreSQL доступен через сеть Compose,
+# у хоста нет HTTP или административного API. Для отладки БД включите loopback override:
 #
 #   docker compose -f compose.yaml -f compose.debug.yaml up -d
 #
-# The fallback password below is a local-development placeholder, not a secret. Override it through
-# .env (excluded from Git) before running this anywhere except the owner machine.
+# Пароль по умолчанию — заглушка для локальной разработки. Задайте собственный
+# через .env, исключённый из Git, при использовании за пределами локальной среды.
 
 name: anketa-parser
 
@@ -20,8 +19,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-anketa_parser}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-password}
     volumes:
-      # PostgreSQL 18 keeps PGDATA under /var/lib/postgresql/18/docker, so the volume is mounted
-      # at the parent directory that the image declares.
+      # PostgreSQL 18 хранит PGDATA в /var/lib/postgresql/18/docker; том монтируется
+      # в объявленный образом родительский каталог.
       - postgres-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]

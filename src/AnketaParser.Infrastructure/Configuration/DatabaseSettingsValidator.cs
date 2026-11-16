@@ -4,10 +4,7 @@ using Npgsql;
 
 namespace AnketaParser.Infrastructure.Configuration;
 
-/// <summary>
-/// Validates <see cref="DatabaseSettings"/>. The validator never echoes the connection string,
-/// so validation messages are safe for logs and machine-readable CLI output.
-/// </summary>
+/// <summary>Проверяет <see cref="DatabaseSettings"/>, не повторяя секретную строку подключения в сообщениях.</summary>
 public sealed class DatabaseSettingsValidator : IValidateOptions<DatabaseSettings>
 {
     /// <inheritdoc />
@@ -22,13 +19,13 @@ public sealed class DatabaseSettingsValidator : IValidateOptions<DatabaseSetting
         if (options.Required && !options.IsConfigured)
         {
             failures.Add(
-                "Database:Required is true but Database:ConnectionString is empty. " +
-                "Set ANKETAPARSER_Database__ConnectionString or disable Database:Required.");
+                "Database:Required равен true, но Database:ConnectionString пуст. " +
+                "Задайте ANKETAPARSER_Database__ConnectionString или отключите Database:Required.");
         }
 
         if (options.IsConfigured && !TryParseConnectionString(options.ConnectionString, out var error))
         {
-            failures.Add($"Database:ConnectionString is not a valid PostgreSQL connection string ({error}).");
+            failures.Add($"Database:ConnectionString не является корректной строкой подключения PostgreSQL ({error}).");
         }
 
         return failures.Count == 0
@@ -43,19 +40,19 @@ public sealed class DatabaseSettingsValidator : IValidateOptions<DatabaseSetting
             var builder = new NpgsqlConnectionStringBuilder(connectionString);
             if (string.IsNullOrWhiteSpace(builder.Host))
             {
-                error = "Host is missing";
+                error = "не указан Host";
                 return false;
             }
 
             if (string.IsNullOrWhiteSpace(builder.Database))
             {
-                error = "Database is missing";
+                error = "не указан Database";
                 return false;
             }
 
             if (string.IsNullOrWhiteSpace(builder.Username) && string.IsNullOrWhiteSpace(builder.Password))
             {
-                error = "Username is missing";
+                error = "не указан Username";
                 return false;
             }
 

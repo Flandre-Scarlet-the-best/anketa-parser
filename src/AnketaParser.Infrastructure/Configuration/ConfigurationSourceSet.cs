@@ -2,6 +2,6 @@ using AnketaParser.Core.Diagnostics;
 
 namespace AnketaParser.Infrastructure.Configuration;
 
-/// <summary>Configuration sources that contributed to the effective settings.</summary>
-/// <param name="Sources">Sources in increasing precedence order.</param>
+/// <summary>Источники итоговой конфигурации.</summary>
+/// <param name="Sources">Источники в порядке возрастания приоритета.</param>
 public sealed record ConfigurationSourceSet(IReadOnlyList<ConfigurationSourceInfo> Sources);

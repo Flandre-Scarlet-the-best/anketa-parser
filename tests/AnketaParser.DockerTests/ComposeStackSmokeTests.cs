@@ -4,16 +4,14 @@ using System.Security.Cryptography;
 namespace AnketaParser.DockerTests;
 
 /// <summary>
-/// End-to-end smoke test of the container infrastructure: compose configuration, image build,
-/// PostgreSQL health, real connectivity from the application container and data survival across a
-/// container restart.
-///
-/// The test is skipped by default because it requires a working Docker engine. Enable it explicitly:
-/// <code>ANKETAPARSER_DOCKER_TESTS=1 dotnet test tests/AnketaParser.DockerTests</code>
+/// Сквозной smoke-тест: сборка образа, готовность PostgreSQL, подключение из контейнера приложения и
+/// сохранность данных после перезапуска. Требует Docker и явного включения:
+/// <code>ANKETAPARSER_DOCKER_TESTS=1 dotnet test --project tests/AnketaParser.DockerTests</code>
 /// </summary>
 public sealed class ComposeStackSmokeTests
 {
     private const string EnableVariable = "ANKETAPARSER_DOCKER_TESTS";
+    private const string DatabaseUser = "smoke_user";
     private static readonly TimeSpan StartTimeout = TimeSpan.FromMinutes(12);
     private static readonly TimeSpan ShortCommandTimeout = TimeSpan.FromMinutes(2);
 
@@ -24,7 +22,7 @@ public sealed class ComposeStackSmokeTests
     {
         if (!string.Equals(Environment.GetEnvironmentVariable(EnableVariable), "1", StringComparison.Ordinal))
         {
-            Assert.Skip($"Set {EnableVariable}=1 to run the Docker/PostgreSQL smoke test.");
+            Assert.Skip($"Задайте {EnableVariable}=1 для запуска smoke-теста Docker/PostgreSQL.");
         }
 
         var repositoryRoot = FindRepositoryRoot();
@@ -41,13 +39,13 @@ public sealed class ComposeStackSmokeTests
 
         try
         {
-            // 1. The stack starts and both services reach their health checks.
+            // Оба сервиса должны пройти проверки готовности.
             await compose.RunAsync(
                 [.. composePrefix, "up", "-d", "--build", "--wait", "--wait-timeout", "600"],
                 StartTimeout,
                 _cancellationToken);
 
-            // 2. No port is published for the database or the application.
+            // Порты БД и приложения не должны публиковаться.
             var postgresContainerId = await compose.RunAsync(
                 [.. composePrefix, "ps", "-q", "postgres"],
                 ShortCommandTimeout,
@@ -60,8 +58,7 @@ public sealed class ComposeStackSmokeTests
                 _cancellationToken);
             Assert.Equal(string.Empty, publishedPorts);
 
-            // 3. The application container reports healthy, which means the readiness probe inside
-            //    the container really connected to PostgreSQL.
+            // Готовность контейнера подтверждает реальное подключение его проверки к PostgreSQL.
             var hostContainerId = await compose.RunAsync(
                 [.. composePrefix, "ps", "-q", "host"],
                 ShortCommandTimeout,
@@ -74,8 +71,7 @@ public sealed class ComposeStackSmokeTests
                 _cancellationToken);
             Assert.Equal("healthy", health);
 
-            // 4. Write a marker row into a throw-away database. This is test-only state: the product
-            //    itself has no schema at this stage.
+            // Маркер хранится в одноразовой тестовой БД и не создаёт продуктовую схему.
             await RunPsqlAsync(
                 compose,
                 composePrefix,
@@ -88,7 +84,7 @@ public sealed class ComposeStackSmokeTests
                 "CREATE TABLE smoke_marker (id integer PRIMARY KEY, note text NOT NULL); " +
                 "INSERT INTO smoke_marker (id, note) VALUES (1, 'survives-restart');");
 
-            // 5. A normal container restart must not lose data stored in the named volume.
+            // Перезапуск контейнера не должен терять данные именованного тома.
             await compose.RunAsync(
                 [.. composePrefix, "restart", "postgres"],
                 ShortCommandTimeout,
@@ -105,7 +101,7 @@ public sealed class ComposeStackSmokeTests
                 "SELECT count(*) FROM smoke_marker WHERE note = 'survives-restart';");
             Assert.Equal("1", count);
 
-            // 6. The application is still healthy after the database restart.
+            // После перезапуска БД приложение должно остаться готовым.
             var healthAfterRestart = await compose.RunAsync(
                 ["inspect", "--format", "{{.State.Health.Status}}", hostContainerId],
                 ShortCommandTimeout,
@@ -135,7 +131,7 @@ public sealed class ComposeStackSmokeTests
                 .. composePrefix,
                 "exec", "-T", "postgres",
                 "psql", "-v", "ON_ERROR_STOP=1",
-                "-U", "anketa_parser",
+                "-U", DatabaseUser,
                 "-d", database,
                 "-tAc", sql,
             ],
@@ -143,7 +139,7 @@ public sealed class ComposeStackSmokeTests
             _cancellationToken);
     }
 
-    private static string FindRepositoryRoot()
+    internal static string FindRepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null)
@@ -156,7 +152,7 @@ public sealed class ComposeStackSmokeTests
             directory = directory.Parent;
         }
 
-        throw new InvalidOperationException("compose.yaml was not found above the test directory.");
+        throw new InvalidOperationException("compose.yaml не найден в родительских каталогах теста.");
     }
 
     private static string CreateEnvironmentFile()
@@ -169,7 +165,7 @@ public sealed class ComposeStackSmokeTests
         File.WriteAllText(
             path,
             $"POSTGRES_DB=anketa_parser{Environment.NewLine}" +
-            $"POSTGRES_USER=anketa_parser{Environment.NewLine}" +
+            $"POSTGRES_USER={DatabaseUser}{Environment.NewLine}" +
             $"POSTGRES_PASSWORD={password}{Environment.NewLine}");
 
         return path;
@@ -183,7 +179,7 @@ public sealed class ComposeStackSmokeTests
         }
         catch (IOException)
         {
-            // A leftover temporary file must not fail the test.
+            // Оставшийся временный файл не должен прерывать тест.
         }
     }
 }

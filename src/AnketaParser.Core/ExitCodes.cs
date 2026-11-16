@@ -1,23 +1,20 @@
 namespace AnketaParser.Core;
 
-/// <summary>
-/// Stable process exit codes shared by the long-running host and the agent CLI.
-/// The values are part of the machine-readable contract and must not change silently.
-/// </summary>
+/// <summary>Стабильные коды завершения Host и CLI. Их значения входят в машинный контракт.</summary>
 public static class ExitCodes
 {
-    /// <summary>The command or host finished successfully.</summary>
+    /// <summary>Команда или хост успешно завершены.</summary>
     public const int Success = 0;
 
-    /// <summary>An unexpected error occurred; details are written to stderr.</summary>
+    /// <summary>Непредвиденная ошибка; безопасная диагностика записана в stderr.</summary>
     public const int UnexpectedError = 1;
 
-    /// <summary>Command line arguments were missing, unknown or malformed.</summary>
+    /// <summary>Неверные аргументы командной строки.</summary>
     public const int InvalidUsage = 2;
 
-    /// <summary>Configuration is missing or invalid.</summary>
+    /// <summary>Некорректная конфигурация.</summary>
     public const int InvalidConfiguration = 3;
 
-    /// <summary>A required external dependency is unavailable or unhealthy.</summary>
+    /// <summary>Настроенная внешняя зависимость недоступна или неисправна.</summary>
     public const int DependencyUnavailable = 4;
 }

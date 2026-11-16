@@ -1,13 +1,11 @@
 namespace AnketaParser.Core.Diagnostics;
 
-/// <summary>
-/// Aggregate result of one diagnostics run: runtime, configuration sources and dependency probes.
-/// </summary>
-/// <param name="GeneratedAtUtc">Moment the report was produced.</param>
-/// <param name="Status">Aggregate readiness status.</param>
-/// <param name="Runtime">Secret-free runtime snapshot.</param>
-/// <param name="ConfigurationSources">Configuration sources that contributed to the effective settings.</param>
-/// <param name="Probes">Individual dependency results in registration order.</param>
+/// <summary>Результат диагностики: среда выполнения, источники конфигурации и проверки зависимостей.</summary>
+/// <param name="GeneratedAtUtc">Момент формирования отчёта.</param>
+/// <param name="Status">Общий статус готовности.</param>
+/// <param name="Runtime">Сведения о среде выполнения без секретов.</param>
+/// <param name="ConfigurationSources">Источники итоговых настроек.</param>
+/// <param name="Probes">Результаты проверок в порядке регистрации.</param>
 public sealed record DiagnosticReport(
     DateTimeOffset GeneratedAtUtc,
     HealthStatus Status,
@@ -15,6 +13,6 @@ public sealed record DiagnosticReport(
     IReadOnlyList<ConfigurationSourceInfo> ConfigurationSources,
     IReadOnlyList<ProbeResult> Probes)
 {
-    /// <summary>True when at least one configured dependency failed its check.</summary>
+    /// <summary>Хотя бы одна настроенная зависимость не прошла проверку.</summary>
     public bool HasFailedDependency => Probes.Any(static probe => probe.Status == ProbeStatus.Unhealthy);
 }

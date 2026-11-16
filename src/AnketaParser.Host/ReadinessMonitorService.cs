@@ -9,8 +9,8 @@ using Microsoft.Extensions.Options;
 namespace AnketaParser.Host;
 
 /// <summary>
-/// Periodic readiness monitoring. It only runs when the database integration is actually configured
-/// and the interval is positive, so the process does not carry an empty background loop.
+/// Периодически проверяет готовность при настроенной БД и положительном интервале. Без зависимости
+/// фоновый цикл не запускается.
 /// </summary>
 internal sealed partial class ReadinessMonitorService : BackgroundService
 {
@@ -84,7 +84,7 @@ internal sealed partial class ReadinessMonitorService : BackgroundService
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            // Graceful shutdown: expected, not an error.
+            // Ожидаемая отмена при штатной остановке.
         }
 
         LogMonitoringStopped();
@@ -94,25 +94,25 @@ internal sealed partial class ReadinessMonitorService : BackgroundService
     [LoggerMessage(
         EventId = 3001,
         Level = LogLevel.Information,
-        Message = "Periodic readiness monitoring is disabled (Host:ReadinessCheckIntervalSeconds = 0).")]
+        Message = "Периодический мониторинг готовности отключён (Host:ReadinessCheckIntervalSeconds = 0).")]
     private partial void LogMonitoringDisabled();
 
     [LoggerMessage(
         EventId = 3002,
         Level = LogLevel.Information,
-        Message = "Periodic readiness monitoring is idle because no external dependency is configured yet.")]
+        Message = "Периодический мониторинг готовности не нужен: внешняя зависимость не настроена.")]
     private partial void LogMonitoringIdle();
 
     [LoggerMessage(
         EventId = 3003,
         Level = LogLevel.Information,
-        Message = "Periodic readiness monitoring started with interval {IntervalSeconds}s.")]
+        Message = "Периодический мониторинг готовности запущен с интервалом {IntervalSeconds} с.")]
     private partial void LogMonitoringStarted(int intervalSeconds);
 
     [LoggerMessage(
         EventId = 3004,
         Level = LogLevel.Information,
-        Message = "Readiness changed from {PreviousStatus} to {CurrentStatus}.")]
+        Message = "Готовность изменилась с {PreviousStatus} на {CurrentStatus}.")]
     private partial void LogReadinessChanged(HealthStatus? previousStatus, HealthStatus currentStatus);
 
 
@@ -120,12 +120,12 @@ internal sealed partial class ReadinessMonitorService : BackgroundService
     [LoggerMessage(
         EventId = 3005,
         Level = LogLevel.Debug,
-        Message = "Readiness check completed with unchanged status {CurrentStatus}.")]
+        Message = "Проверка готовности завершена; статус прежний: {CurrentStatus}.")]
     private partial void LogReadinessUnchanged(HealthStatus currentStatus);
 
     [LoggerMessage(
         EventId = 3006,
         Level = LogLevel.Information,
-        Message = "Periodic readiness monitoring stopped.")]
+        Message = "Периодический мониторинг готовности остановлен.")]
     private partial void LogMonitoringStopped();
 }

@@ -2,19 +2,15 @@ using System.Reflection;
 
 namespace AnketaParser.Core;
 
-/// <summary>
-/// Descriptive identity of an executable: product name and build version.
-/// </summary>
-/// <param name="ProductName">Stable product name, for example <c>anketa-parser</c>.</param>
-/// <param name="Version">Version string suitable for humans and machine-readable diagnostics.</param>
+/// <summary>Название продукта и версия сборки исполняемого приложения.</summary>
+/// <param name="ProductName">Стабильное название продукта, например <c>anketa-parser</c>.</param>
+/// <param name="Version">Версия для человека и машинной диагностики.</param>
 public sealed record ApplicationInfo(string ProductName, string Version)
 {
-    /// <summary>Product name used by both entry points and by diagnostics documents.</summary>
+    /// <summary>Название продукта для обеих точек входа и диагностических документов.</summary>
     public const string DefaultProductName = "anketa-parser";
 
-    /// <summary>
-    /// Reads the informational version of the given assembly, falling back to the assembly version.
-    /// </summary>
+    /// <summary>Читает информационную версию сборки, а при её отсутствии — версию сборки.</summary>
     public static ApplicationInfo FromAssembly(Assembly assembly, string productName)
     {
         ArgumentNullException.ThrowIfNull(assembly);
@@ -28,7 +24,7 @@ public sealed record ApplicationInfo(string ProductName, string Version)
         return new ApplicationInfo(productName, version);
     }
 
-    /// <summary>Reads the identity of the currently executing entry assembly.</summary>
+    /// <summary>Читает сведения о текущей входной сборке.</summary>
     public static ApplicationInfo ForEntryAssembly(string productName = DefaultProductName)
     {
         var assembly = Assembly.GetEntryAssembly() ?? typeof(ApplicationInfo).Assembly;

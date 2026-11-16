@@ -4,7 +4,7 @@ using System.Text;
 
 namespace AnketaParser.DockerTests;
 
-/// <summary>Thin wrapper around the <c>docker</c> CLI used by the smoke test.</summary>
+/// <summary>Запускает Docker CLI для контейнерных тестов.</summary>
 internal sealed class DockerCli
 {
     private readonly string _workingDirectory;
@@ -17,6 +17,7 @@ internal sealed class DockerCli
         CancellationToken cancellationToken,
         bool requireSuccess = true)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var startInfo = new ProcessStartInfo("docker")
         {
             WorkingDirectory = _workingDirectory,
@@ -38,7 +39,7 @@ internal sealed class DockerCli
 
         if (!process.Start())
         {
-            throw new InvalidOperationException("The docker CLI could not be started.");
+            throw new InvalidOperationException("Не удалось запустить Docker CLI.");
         }
 
         process.BeginOutputReadLine();
@@ -59,19 +60,20 @@ internal sealed class DockerCli
             }
             catch (InvalidOperationException)
             {
-                // The process already exited.
+                // Процесс уже завершён.
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             throw new TimeoutException(
                 string.Create(
                     CultureInfo.InvariantCulture,
-                    $"docker {string.Join(' ', arguments)} did not finish within {timeout.TotalSeconds}s."));
+                    $"Команда docker {string.Join(' ', arguments)} не завершена за {timeout.TotalSeconds} с."));
         }
 
         if (requireSuccess && process.ExitCode != 0)
         {
             throw new InvalidOperationException(
-                $"docker {string.Join(' ', arguments)} failed with exit code {process.ExitCode}.{Environment.NewLine}{stderr}");
+                $"docker {string.Join(' ', arguments)} завершилась с кодом {process.ExitCode}.{Environment.NewLine}{stderr}");
         }
 
         return stdout.ToString().Trim();

@@ -1,4 +1,4 @@
-# Build inputs only. Everything else (bin/obj, tests, local secrets) stays out of the image context.
+# Исключаем результаты сборки, тесты и локальные секреты из контекста Docker.
 **/bin/
 **/obj/
 .git/
@@ -6,9 +6,9 @@
 tests/
 .vs/
 .idea/
-.env
-.env.*
-appsettings.Local.json
+**/.env
+**/.env.*
+**/appsettings.Local.json
 *.user
 *.log
 README.md

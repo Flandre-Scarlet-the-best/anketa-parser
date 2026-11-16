@@ -6,9 +6,8 @@
   </PropertyGroup>
 
   <!--
-    Core deliberately has no PackageReference: it contains infrastructure-neutral contracts
-    (exit codes, readiness probe contract, diagnostics aggregation) and must stay free of
-    Telegram, HTTP, PostgreSQL and hosting dependencies.
+    Core не содержит PackageReference: контракты кодов завершения, проверок готовности
+    и агрегации диагностики не зависят от Telegram, HTTP, PostgreSQL и хостинга.
   -->
 
 </Project>

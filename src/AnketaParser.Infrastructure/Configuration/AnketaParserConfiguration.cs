@@ -2,29 +2,29 @@ using AnketaParser.Core.Diagnostics;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace AnketaParser.Infrastructure.Configuration;
 
 /// <summary>
-/// Builds the single configuration pipeline shared by the long-running host and the CLI:
-/// JSON files from the content root, then environment variables with the
-/// <c>ANKETAPARSER_</c> prefix (nested keys use the standard <c>__</c> separator).
+/// Единый конвейер конфигурации Host и CLI: JSON из каталога настроек, затем переменные окружения с
+/// префиксом <c>ANKETAPARSER_</c> и разделителем <c>__</c>.
 /// </summary>
 public static class AnketaParserConfiguration
 {
-    /// <summary>Prefix that marks environment variables owned by this application.</summary>
+    /// <summary>Префикс переменных окружения приложения.</summary>
     public const string EnvironmentVariablePrefix = "ANKETAPARSER_";
 
-    /// <summary>Environment variable that selects the hosting environment.</summary>
+    /// <summary>Переменная окружения для выбора среды хостинга.</summary>
     public const string EnvironmentNameVariable = "DOTNET_ENVIRONMENT";
 
-    /// <summary>Default hosting environment.</summary>
+    /// <summary>Среда хостинга по умолчанию.</summary>
     public const string DefaultEnvironmentName = "Production";
 
-    /// <summary>Optional machine-specific file, excluded from Git.</summary>
+    /// <summary>Необязательный локальный файл, исключённый из Git.</summary>
     public const string LocalSettingsFileName = "appsettings.Local.json";
 
-    /// <summary>Resolves the hosting environment from <c>DOTNET_ENVIRONMENT</c>.</summary>
+    /// <summary>Определяет среду хостинга по <c>DOTNET_ENVIRONMENT</c>.</summary>
     public static string ResolveEnvironmentName()
     {
         var value = Environment.GetEnvironmentVariable(EnvironmentNameVariable);
@@ -32,8 +32,8 @@ public static class AnketaParserConfiguration
     }
 
     /// <summary>
-    /// Applies the configuration pipeline to <paramref name="builder"/> and returns the sources
-    /// that actually contributed, for diagnostics output.
+    /// Применяет конвейер к <paramref name="builder"/> и возвращает использованные источники для
+    /// диагностического отчёта.
     /// </summary>
     public static IReadOnlyList<ConfigurationSourceInfo> Apply(
         IConfigurationBuilder builder,
@@ -46,8 +46,7 @@ public static class AnketaParserConfiguration
 
         var sources = new List<ConfigurationSourceInfo>(3);
 
-        // A missing content root must not break startup: the process falls back to defaults and
-        // environment variables instead of failing inside the file provider.
+        // Без каталога настроек используются значения по умолчанию и переменные окружения.
         if (Directory.Exists(contentRootPath))
         {
             builder.SetBasePath(contentRootPath);
@@ -61,7 +60,22 @@ public static class AnketaParserConfiguration
 
             foreach (var file in files)
             {
-                builder.AddJsonFile(file, optional: true, reloadOnChange: false);
+                builder.AddJsonFile(source =>
+                {
+                    source.Path = file;
+                    source.Optional = true;
+                    source.ReloadOnChange = false;
+                    source.OnLoadException = context =>
+                    {
+                        if (context.Exception is IOException or UnauthorizedAccessException or InvalidDataException or FormatException)
+                        {
+                            throw new OptionsValidationException(
+                                Options.DefaultName,
+                                typeof(AnketaParserConfiguration),
+                                ["Не удалось прочитать файл настроек JSON: проверьте синтаксис и права доступа."]);
+                        }
+                    };
+                });
                 if (File.Exists(Path.Combine(contentRootPath, file)))
                 {
                     sources.Add(new ConfigurationSourceInfo(file, "file"));

@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 
 namespace AnketaParser.Infrastructure.Configuration;
 
-/// <summary>Validates <see cref="HostSettings"/> at startup and in the CLI diagnostics path.</summary>
+/// <summary>Проверяет <see cref="HostSettings"/> при старте и в диагностике CLI.</summary>
 public sealed class HostSettingsValidator : IValidateOptions<HostSettings>
 {
     /// <inheritdoc />
@@ -15,11 +15,11 @@ public sealed class HostSettingsValidator : IValidateOptions<HostSettings>
 
         if (string.IsNullOrWhiteSpace(options.InstanceName))
         {
-            failures.Add("Host:InstanceName must not be empty.");
+            failures.Add("Host:InstanceName не должен быть пустым.");
         }
         else if (options.InstanceName.Length > 100)
         {
-            failures.Add("Host:InstanceName must be 100 characters or shorter.");
+            failures.Add("Host:InstanceName не должен превышать 100 символов.");
         }
 
         RequireRange(failures, "Host:ShutdownTimeoutSeconds", options.ShutdownTimeoutSeconds, 1, 600);
@@ -36,7 +36,7 @@ public sealed class HostSettingsValidator : IValidateOptions<HostSettings>
         {
             failures.Add(string.Create(
                 CultureInfo.InvariantCulture,
-                $"{key} must be between {min} and {max} but was {value}."));
+                $"{key} должен быть в диапазоне от {min} до {max}."));
         }
     }
 }

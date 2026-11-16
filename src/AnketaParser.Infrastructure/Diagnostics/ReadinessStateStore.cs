@@ -2,18 +2,15 @@ using AnketaParser.Core.Diagnostics;
 
 namespace AnketaParser.Infrastructure.Diagnostics;
 
-/// <summary>
-/// Holds the most recent aggregated health report so that long-running components and future
-/// readiness endpoints can read it without re-running probes.
-/// </summary>
+/// <summary>Хранит последний общий отчёт о готовности для чтения без повторного запуска проверок.</summary>
 public sealed class ReadinessStateStore
 {
     private DiagnosticReport? _lastReport;
 
-    /// <summary>The most recent report, or <see langword="null"/> before the first run.</summary>
+    /// <summary>Последний отчёт либо <see langword="null"/> до первой проверки.</summary>
     public DiagnosticReport? LastReport => Volatile.Read(ref _lastReport);
 
-    /// <summary>Replaces the stored report.</summary>
+    /// <summary>Заменяет сохранённый отчёт.</summary>
     public void Update(DiagnosticReport report)
     {
         ArgumentNullException.ThrowIfNull(report);

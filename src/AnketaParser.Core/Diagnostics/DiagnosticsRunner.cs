@@ -1,9 +1,8 @@
 namespace AnketaParser.Core.Diagnostics;
 
 /// <summary>
-/// Runs every registered readiness probe and aggregates the results into a <see cref="DiagnosticReport"/>.
-/// The runner only knows the <see cref="IReadinessProbe"/> contract, so it is shared by the long-running
-/// host and by the agent CLI without either of them duplicating dependency logic.
+/// Выполняет зарегистрированные проверки и формирует <see cref="DiagnosticReport"/>. Использует
+/// контракт <see cref="IReadinessProbe"/> для общей диагностики Host и CLI.
 /// </summary>
 public sealed class DiagnosticsRunner
 {
@@ -11,7 +10,7 @@ public sealed class DiagnosticsRunner
     private readonly IRuntimeSnapshotProvider _runtime;
     private readonly TimeProvider _timeProvider;
 
-    /// <summary>Creates a runner over the given probes.</summary>
+    /// <summary>Создаёт агрегатор для заданных проверок.</summary>
     public DiagnosticsRunner(
         IEnumerable<IReadinessProbe> probes,
         IRuntimeSnapshotProvider runtime,
@@ -23,12 +22,12 @@ public sealed class DiagnosticsRunner
         _timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
     }
 
-    /// <summary>Registered probes in registration order.</summary>
+    /// <summary>Проверки в порядке регистрации.</summary>
     public IReadOnlyList<IReadinessProbe> Probes => _probes;
 
     /// <summary>
-    /// Runs all probes sequentially with a per-probe timeout. Expected dependency failures are converted
-    /// into <see cref="ProbeStatus.Unhealthy"/> results; only cancellation of the caller escapes.
+    /// Последовательно проверяет зависимости с отдельным таймаутом для каждой. Отказы дают <see
+    /// cref="ProbeStatus.Unhealthy"/>; отмена вызывающего кода распространяется наружу.
     /// </summary>
     public async Task<DiagnosticReport> RunAsync(
         IReadOnlyList<ConfigurationSourceInfo> configurationSources,
@@ -52,38 +51,38 @@ public sealed class DiagnosticsRunner
             results);
     }
 
-    private static async Task<ProbeResult> RunProbeAsync(
+    private async Task<ProbeResult> RunProbeAsync(
         IReadinessProbe probe,
         TimeSpan probeTimeout,
         CancellationToken cancellationToken)
     {
-        var startedAt = TimeProvider.System.GetTimestamp();
-        using var timeoutSource = new CancellationTokenSource(probeTimeout, TimeProvider.System);
+        var startedAt = _timeProvider.GetTimestamp();
+        using var timeoutSource = new CancellationTokenSource(probeTimeout, _timeProvider);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
 
         try
         {
             return await probe.CheckAsync(linked.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (timeoutSource.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             return ProbeResult.Unhealthy(
                 probe.Name,
-                $"Probe did not finish within {probeTimeout.TotalSeconds:0.###}s.",
-                TimeProvider.System.GetElapsedTime(startedAt));
+                $"Проверка не завершена за {probeTimeout.TotalSeconds:0.###} с.",
+                _timeProvider.GetElapsedTime(startedAt));
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // The caller stopped the run; the probe result is not meaningful.
+            // При отмене вызывающим кодом результат проверки не имеет смысла.
             throw;
         }
         catch (Exception exception)
         {
-            // Never surface raw exception text: it may contain a connection string or credentials.
+            // Текст исключения может содержать строку подключения или учётные данные.
             return ProbeResult.Unhealthy(
                 probe.Name,
-                $"Probe failed with {exception.GetType().Name}.",
-                TimeProvider.System.GetElapsedTime(startedAt));
+                $"Ошибка проверки: {exception.GetType().Name}.",
+                _timeProvider.GetElapsedTime(startedAt));
         }
     }
 

@@ -2,18 +2,14 @@ using Npgsql;
 
 namespace AnketaParser.Infrastructure.Configuration;
 
-/// <summary>
-/// Turns a PostgreSQL connection string into a secret-free descriptor.
-/// Only the host, port, database name and user name are exposed; the password never leaves
-/// <see cref="NpgsqlConnectionStringBuilder"/>.
-/// </summary>
+/// <summary>Описывает адрес PostgreSQL без учётных данных: только хост, порт и имя базы данных.</summary>
 public static class ConnectionStringDescriptor
 {
     private const string RedactedMarker = "***";
 
     /// <summary>
-    /// Describes the configured target without credentials, for example <c>postgres:5432/anketa_parser</c>.
-    /// Returns <c>(not configured)</c> for an empty value and <c>(invalid)</c> when parsing fails.
+    /// Описывает адрес без учётных данных, например <c>postgres:5432/anketa_parser</c>. Пустое значение
+    /// обозначается <c>(not configured)</c>, ошибка разбора — <c>(invalid)</c>.
     /// </summary>
     public static string Describe(string? connectionString)
     {
@@ -34,8 +30,8 @@ public static class ConnectionStringDescriptor
     }
 
     /// <summary>
-    /// Returns the connection string with its password removed. Use it only when a full string is
-    /// genuinely required by a diagnostic; prefer <see cref="Describe"/>.
+    /// Маскирует пароль в строке подключения. Это парсер строки подключения, а не фильтр произвольных
+    /// сообщений. Для диагностики предпочтителен <see cref="Describe"/>.
     /// </summary>
     public static string Redact(string? connectionString)
     {

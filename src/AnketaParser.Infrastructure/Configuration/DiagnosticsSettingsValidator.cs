@@ -2,7 +2,7 @@ using Microsoft.Extensions.Options;
 
 namespace AnketaParser.Infrastructure.Configuration;
 
-/// <summary>Validates <see cref="DiagnosticsSettings"/>.</summary>
+/// <summary>Проверяет <see cref="DiagnosticsSettings"/>.</summary>
 public sealed class DiagnosticsSettingsValidator : IValidateOptions<DiagnosticsSettings>
 {
     /// <inheritdoc />

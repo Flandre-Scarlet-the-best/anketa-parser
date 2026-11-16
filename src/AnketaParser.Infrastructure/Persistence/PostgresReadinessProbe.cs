@@ -9,20 +9,19 @@ using Npgsql;
 namespace AnketaParser.Infrastructure.Persistence;
 
 /// <summary>
-/// Infrastructure readiness probe for PostgreSQL. It opens a real connection and runs
-/// <c>SELECT 1</c>; a connection failure is reported as <see cref="ProbeStatus.Unhealthy"/>
-/// and never as a successful status.
+/// Открывает реальное подключение PostgreSQL и выполняет <c>SELECT 1</c>. Отказ подключения
+/// возвращается как <see cref="ProbeStatus.Unhealthy"/>.
 /// </summary>
 public sealed partial class PostgresReadinessProbe : IReadinessProbe
 {
-    /// <summary>Stable probe name used by the CLI and the host logs.</summary>
+    /// <summary>Стабильное имя проверки для CLI и логов хоста.</summary>
     public const string ProbeName = "postgres";
 
     private readonly IOptionsMonitor<DatabaseSettings> _settings;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<PostgresReadinessProbe> _logger;
 
-    /// <summary>Creates the probe.</summary>
+    /// <summary>Создаёт проверку готовности.</summary>
     public PostgresReadinessProbe(
         IOptionsMonitor<DatabaseSettings> settings,
         TimeProvider timeProvider,
@@ -42,7 +41,7 @@ public sealed partial class PostgresReadinessProbe : IReadinessProbe
         var settings = _settings.CurrentValue;
         if (!settings.IsConfigured)
         {
-            return ProbeResult.Skipped(ProbeName, "Database is not configured; readiness is not claimed.");
+            return ProbeResult.Skipped(ProbeName, "База данных не настроена; готовность не подтверждена.");
         }
 
         var startedAt = _timeProvider.GetTimestamp();
@@ -54,7 +53,7 @@ public sealed partial class PostgresReadinessProbe : IReadinessProbe
             {
                 Timeout = settings.ConnectTimeoutSeconds,
                 CommandTimeout = settings.CommandTimeoutSeconds,
-                ApplicationName = "anketa-parser",
+                ApplicationName = AnketaParser.Core.ApplicationInfo.DefaultProductName,
                 Pooling = false,
             };
 
@@ -69,7 +68,7 @@ public sealed partial class PostgresReadinessProbe : IReadinessProbe
             var version = connection.PostgreSqlVersion;
             return ProbeResult.Healthy(
                 ProbeName,
-                $"PostgreSQL {version} answered at {target}.",
+                $"PostgreSQL {version} ответил по адресу {target}.",
                 _timeProvider.GetElapsedTime(startedAt));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -78,30 +77,29 @@ public sealed partial class PostgresReadinessProbe : IReadinessProbe
         }
         catch (Exception exception) when (exception is NpgsqlException or InvalidOperationException)
         {
-            LogProbeFailure(exception, target);
+            LogProbeFailure(target, DescribeFailure(exception));
             return ProbeResult.Unhealthy(
                 ProbeName,
-                $"PostgreSQL at {target} did not answer ({DescribeFailure(exception)}).",
+                $"PostgreSQL по адресу {target} не ответил ({DescribeFailure(exception)}).",
                 _timeProvider.GetElapsedTime(startedAt));
         }
     }
 
     private static string DescribeFailure(Exception exception)
     {
-        // Only a stable classification is reported: Npgsql messages may embed host details, and a
-        // probe result must stay free of connection specifics and credentials.
+        // Сообщения Npgsql могут содержать учётные данные; возвращаем только категорию отказа.
         return exception switch
         {
-            NpgsqlException { IsTransient: true } => "transient connection error",
-            PostgresException postgres => $"server error {postgres.SqlState}",
-            NpgsqlException => "connection error",
-            _ => "connection error",
+            NpgsqlException { IsTransient: true } => "временная ошибка подключения",
+            PostgresException postgres => $"ошибка сервера {postgres.SqlState}",
+            NpgsqlException => "ошибка подключения",
+            _ => "ошибка подключения",
         };
     }
 
     [LoggerMessage(
         EventId = 2001,
         Level = LogLevel.Warning,
-        Message = "PostgreSQL readiness probe failed for target {Target}.")]
-    private partial void LogProbeFailure(Exception exception, string target);
+        Message = "Проверка готовности PostgreSQL для {Target} завершилась отказом ({FailureCategory}).")]
+    private partial void LogProbeFailure(string target, string failureCategory);
 }

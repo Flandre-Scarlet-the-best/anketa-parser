@@ -6,7 +6,7 @@
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
-    <!-- Enables `dotnet test` through Microsoft.Testing.Platform, the supported path for .NET 10. -->
+    <!-- Включает dotnet test через Microsoft.Testing.Platform для .NET 10. -->
     <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
   </PropertyGroup>
 

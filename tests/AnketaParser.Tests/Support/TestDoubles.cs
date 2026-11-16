@@ -2,7 +2,7 @@ using AnketaParser.Core.Diagnostics;
 
 namespace AnketaParser.Tests.Support;
 
-/// <summary>Creates a temporary content root with an <c>appsettings.json</c> written by the test.</summary>
+/// <summary>Создаёт временный каталог с тестовым <c>appsettings.json</c>.</summary>
 internal sealed class TemporaryContentRoot : IDisposable
 {
     public TemporaryContentRoot(string? appSettingsJson = null)
@@ -29,12 +29,12 @@ internal sealed class TemporaryContentRoot : IDisposable
         }
         catch (IOException)
         {
-            // A leftover temporary directory must not fail the test.
+            // Оставшийся временный каталог не должен прерывать тест.
         }
     }
 }
 
-/// <summary>Probe with a scripted behavior.</summary>
+/// <summary>Проверка с заданным поведением.</summary>
 internal sealed class StubProbe : IReadinessProbe
 {
     private readonly Func<CancellationToken, Task<ProbeResult>> _behavior;
@@ -50,7 +50,7 @@ internal sealed class StubProbe : IReadinessProbe
     public Task<ProbeResult> CheckAsync(CancellationToken cancellationToken) => _behavior(cancellationToken);
 }
 
-/// <summary>Runtime snapshot with fixed values.</summary>
+/// <summary>Сведения о среде выполнения с фиксированными значениями.</summary>
 internal sealed class StubRuntimeSnapshotProvider : IRuntimeSnapshotProvider
 {
     public RuntimeSnapshot Capture() => new(

@@ -11,19 +11,19 @@ using Microsoft.Extensions.Options;
 namespace AnketaParser.Infrastructure;
 
 /// <summary>
-/// Registers infrastructure adapters. Each executable host remains the composition root and decides
-/// which of these capabilities, plus its own lifecycle services, it actually wires up.
+/// Регистрирует инфраструктурные адаптеры. Исполняемое приложение определяет используемые возможности и
+/// службы жизненного цикла.
 /// </summary>
 public static class InfrastructureServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds typed options with validation, the readiness probes, the diagnostics runner and the
-    /// runtime snapshot provider.
+    /// Добавляет типизированные настройки с валидацией, проверки готовности, агрегатор диагностики и
+    /// поставщик сведений о среде выполнения.
     /// </summary>
-    /// <param name="services">Target service collection.</param>
-    /// <param name="configuration">Effective configuration.</param>
-    /// <param name="environmentName">Resolved hosting environment name.</param>
-    /// <param name="configurationSources">Sources reported by diagnostics output.</param>
+    /// <param name="services">Коллекция сервисов.</param>
+    /// <param name="configuration">Итоговая конфигурация.</param>
+    /// <param name="environmentName">Среда хостинга.</param>
+    /// <param name="configurationSources">Источники для диагностического отчёта.</param>
     public static IServiceCollection AddAnketaParserInfrastructure(
         this IServiceCollection services,
         IConfiguration configuration,
@@ -36,17 +36,17 @@ public static class InfrastructureServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(configurationSources);
 
         services.AddOptions<HostSettings>()
-            .Bind(configuration.GetSection(HostSettings.SectionName))
+            .Configure(options => BindSettings(configuration.GetSection(HostSettings.SectionName), options))
             .ValidateOnStart();
         services.AddSingleton<IValidateOptions<HostSettings>, HostSettingsValidator>();
 
         services.AddOptions<DatabaseSettings>()
-            .Bind(configuration.GetSection(DatabaseSettings.SectionName))
+            .Configure(options => BindSettings(configuration.GetSection(DatabaseSettings.SectionName), options))
             .ValidateOnStart();
         services.AddSingleton<IValidateOptions<DatabaseSettings>, DatabaseSettingsValidator>();
 
         services.AddOptions<DiagnosticsSettings>()
-            .Bind(configuration.GetSection(DiagnosticsSettings.SectionName))
+            .Configure(options => BindSettings(configuration.GetSection(DiagnosticsSettings.SectionName), options))
             .ValidateOnStart();
         services.AddSingleton<IValidateOptions<DiagnosticsSettings>, DiagnosticsSettingsValidator>();
 
@@ -60,5 +60,23 @@ public static class InfrastructureServiceCollectionExtensions
         services.TryAddSingleton<DiagnosticsRunner>();
 
         return services;
+    }
+
+    private static void BindSettings<T>(IConfigurationSection section, T options)
+        where T : class
+    {
+        try
+        {
+            section.Bind(options);
+        }
+        catch (InvalidOperationException exception) when (
+            exception.InnerException is FormatException or InvalidCastException or OverflowException or ArgumentException)
+        {
+            // Биндер включает исходное значение в исключение; наружу выходит только имя секции.
+            throw new OptionsValidationException(
+                Options.DefaultName,
+                typeof(T),
+                [$"Секция {section.Key}: значение настройки не соответствует ожидаемому типу."]);
+        }
     }
 }

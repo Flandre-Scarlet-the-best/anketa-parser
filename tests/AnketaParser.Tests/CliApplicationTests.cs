@@ -51,7 +51,7 @@ public sealed class CliApplicationTests
         var result = await RunAsync(["--help"]);
 
         Assert.Equal(ExitCodes.Success, result.ExitCode);
-        Assert.Contains("Exit codes:", result.Stdout, StringComparison.Ordinal);
+        Assert.Contains("Коды завершения:", result.Stdout, StringComparison.Ordinal);
         Assert.Contains("doctor", result.Stdout, StringComparison.Ordinal);
     }
 
@@ -61,7 +61,7 @@ public sealed class CliApplicationTests
         var result = await RunAsync(["--bogus"]);
 
         Assert.Equal(ExitCodes.InvalidUsage, result.ExitCode);
-        Assert.Contains("error:", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains("Ошибка:", result.Stderr, StringComparison.Ordinal);
         Assert.Equal(string.Empty, result.Stdout);
     }
 
@@ -74,7 +74,7 @@ public sealed class CliApplicationTests
         using var document = JsonDocument.Parse(result.Stdout);
         Assert.Equal("invalid_usage", document.RootElement.GetProperty("status").GetString());
         Assert.Equal(ExitCodes.InvalidUsage, document.RootElement.GetProperty("exitCode").GetInt32());
-        Assert.Contains("frobnicate", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains("Неизвестная команда", result.Stderr, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -117,7 +117,7 @@ public sealed class CliApplicationTests
         Assert.Contains(
             rootElement.GetProperty("errors").EnumerateArray(),
             error => error.GetString()!.Contains("ShutdownTimeoutSeconds", StringComparison.Ordinal));
-        Assert.Contains("configuration is invalid", result.Stderr, StringComparison.Ordinal);
+        Assert.Contains("конфигурация некорректна", result.Stderr, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -161,7 +161,82 @@ public sealed class CliApplicationTests
         var result = await RunAsync(["doctor"], root.Path);
 
         Assert.Equal(ExitCodes.Success, result.ExitCode);
-        Assert.Contains("status      : degraded", result.Stdout, StringComparison.Ordinal);
-        Assert.Contains("probe postgres", result.Stdout, StringComparison.Ordinal);
+        Assert.Contains("статус      : degraded", result.Stdout, StringComparison.Ordinal);
+        Assert.Contains("проверка postgres", result.Stdout, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("doctor", "version")]
+    [InlineData("version", "doctor")]
+    [InlineData("help", "doctor")]
+    [InlineData("help", "help")]
+    [InlineData("doctor", "doctor")]
+    [InlineData("doctor", "--help")]
+    public async Task MultipleCommandsAreInvalidUsageRegardlessOfJsonPosition(string first, string second)
+    {
+        foreach (string[] args in new[] { new[] { "--json", first, second }, new[] { first, second, "--json" } })
+        {
+            var result = await RunAsync(args);
+            Assert.Equal(ExitCodes.InvalidUsage, result.ExitCode);
+            using var document = JsonDocument.Parse(result.Stdout);
+            Assert.Equal("invalid_usage", document.RootElement.GetProperty("status").GetString());
+            Assert.Equal(2, document.RootElement.GetProperty("exitCode").GetInt32());
+            Assert.Contains("только одна команда", result.Stderr, StringComparison.Ordinal);
+        }
+    }
+
+    [Theory]
+    [InlineData("--json", "version")]
+    [InlineData("version", "--json")]
+    [InlineData("--json", "doctor")]
+    [InlineData("doctor", "--json")]
+    public async Task JsonFlagWorksBeforeAndAfterCommand(string first, string second)
+    {
+        using var root = new Support.TemporaryContentRoot("{}");
+        var result = await RunAsync([first, second], root.Path);
+        Assert.Equal(0, result.ExitCode);
+        using var document = JsonDocument.Parse(result.Stdout);
+        Assert.Equal(first == "--json" ? second : first, document.RootElement.GetProperty("command").GetString());
+    }
+
+    [Fact]
+    public async Task VersionAndDoctorShareSchemaVersion()
+    {
+        using var root = new Support.TemporaryContentRoot("{}");
+        using var version = JsonDocument.Parse((await RunAsync(["version", "--json"])).Stdout);
+        using var doctor = JsonDocument.Parse((await RunAsync(["doctor", "--json"], root.Path)).Stdout);
+        Assert.Equal(1, doctor.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(doctor.RootElement.GetProperty("schemaVersion").GetInt32(), version.RootElement.GetProperty("schemaVersion").GetInt32());
+    }
+
+    [Fact]
+    public async Task EmptyInvocationShowsSupportedLaunchCommand()
+    {
+        var result = await RunAsync([]);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("dotnet AnketaParser.Cli.dll", result.Stdout, StringComparison.Ordinal);
+        Assert.DoesNotContain("anketa-parser-cli", result.Stdout, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("unknown-command")]
+    [InlineData("--unknown-option")]
+    public async Task UnknownArgumentRecognizesTrailingJsonFlag(string argument)
+    {
+        var result = await RunAsync([argument, "--json"]);
+        Assert.Equal(2, result.ExitCode);
+        using var document = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("invalid_usage", document.RootElement.GetProperty("status").GetString());
+    }
+
+    [Theory]
+    [InlineData("help")]
+    [InlineData("--help")]
+    public async Task HelpWithJsonFlagRemainsText(string command)
+    {
+        var result = await RunAsync(["--json", command]);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Команды:", result.Stdout, StringComparison.Ordinal);
+        Assert.Empty(result.Stderr);
     }
 }
