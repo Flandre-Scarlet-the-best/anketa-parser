@@ -196,6 +196,33 @@ class MarkdownLinkTests(unittest.TestCase):
             ["docs/page.md:3: цель ссылки не существует: missing.md"],
         )
 
+    def test_reference_definitions_inside_containers(self) -> None:
+        for case, source, line in (
+            ("quote", "> [bad]: missing.md\n\n[bad]\n", 1),
+            ("list", "- [bad]: missing.md\n", 1),
+            ("quoted-run", "> [ok]: notes.md\n> [bad]: missing.md\n", 2),
+        ):
+            with self.subTest(case=case):
+                self.assertEqual(
+                    self.errors(source),
+                    [f"docs/page.md:{line}: цель ссылки не существует: missing.md"],
+                )
+
+    def test_title_does_not_end_definition_run(self) -> None:
+        self.assertEqual(
+            self.errors('[ok]: notes.md "Главная"\n[bad]: missing.md\n\n[bad]\n'),
+            ["docs/page.md:2: цель ссылки не существует: missing.md"],
+        )
+
+    def test_comment_is_hidden_wherever_it_starts_in_line(self) -> None:
+        for case, source in (
+            ("text-prefix", "Текст <!-- [x](absent.md) -->\n"),
+            ("space-prefix", "  <!-- [x](absent.md) -->\n"),
+            ("after-code", "`код` <!-- [x](absent.md) -->\n"),
+        ):
+            with self.subTest(case=case):
+                self.assertEqual(self.errors(source), [])
+
     def test_indented_examples_and_list_or_paragraph_continuations(self) -> None:
         self.assertEqual(
             self.errors(

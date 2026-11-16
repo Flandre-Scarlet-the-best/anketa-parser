@@ -29,6 +29,9 @@ from check_skill_contracts import (
 BACKTICKS = re.compile(r"`+")
 COMMENT_OPEN = "<!--"
 COMMENT_CLOSE = "-->"
+# Маркер цитаты перед содержимым строки; определения ссылок действуют во всём
+# документе, поэтому контейнер им не мешает.
+QUOTE_MARKER = re.compile(r" {0,3}>[ \t]?")
 # Заголовок и тематический разрыв (включая подчёркивание setext-заголовка) сами
 # завершают блок, поэтому код-спан, ссылка и определение не могут их пересекать.
 HEADING = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
@@ -36,9 +39,7 @@ BLOCK_LEAF = re.compile(
     r" {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|=+|-+)[ \t]*$"
 )
 INLINE = re.compile(r"!?\[(?:[^\[\]\n]|\n(?![ \t]*\n)|\[[^\[\]\n]*\])*\]\(")
-REFERENCE = re.compile(
-    r"^ {0,3}\[(?!\^)[^\]\n]+\]:[ \t]*(?:\n[ \t]*)?(<[^<>\n]*>|\S+)", re.MULTILINE
-)
+REFERENCE = re.compile(r" {0,3}\[(?!\^)[^\]\n]+\]:[ \t]*(?:\n[ \t]*)?(<[^<>\n]*>|\S+)")
 
 
 def blank_text(text: str) -> str:
@@ -57,8 +58,8 @@ def mask_inline(text: str, blocks: list[tuple[int, int]]) -> str:
     Код-спан не пересекает границу блока, поэтому закрывающая граница ищется
     только внутри блока: незакрытая кавычка заголовка не соединяется с кавычкой
     следующего заголовка. Внутри блока первым обрабатывается то, что начинается
-    раньше, — код-спан или комментарий. Незакрытый комментарий, как и прежде,
-    продолжается до `-->` или конца документа.
+    раньше, — код-спан или комментарий, где бы он ни стоял в строке. Незакрытый
+    комментарий, как и прежде, продолжается до `-->` или конца документа.
     """
     masked = text
     hidden_until = 0
@@ -69,15 +70,16 @@ def mask_inline(text: str, blocks: list[tuple[int, int]]) -> str:
             if position < hidden_until:
                 position = min(hidden_until, end)
                 continue
-            if text.startswith(COMMENT_OPEN, position):
-                closing = text.find(COMMENT_CLOSE, position + len(COMMENT_OPEN))
+            comment = text.find(COMMENT_OPEN, position, end)
+            opener = BACKTICKS.search(masked, position, end)
+            if comment >= 0 and (opener is None or comment < opener.start()):
+                closing = text.find(COMMENT_CLOSE, comment + len(COMMENT_OPEN))
                 hidden_until = (
                     len(text) if closing < 0 else closing + len(COMMENT_CLOSE)
                 )
-                masked = hide(masked, position, hidden_until)
+                masked = hide(masked, comment, hidden_until)
                 position = hidden_until
                 continue
-            opener = BACKTICKS.search(masked, position, end)
             if opener is None:
                 break
             # Экранирование открывающего символа и равная длина границ кода.
@@ -236,14 +238,29 @@ def destinations(text: str) -> list[tuple[int, str]]:
     return sorted(found)
 
 
+def content_offset(text: str, position: int) -> int:
+    """Смещение содержимого строки после маркеров цитаты и списка."""
+    while True:
+        quote = QUOTE_MARKER.match(text, position)
+        if quote is not None:
+            position = quote.end()
+            continue
+        marker = LIST_MARKER.match(text, position)
+        if marker is None:
+            return position
+        position = marker.end()
+
+
 def reference_destinations(visible: str, start: int, end: int) -> list[tuple[int, str]]:
     """Определения ссылок, допустимые в начале блока и после предыдущего.
 
     Определение не может прерывать абзац, поэтому проверяются только позиции от
-    начала блока, а подряд идущие определения образуют один ряд в его начале.
+    начала блока, а подряд идущие определения образуют один ряд: титул внутри
+    предыдущего определения ряд не разрывает, а маркеры цитаты и списка перед
+    содержимым строки распознаванию не мешают.
     """
     found: list[tuple[int, str]] = []
-    position = start
+    position = content_offset(visible, start)
     while position < end:
         match = REFERENCE.match(visible, position, end)
         if match is None:
@@ -252,9 +269,10 @@ def reference_destinations(visible: str, start: int, end: int) -> list[tuple[int
         if not escaped(visible, bracket):
             address = match.group(1).removeprefix("<").removesuffix(">")
             found.append((visible.count("\n", 0, match.start(1)) + 1, address))
-        position = match.end()
-        while position < end and visible[position] in " \t\n":
-            position += 1
+        line_end = visible.find("\n", match.end(), end)
+        if line_end < 0:
+            break
+        position = content_offset(visible, line_end + 1)
     return found
 
 
