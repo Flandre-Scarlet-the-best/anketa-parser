@@ -16,7 +16,7 @@ from typing import BinaryIO, TypeGuard, cast
 
 from check_pr_body import (
     FENCE_CLOSE,
-    _fence_open,
+    fence_open,
     is_automation_pr,
     strip_comments,
     validate,
@@ -195,6 +195,44 @@ def list_comments(
         page = following
 
 
+def _comment_snapshot(
+    comments: Sequence[Mapping[str, JSONValue]],
+) -> list[tuple[JSONValue, ...]]:
+    snapshot: list[tuple[JSONValue, ...]] = []
+    for comment in comments:
+        user = comment.get("user")
+        if _is_json_object(user):
+            author_id = user.get("id")
+            author_login = user.get("login")
+        else:
+            author_id = None
+            author_login = None
+        snapshot.append(
+            (
+                comment.get("id"),
+                author_id,
+                author_login,
+                comment.get("body"),
+                comment.get("updated_at"),
+            )
+        )
+    return snapshot
+
+
+def _html_block_terminator(line: str) -> str | None:
+    """Вернуть закрывающий маркер HTML-блоков CommonMark типов 3–5."""
+    if len(line) - len(line.lstrip(" ")) > 3:
+        return None
+    stripped = line.lstrip(" ")
+    if stripped.startswith("<?"):
+        return "?>"
+    if stripped.startswith("<![CDATA["):
+        return "]]>"
+    if re.match(r"<![A-Z]", stripped):
+        return ">"
+    return None
+
+
 def visible_comment(body):
     """Оставить только видимый Markdown вне fenced-блоков и HTML-комментариев."""
     lines = strip_comments(body.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
@@ -203,10 +241,16 @@ def visible_comment(body):
     length = 0
     html_block = False
     raw_tag = ""
+    html_terminator = ""
     for line in lines:
         if raw_tag:
             if re.search(rf"</{raw_tag}\s*>", line, re.IGNORECASE):
                 raw_tag = ""
+            result.append("")
+            continue
+        if html_terminator:
+            if html_terminator in line:
+                html_terminator = ""
             result.append("")
             continue
         if html_block:
@@ -219,8 +263,12 @@ def visible_comment(body):
             if close and close.group(1)[0] == char and len(close.group(1)) >= length:
                 char = ""
             result.append("")
-        elif opening := _fence_open(line):
+        elif opening := fence_open(line):
             char, length = opening
+            result.append("")
+        elif terminator := _html_block_terminator(line):
+            if terminator not in line:
+                html_terminator = terminator
             result.append("")
         elif tag := re.match(
             r"^ {0,3}<(?P<closing>/)?(?P<name>[A-Za-z][A-Za-z0-9-]*)(?:\s|/?>)", line
@@ -428,6 +476,11 @@ def run(env: Mapping[str, str]) -> list[str]:
         or after != before
     ):
         raise CheckError("PR изменился во время проверки: запустите её повторно")
+    latest_comments = list_comments(repository, number, token)
+    if _comment_snapshot(latest_comments) != _comment_snapshot(comments):
+        raise CheckError(
+            "Комментарии изменились во время проверки: запустите её повторно"
+        )
     return problems
 
 

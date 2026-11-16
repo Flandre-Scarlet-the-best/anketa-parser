@@ -33,6 +33,7 @@ REQUIRED = (
 BOT_BRANCHES = {"renovate[bot]": "renovate/", "dependabot[bot]": "dependabot/"}
 # ATX-заголовок: закрывающие `#` — часть оформления, а не имени раздела.
 HEADING = re.compile(r"^ {0,3}(#{2,3})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$")
+ATX_BLOCK_HEADING = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+|$)")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 # Закрывающая граница не допускает info string: ```` ```python ```` — это строка
 # содержимого блока, а не его конец.
@@ -183,7 +184,7 @@ def _hide(line: str) -> str:
     return " " * len(line)
 
 
-def _fence_open(line: str) -> tuple[str, int] | None:
+def fence_open(line: str) -> tuple[str, int] | None:
     """Открывающий fenced-блок (символ, длина маркера) либо None.
 
     Info string backtick-блока не может содержать обратную кавычку
@@ -327,7 +328,7 @@ def mask_raw_html(lines: list[str]) -> list[str]:
             continue
         started_inside_comment = comment
         visible, comment = _strip_comments_in_line(line, comment)
-        if not started_inside_comment and (opened := _fence_open(line)) is not None:
+        if not started_inside_comment and (opened := fence_open(line)) is not None:
             fence = opened
             result.append(line)
             continue
@@ -358,7 +359,7 @@ def strip_comments(lines: list[str]) -> list[str]:
                 fence = None
             result.append(line)
             continue
-        if not inside and (opened := _fence_open(line)) is not None:
+        if not inside and (opened := fence_open(line)) is not None:
             fence = opened
             result.append(line)
             continue
@@ -380,7 +381,7 @@ def sections(body: str, *, raw: bool = False, level: int = 2) -> list[tuple[str,
             if _fence_closes(line, fence[0], fence[1]):
                 fence = None
             continue
-        if (opened := _fence_open(line)) is not None:
+        if (opened := fence_open(line)) is not None:
             fence = opened
             continue
         match = HEADING.match(line)
@@ -492,9 +493,9 @@ def _starts_gfm_block(line: str) -> bool:
     )
     return (
         _indent_width(line) >= 4
-        or _fence_open(line) is not None
+        or fence_open(line) is not None
         or _raw_block(line) is not None
-        or HEADING.match(line) is not None
+        or ATX_BLOCK_HEADING.match(line) is not None
         or stripped.startswith(">")
         or re.match(r"^(?:[-+*]|[0-9]{1,9}[.)])(?: +|$)", stripped) is not None
         or thematic_break

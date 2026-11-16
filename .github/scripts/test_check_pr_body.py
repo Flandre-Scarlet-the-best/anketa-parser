@@ -620,6 +620,27 @@ class CodeRabbitTableTests(unittest.TestCase):
                     [],
                 )
 
+    def test_all_atx_heading_levels_end_comment_table(self):
+        for level in range(1, 7):
+            with self.subTest(level=level):
+                self.assertEqual(
+                    validate_comment_table(
+                        coderabbit(
+                            CR_HEADER,
+                            CR_DELIMITER,
+                            CR_ROW,
+                            f"{'#' * level} Итог",
+                        )
+                    ),
+                    [],
+                )
+        for prose in ("#hashtag", "####### Итог"):
+            with self.subTest(prose=prose):
+                errors = validate_comment_table(
+                    coderabbit(CR_HEADER, CR_DELIMITER, CR_ROW, prose)
+                )
+                self.assertTrue(any("столбцов" in error for error in errors), errors)
+
     def test_conditional_coderabbit_table(self):
         body = valid_body() + "\n\n## CodeRabbit review и disposition\nПроверено."
         self.assertEqual(validate(body), [])

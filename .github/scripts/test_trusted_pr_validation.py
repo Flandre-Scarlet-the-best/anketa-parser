@@ -207,6 +207,7 @@ atexit.register(record)
                 "https://api.github.com/repos/owner/repo/pulls/17",
                 "https://api.github.com/repos/owner/repo/issues/17/comments?per_page=100&page=1",
                 "https://api.github.com/repos/owner/repo/pulls/17",
+                "https://api.github.com/repos/owner/repo/issues/17/comments?per_page=100&page=1",
             ]
 
             def run_case(body, current_comment):

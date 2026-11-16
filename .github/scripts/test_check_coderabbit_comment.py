@@ -9,7 +9,7 @@ import traceback
 import unittest
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import ClassVar, TypedDict
 from unittest.mock import patch
@@ -145,6 +145,16 @@ class CommentTests(unittest.TestCase):
             f"{check.MARKER}\n<script>\n\n{TABLE}\n</script>",
         ):
             with self.subTest(body=body):
+                self.assertTrue(check.validate_comments([comment(1, body=body)], 1))
+
+    def test_raw_html_blocks_hide_comment_tables(self):
+        for opening, closing in (
+            ("<?", "?>"),
+            ("<!DOCTYPE html [", "]>"),
+            ("<![CDATA[", "]]>"),
+        ):
+            with self.subTest(opening=opening):
+                body = f"{check.MARKER}\n{opening}\n{TABLE}\n\n{closing}"
                 self.assertTrue(check.validate_comments([comment(1, body=body)], 1))
 
     def test_backtick_info_string_does_not_hide_a_visible_table(self):
@@ -537,11 +547,19 @@ class PublishedPrTests(unittest.TestCase):
             "GITHUB_EVENT_PATH": str(self.event_path),
         }
 
-    def execute(self, actual, comments=None):
+    def execute(
+        self,
+        actual: PullRequestPayload,
+        comments: Sequence[Mapping[str, check.JSONValue]] | None = None,
+    ) -> list[str]:
+        comment_snapshot: list[Mapping[str, check.JSONValue]] = copy.deepcopy(
+            list(comments or [])
+        )
         responses = [
             (actual, None),
             (comments or [], None),
             (copy.deepcopy(actual), None),
+            (comment_snapshot, None),
         ]
         with patch.object(check, "get_json", side_effect=responses):
             return check.run(self.env)
@@ -638,6 +656,37 @@ class PublishedPrTests(unittest.TestCase):
             self.assertRaises(check.CheckError),
         ):
             check.run(self.env)
+
+    def test_comment_changes_between_snapshots_fail_closed(self):
+        changed_login = comment(1)
+        user = changed_login["user"]
+        if not check._is_json_object(user):
+            self.fail("В фикстуре комментария должен быть автор")
+        user["login"] = "other-author"
+        snapshots = (
+            [comment(1, body=MARKED.replace(CR_ROW, "| повреждённая |"))],
+            [comment(1, author=2)],
+            [comment(1), comment(2)],
+            [],
+            [changed_login],
+        )
+        for latest in snapshots:
+            with self.subTest(latest=latest):
+                with (
+                    patch.object(
+                        check,
+                        "get_json",
+                        side_effect=[
+                            (pr(), None),
+                            ([comment(1)], None),
+                            (pr(), None),
+                            (latest, None),
+                        ],
+                    ) as get,
+                    self.assertRaises(check.CheckError),
+                ):
+                    check.run(self.env)
+                self.assertEqual(get.call_count, 4)
 
     def test_base_draft_state_and_author_races_fail_closed(self):
         for mutate in (
