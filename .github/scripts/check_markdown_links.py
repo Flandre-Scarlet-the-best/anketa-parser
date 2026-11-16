@@ -228,19 +228,30 @@ def destinations(text: str) -> list[tuple[int, str]]:
 
     Определения проверяются независимо от использования; ссылки по метке
     разрешаются внутри своего документа и используют тот же адрес определения.
+    Вложенное изображение внутри ссылки проверяется отдельно: поиск продолжается
+    с соседнего символа, а уже обработанная скобка не повторяется.
     """
     visible, spans = visible_document(text)
     found: list[tuple[int, str]] = []
+    seen: set[int] = set()
     for start, end in spans:
-        for match in INLINE.finditer(visible, start, end):
+        position = start
+        while position < end:
+            match = INLINE.search(visible, position, end)
+            if match is None:
+                break
             bracket = match.start() + match.group().index("[")
+            position = match.start() + 1
+            if bracket in seen:
+                continue
+            seen.add(bracket)
             if escaped(visible, bracket):
                 continue
-            position = match.end() - 1
-            parsed = inline_destination(visible, position)
+            opening = match.end() - 1
+            parsed = inline_destination(visible, opening)
             if parsed is None or not closes_link(visible, parsed[1]):
                 continue
-            address_start = position + 1
+            address_start = opening + 1
             while visible[address_start : address_start + 1] in (" ", "\t", "\n"):
                 address_start += 1
             number = visible.count("\n", 0, address_start) + 1

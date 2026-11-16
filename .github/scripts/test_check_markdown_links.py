@@ -92,6 +92,22 @@ class MarkdownLinkTests(unittest.TestCase):
             ["docs/page.md:1: цель ссылки не существует: missing.png"],
         )
 
+    def test_image_nested_in_link_is_checked_separately(self) -> None:
+        self.assertEqual(
+            self.errors("[![нет](missing.png)](notes.md)\n"),
+            ["docs/page.md:1: цель ссылки не существует: missing.png"],
+        )
+        self.assertEqual(
+            self.errors(
+                "[![нет](missing.png)](gone.md)\n",
+            ),
+            [
+                "docs/page.md:1: цель ссылки не существует: gone.md",
+                "docs/page.md:1: цель ссылки не существует: missing.png",
+            ],
+        )
+        self.assertEqual(self.errors("[![alt](notes.md)](notes.md)\n"), [])
+
     def test_escape_outside_root_including_encoded_path(self) -> None:
         for case, address in enumerate(
             ("../../outside.md", "%2e%2e/%2e%2e/outside.md")
