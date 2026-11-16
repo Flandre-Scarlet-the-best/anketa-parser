@@ -520,6 +520,15 @@ def table_row(line: str, *, in_table: bool = False) -> list[str] | None:
     return table_cells(line)
 
 
+def table_candidate_row(line: str) -> list[str] | None:
+    """Строка-кандидат на заголовок GFM-таблицы, в том числе из одной ячейки."""
+    if not line.strip() or _indent_width(line) > 3 or _starts_gfm_block(line):
+        return None
+    if not _unescaped_pipe_positions(line):
+        return [line.strip()]
+    return table_cells(line)
+
+
 def table_headers(lines: list[str]) -> list[int]:
     """Найти заголовки GFM-таблиц, не считая строку внутри уже открытой таблицы."""
     headers = []
@@ -532,13 +541,14 @@ def table_headers(lines: list[str]) -> list[int]:
                 continue
             table_open = False
 
-        row = table_row(lines[index])
-        delimiter = table_row(lines[index + 1]) if index + 1 < len(lines) else None
+        row = table_candidate_row(lines[index])
+        delimiter = (
+            table_candidate_row(lines[index + 1]) if index + 1 < len(lines) else None
+        )
         if row == list(CODERABBIT_HEADER):
             headers.append(index)
         if (
             row is not None
-            and _unescaped_pipe_positions(lines[index])
             and delimiter is not None
             and len(delimiter) == len(row)
             and all(DELIMITER_CELL.fullmatch(cell) for cell in delimiter)

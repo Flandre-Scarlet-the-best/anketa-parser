@@ -597,11 +597,25 @@ class CodeRabbitTableTests(unittest.TestCase):
         self.assertTrue(any("таблицы" in e for e in validate_comment_table(body)))
 
     def test_coderabbit_header_inside_an_open_table_is_not_a_header(self):
-        errors = validate_comment_table(
-            coderabbit("| x |", "| - |", CR_HEADER, CR_DELIMITER, CR_ROW)
-        )
-        self.assertTrue(
-            any("отсутствует заголовок" in error for error in errors), errors
+        for header, delimiter in (
+            ("| x |", "| - |"),
+            ("x", ":---"),
+            ("x", "---:"),
+        ):
+            with self.subTest(header=header, delimiter=delimiter):
+                errors = validate_comment_table(
+                    coderabbit(header, delimiter, CR_HEADER, CR_DELIMITER, CR_ROW)
+                )
+                self.assertTrue(
+                    any("отсутствует заголовок" in error for error in errors), errors
+                )
+
+    def test_setext_heading_does_not_open_a_single_column_table(self):
+        self.assertEqual(
+            validate_comment_table(
+                coderabbit("x", "---", CR_HEADER, CR_DELIMITER, CR_ROW)
+            ),
+            [],
         )
 
     def test_conditional_coderabbit_table(self):
