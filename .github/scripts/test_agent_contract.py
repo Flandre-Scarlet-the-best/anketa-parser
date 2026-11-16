@@ -125,6 +125,10 @@ class AgentContractTests(unittest.TestCase):
                 self.assertTrue(refs, (filename, action))
                 self.assertEqual(set(refs), {sha}, (filename, action))
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertEqual(
+            re.findall(r"actions/setup-dotnet@([^\s]+)", ci),
+            ["0f4a354dd5547a28c70b7853dbd95d5b67886e73"],
+        )
         self.assertIn(
             'python .github/scripts/check_python_coverage.py "$RUNNER_TEMP/basedpyright-report.json" .github/pyrightconfig.json',
             ci,
