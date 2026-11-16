@@ -1,4 +1,6 @@
 target-version = "py315"
 
 [lint]
-select = ["B", "E4", "E7", "E9", "F", "I", "S", "UP"]
+# S — security-проверки Bandit; SIM, PLW1510 и RUF012 дополняют аудит
+# упрощений, явного check= в subprocess и изменяемых значений класса.
+select = ["B", "E4", "E7", "E9", "F", "I", "PLW1510", "RUF012", "S", "SIM", "UP"]
