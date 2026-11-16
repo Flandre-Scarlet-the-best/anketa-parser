@@ -4,6 +4,7 @@ import fnmatch
 import re
 import unittest
 from pathlib import Path
+from typing import ClassVar, NotRequired, TypedDict, cast, override
 
 import yaml
 
@@ -11,7 +12,78 @@ ROOT = Path(__file__).resolve().parents[2]
 SKILL = ROOT / ".agents/skills/coderabbit-review"
 
 
-def expand_braces(pattern):
+class AutoReview(TypedDict):
+    enabled: bool
+    auto_incremental_review: bool
+
+
+class FinishingTouch(TypedDict):
+    enabled: bool
+
+
+class PathInstruction(TypedDict):
+    path: str
+
+
+class Reviews(TypedDict):
+    profile: str
+    auto_review: AutoReview
+    review_status: bool
+    finishing_touches: dict[str, FinishingTouch]
+    path_instructions: list[PathInstruction]
+    tools: NotRequired[dict[str, object]]
+
+
+class GuidelineFile(TypedDict):
+    files: str
+
+
+class CodeGuidelines(TypedDict):
+    filePatterns: list[GuidelineFile]
+
+
+class KnowledgeBase(TypedDict):
+    code_guidelines: CodeGuidelines
+
+
+class ProviderConfig(TypedDict):
+    """Проверяемые разделы .coderabbit.yaml; прочие ключи тест не читает."""
+
+    language: str
+    reviews: Reviews
+    knowledge_base: KnowledgeBase
+
+
+class WorkflowStep(TypedDict, total=False):
+    run: str
+    env: dict[str, str]
+
+
+class WorkflowJob(TypedDict):
+    steps: list[WorkflowStep]
+
+
+class Workflow(TypedDict):
+    """Проверяемые разделы workflow; ключ on намеренно остаётся строкой."""
+
+    on: dict[str, object]
+    permissions: dict[str, str]
+    jobs: dict[str, WorkflowJob]
+
+
+def read_workflow(path: Path) -> Workflow:
+    """Прочитать workflow безопасным BaseLoader, сохранив ключ on строкой.
+
+    stubs PyYAML описывают результат load как Any; структура проверяется
+    утверждениями теста, поэтому тип уточняется один раз здесь.
+    """
+    return cast(
+        Workflow,
+        yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader),  # noqa: S506
+    )
+
+
+def expand_braces(pattern: str) -> list[str]:
     """Раскрыть альтернативы в glob, не обращаясь к файловой системе."""
     match = re.search(r"\{([^{}]+)\}", pattern)
     if match is None:
@@ -26,8 +98,13 @@ def expand_braces(pattern):
 
 
 class ReviewInstructionTests(unittest.TestCase):
+    skill: ClassVar[str]
+    workflow: ClassVar[str]
+    preflight: ClassVar[str]
+
     @classmethod
-    def setUpClass(cls):
+    @override
+    def setUpClass(cls) -> None:
         cls.skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
         cls.workflow = (SKILL / "references/review-workflow.md").read_text(
             encoding="utf-8"
@@ -122,10 +199,14 @@ class ReviewInstructionTests(unittest.TestCase):
 
 
 class ProviderConfigurationTests(unittest.TestCase):
+    config: ClassVar[ProviderConfig]
+
     @classmethod
-    def setUpClass(cls):
-        cls.config = yaml.safe_load(
-            (ROOT / ".coderabbit.yaml").read_text(encoding="utf-8")
+    @override
+    def setUpClass(cls) -> None:
+        cls.config = cast(
+            ProviderConfig,
+            yaml.safe_load((ROOT / ".coderabbit.yaml").read_text(encoding="utf-8")),
         )
 
     def test_russian_manual_review_and_no_automatic_mutations(self):
@@ -179,10 +260,7 @@ class ProviderConfigurationTests(unittest.TestCase):
             # собирает только базовые типы: workflow читается из самого репозитория,
             # а не из данных PR. Замена на safe_load превратила бы on в True и
             # сломала бы проверку контракта события.
-            workflow = yaml.load(
-                (ROOT / ".github/workflows" / filename).read_text(encoding="utf-8"),
-                Loader=yaml.BaseLoader,  # noqa: S506
-            )
+            workflow = read_workflow(ROOT / ".github/workflows" / filename)
             with self.subTest(workflow=filename):
                 self.assertEqual(set(workflow["on"]), {event})
                 self.assertEqual(
@@ -196,7 +274,7 @@ class ProviderConfigurationTests(unittest.TestCase):
                     ["python .github/scripts/check_coderabbit_comment.py"],
                 )
                 self.assertEqual(
-                    runs[0]["env"],
+                    runs[0].get("env"),
                     {
                         "PR_NUMBER": "${{ github.event.pull_request.number }}",
                         "GITHUB_TOKEN": "${{ github.token }}",
