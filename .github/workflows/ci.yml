@@ -46,6 +46,12 @@ jobs:
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           dotnet-version: 10.0.x
+          # Кеш ключуется всеми lock-файлами решения: любое изменение зависимостей
+          # создаёт новую запись, а неизменённые зависимости восстанавливаются без сети.
+          cache: true
+          cache-dependency-path: |
+            src/**/packages.lock.json
+            tests/**/packages.lock.json
 
       - name: Восстановить зависимости в locked mode
         run: dotnet restore --locked-mode

@@ -2,14 +2,14 @@ using System.Text.Json;
 
 namespace AnketaParser.DockerTests;
 
-public sealed class BackupRecoveryTests
+public sealed class BackupRecoveryTests(ComposeImageFixture images)
 {
     [Fact]
     public async Task BackupRestoresRelationshipsAndArchiveAndFailuresPreserveLastCopy()
     {
-        if (Environment.GetEnvironmentVariable("ANKETAPARSER_DOCKER_TESTS") != "1") Assert.Skip("Требуется ANKETAPARSER_DOCKER_TESTS=1.");
+        if (!ComposeImageFixture.Enabled) Assert.Skip($"Требуется {ComposeImageFixture.EnableVariable}=1.");
         var ct = TestContext.Current.CancellationToken;
-        var root = ComposeStackSmokeTests.FindRepositoryRoot();
+        var root = images.RepositoryRoot;
         var password = Guid.NewGuid().ToString("N");
         var docker = new DockerCli(root, new Dictionary<string, string>
         {

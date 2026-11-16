@@ -7,22 +7,23 @@ using Npgsql;
 
 namespace AnketaParser.DockerTests;
 
-public sealed class ProductPersistenceTests
+public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClassFixture<PostgresTestCluster>
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     [Fact]
     public async Task ConcurrentImportPreservesRevisionsAndUnknownFields()
     {
-        await using var fixture = await DatabaseFixture.StartAsync(Ct);
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
         var input = new PostInput("https://example.invalid/thread", "1", "https://example.invalid/1", "Синтетическая анкета", null);
         var ids = await Task.WhenAll(Enumerable.Range(0, 8).Select(async _ =>
         {
-            await using var db = fixture.Open();
+            await using var db = database.Open();
             return await new ProductStore(db).ImportAsync(input, Ct);
         }));
         Assert.Single(ids.Distinct());
-        await using var context = fixture.Open();
+        await using var context = database.Open();
         var store = new ProductStore(context);
         var updated = await store.ImportAsync(input with { Content = "Изменённая синтетическая анкета" }, Ct);
         Assert.NotEqual(ids[0], updated);
@@ -38,8 +39,9 @@ public sealed class ProductPersistenceTests
     [Fact]
     public async Task ContactsPreserveAmbiguityAndUsernameCanChangeOwner()
     {
-        await using var fixture = await DatabaseFixture.StartAsync(Ct);
-        await using var db = fixture.Open();
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
         var store = new ProductStore(db);
         var revision = await Import(store, "1");
         var profile = await store.AnalyzeAsync(Analysis(revision), Ct);
@@ -67,8 +69,9 @@ public sealed class ProductPersistenceTests
     [Fact]
     public async Task ArchiveIsTerminalAndComplaintsAndBlacklistsKeepOwners()
     {
-        await using var fixture = await DatabaseFixture.StartAsync(Ct);
-        await using var db = fixture.Open();
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
         var store = new ProductStore(db);
         var revision = await Import(store, "1");
         var profile = await store.AnalyzeAsync(Analysis(revision), Ct);
@@ -113,15 +116,16 @@ public sealed class ProductPersistenceTests
     [Fact]
     public async Task ConcurrentJobClaimsUseFencingAndBoundedRetries()
     {
-        await using var fixture = await DatabaseFixture.StartAsync(Ct);
-        await using var db = fixture.Open();
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
         var store = new ProductStore(db);
         var revision = await Import(store, "1");
         var id = await store.EnqueueAsync(revision, "synthetic-v1", 2, Ct);
         Assert.Equal(id, await store.EnqueueAsync(revision, "synthetic-v1", 2, Ct));
         var leases = await Task.WhenAll(Enumerable.Range(0, 8).Select(async _ =>
         {
-            await using var worker = fixture.Open();
+            await using var worker = database.Open();
             return await new ProductStore(worker).ClaimAsync(TimeSpan.FromMinutes(1), Ct);
         }));
         var first = Assert.Single(leases.OfType<JobLease>());
@@ -141,8 +145,9 @@ public sealed class ProductPersistenceTests
     [Fact]
     public async Task FailedMigrationCannotAdvertiseReadyOrOverwriteExistingTable()
     {
-        await using var fixture = await DatabaseFixture.StartAsync(Ct);
-        await using var db = await fixture.CreateConflictDatabaseAsync(Ct);
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = await database.CreateConflictDatabaseAsync(Ct);
         await Assert.ThrowsAsync<PostgresException>(() => SchemaMaintenance.MigrateAsync(db, Ct));
         Assert.Equal("migration_required", await SchemaMaintenance.StatusAsync(db, Ct));
         Assert.Equal(42, (await db.Database.SqlQueryRaw<int>("""SELECT marker AS "Value" FROM product."Source" """).ToListAsync(Ct)).Single());
@@ -151,10 +156,11 @@ public sealed class ProductPersistenceTests
     [Fact]
     public async Task MigrationPreservesExistingDataAndRuntimeCannotEscalate()
     {
-        await using var fixture = await DatabaseFixture.StartAsync(Ct);
-        await using var admin = fixture.Open(runtime: false);
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var admin = database.Open(runtime: false);
         await SchemaMaintenance.MigrateAsync(admin, Ct);
-        await using var db = fixture.Open(runtime: true);
+        await using var db = database.Open(runtime: true);
         var store = new ProductStore(db);
         await Import(store, "1");
         Assert.Equal("ready", await SchemaMaintenance.StatusAsync(db, Ct));
@@ -168,75 +174,15 @@ public sealed class ProductPersistenceTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => SchemaMaintenance.MigrateAsync(admin, Ct));
     }
 
+    private static void RequireDocker()
+    {
+        if (!PostgresTestCluster.Enabled)
+        {
+            Assert.Skip("Требуется ANKETAPARSER_DOCKER_TESTS=1.");
+        }
+    }
+
     private static AnalysisInput Analysis(Guid revision) => new(revision, "synthetic", "v1", null, null, null, null, null, "{}", "{}");
     private static Task<Guid> Import(ProductStore store, string id) => store.ImportAsync(new("https://example.invalid/thread", id, "https://example.invalid/" + id, "Синтетический пост " + id, null), Ct);
     private static Task<Guid> Contact(ProductStore store, Guid revision, string platform, string value) => store.RegisterContactAsync(new(revision, platform, value, value, 0.9m, "синтетическое извлечение"), Ct);
-
-    private sealed class DatabaseFixture(DockerCli docker, string name, string connectionString) : IAsyncDisposable
-    {
-        public async Task<ProductDbContext> CreateConflictDatabaseAsync(CancellationToken ct)
-        {
-            await using var admin = new NpgsqlConnection(connectionString);
-            await admin.OpenAsync(ct);
-            await using var create = new NpgsqlCommand("CREATE DATABASE conflict_test OWNER product_migrator", admin);
-            await create.ExecuteNonQueryAsync(ct);
-            var cs = new NpgsqlConnectionStringBuilder(connectionString) { Database = "conflict_test", Username = "product_migrator" };
-            var db = new ProductDbContext(new DbContextOptionsBuilder<ProductDbContext>().UseNpgsql(cs.ConnectionString).Options);
-            await db.Database.ExecuteSqlRawAsync("""CREATE SCHEMA product; CREATE TABLE product."Source"(marker int); INSERT INTO product."Source" VALUES(42)""", ct);
-            return db;
-        }
-
-        public ProductDbContext Open(bool runtime = true)
-        {
-            var cs = new NpgsqlConnectionStringBuilder(connectionString);
-            cs.Username = runtime ? "product_runtime" : "product_migrator";
-            return new(new DbContextOptionsBuilder<ProductDbContext>().UseNpgsql(cs.ConnectionString).Options);
-        }
-
-        public static async Task<DatabaseFixture> StartAsync(CancellationToken ct)
-        {
-            if (Environment.GetEnvironmentVariable("ANKETAPARSER_DOCKER_TESTS") != "1") Assert.Skip("Требуется ANKETAPARSER_DOCKER_TESTS=1.");
-            var root = ComposeStackSmokeTests.FindRepositoryRoot();
-            var docker = new DockerCli(root);
-            var name = "anketa-persistence-test-" + Guid.NewGuid().ToString("N");
-            var password = Guid.NewGuid().ToString("N");
-            await docker.RunAsync(["run", "-d", "--name", name, "-e", "POSTGRES_PASSWORD=" + password, "-p", "127.0.0.1::5432", "postgres:18.6-alpine"], TimeSpan.FromMinutes(3), ct);
-            var port = await docker.RunAsync(["port", name, "5432"], TimeSpan.FromSeconds(10), ct);
-            var cs = new NpgsqlConnectionStringBuilder { Host = "127.0.0.1", Port = int.Parse(port.Trim().Split(':')[^1], System.Globalization.CultureInfo.InvariantCulture), Database = "postgres", Username = "postgres", Password = password };
-            var fixture = new DatabaseFixture(docker, name, cs.ConnectionString);
-            try
-            {
-                for (var i = 0; ; i++)
-                {
-                    try
-                    {
-                        await using var connection = new NpgsqlConnection(cs.ConnectionString);
-                        await connection.OpenAsync(ct);
-                        await using var marker = new NpgsqlCommand("CREATE TABLE public.existing_marker(id int); INSERT INTO public.existing_marker VALUES(42)", connection);
-                        await marker.ExecuteNonQueryAsync(ct);
-                        break;
-                    }
-                    catch (NpgsqlException) when (i < 60) { await Task.Delay(500, ct); }
-                }
-                await SchemaMaintenance.ProvisionAsync(cs.ConnectionString, password, password, password, ct);
-                await SchemaMaintenance.ProvisionAsync(cs.ConnectionString, password, password, password, ct);
-                await using var db = fixture.Open(runtime: false);
-                Assert.Equal("migration_required", await SchemaMaintenance.StatusAsync(db, ct));
-                await SchemaMaintenance.MigrateAsync(db, ct);
-                await SchemaMaintenance.MigrateAsync(db, ct);
-                await using var verify = new NpgsqlConnection(cs.ConnectionString);
-                await verify.OpenAsync(ct);
-                await using var query = new NpgsqlCommand("SELECT id FROM public.existing_marker", verify);
-                Assert.Equal(42, await query.ExecuteScalarAsync(ct));
-                return fixture;
-            }
-            catch { await fixture.DisposeAsync(); throw; }
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            NpgsqlConnection.ClearAllPools();
-            await docker.RunAsync(["rm", "-fv", name], TimeSpan.FromSeconds(30), CancellationToken.None);
-        }
-    }
 }
