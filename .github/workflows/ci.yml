@@ -14,10 +14,10 @@ jobs:
     name: Контракты агента
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.15.2'
       - name: Установить зависимости проверки контрактов
@@ -32,28 +32,14 @@ jobs:
         run: |
           basedpyright --project .github/pyrightconfig.json
           basedpyright --project .github/pyrightconfig.json --outputjson > "$RUNNER_TEMP/basedpyright-report.json"
-          python - "$RUNNER_TEMP/basedpyright-report.json" <<'PY'
-          import json
-          import sys
-          from pathlib import Path
-
-          report = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-          summary = report["summary"]
-          print(f"Проанализировано Python-файлов: {summary['filesAnalyzed']}")
-          print(
-              f"Ошибок типизации: {summary['errorCount']}; "
-              f"предупреждений: {summary['warningCount']}"
-          )
-          if summary["filesAnalyzed"] != 9:
-              raise SystemExit("Ожидался анализ всех девяти Python-файлов.")
-          PY
+          python .github/scripts/check_python_coverage.py "$RUNNER_TEMP/basedpyright-report.json" .github/pyrightconfig.json
       - name: Проверить метаданные skills и локальные ссылки
         run: python .github/scripts/check_skill_contracts.py
 
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-dotnet@v4
         with:

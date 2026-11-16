@@ -80,3 +80,8 @@ explicit task contract. Successful checks do not grant either permission.
   required checks and report unavailable evidence honestly.
 - Keep transient PR numbers, SHA values, roadmap phases, absolute workstation
   paths and author names out of permanent instructions and branch conventions.
+
+<!-- output-language: ru -->
+
+The output-language directive above is the statically checked language contract.
+It requires Russian authored output; prose consistency is checked by review.

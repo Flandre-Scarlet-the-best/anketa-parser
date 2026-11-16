@@ -45,7 +45,7 @@ class UniqueSafeLoader(yaml.SafeLoader):
     def construct_mapping(
         self, node: yaml.MappingNode, deep: bool = False
     ) -> dict[Hashable, object]:
-        # stubs описывают CollectionNode.value и Node.start_mark как Any, хотя
+        # В описаниях типов CollectionNode.value и Node.start_mark имеют тип Any, хотя
         # отображение YAML — это пары узлов с метками разбора; уточняем один раз.
         pairs = cast(Sequence[tuple[yaml.Node, yaml.Node]], node.value)
         seen: set[Hashable] = set()
@@ -70,7 +70,7 @@ class UniqueSafeLoader(yaml.SafeLoader):
 def _load_frontmatter(source: str) -> object:
     """Разобрать frontmatter безопасным загрузчиком, вернув значение как object.
 
-    stubs PyYAML описывают результат load как Any; единственное уточнение типа
+    В описаниях типов PyYAML результат load имеет тип Any; единственное уточнение типа
     сделано здесь, а структура проверяется ниже обычными isinstance.
     """
     return cast(object, yaml.load(source, Loader=UniqueSafeLoader))  # noqa: S506

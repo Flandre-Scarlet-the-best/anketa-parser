@@ -106,3 +106,8 @@ sections 6–8 handle limits, blockers and the final Russian handoff. Read rare
 branches only when relevant. Recheck version-sensitive official sources and
 installed help each new cycle; no release number or event-field spelling in an
 example is a permanent provider contract.
+
+<!-- output-language: ru -->
+
+The output-language directive above is the statically checked language contract.
+It requires Russian authored output; prose consistency is checked by review.

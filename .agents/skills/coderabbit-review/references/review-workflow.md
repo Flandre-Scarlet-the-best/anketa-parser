@@ -280,3 +280,58 @@ Version-sensitive primary sources to recheck before execution:
 - [Installed command reference](https://docs.coderabbit.ai/cli/reference).
 - [Agent output, incomplete/reused results and exit codes](https://docs.coderabbit.ai/cli/agent-mode).
 - [Configuration reference](https://docs.coderabbit.ai/reference/configuration).
+
+## Static contract
+
+The following values are normative invariants, independent of prose layout.
+Static tests check this declaration only. Review must also confirm that the
+instructions above agree with it; it cannot prove actual CLI execution,
+updates, authorization or completion. No test may launch a real review.
+
+```json review-contract
+{
+  "authorization": "explicit-positive-user-request",
+  "deep": "explicit-intent",
+  "paid": "separate-explicit-consent",
+  "preflight_order": [
+    "resolve-executable",
+    "lookup-latest-stable",
+    "update-if-outdated",
+    "verify-installed-version",
+    "discover-interface",
+    "review"
+  ],
+  "latest_stable_url": "https://cli.coderabbit.ai/releases/latest/VERSION",
+  "update": {
+    "current": "skip-reinstall",
+    "outdated": "automatic-supported-unattended",
+    "windows": "verify-authenticode",
+    "failure": "block-before-discovery",
+    "other-tools": "no-update"
+  },
+  "completion": [
+    "full-stream-to-eof",
+    "successful-terminal-outcome",
+    "full-requested-file-coverage",
+    "no-errors-or-contradictions",
+    "successful-exit",
+    "fresh-review-evidence"
+  ],
+  "incomplete": [
+    "review_skipped",
+    "too_many_files",
+    "unreviewedFileCount",
+    "reused: true"
+  ],
+  "incomplete_credit": 0,
+  "incomplete_marker": false,
+  "fresh_retry": "same-mode-base-scope-focus",
+  "automatic_clear": false,
+  "default_iterations": 3,
+  "explicit_count_overrides_default": true,
+  "clean_shortens_cycle": false,
+  "clean_marker_commit": true,
+  "base": "actual-direct-pr-base",
+  "publication_owner": "git-workflow"
+}
+```

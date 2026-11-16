@@ -1,6 +1,7 @@
 """Статические контракты инструкций; настоящий CLI и обновление не запускаются."""
 
 import fnmatch
+import json
 import re
 import unittest
 from pathlib import Path
@@ -74,7 +75,7 @@ class Workflow(TypedDict):
 def read_workflow(path: Path) -> Workflow:
     """Прочитать workflow безопасным BaseLoader, сохранив ключ on строкой.
 
-    stubs PyYAML описывают результат load как Any; структура проверяется
+    В описаниях типов PyYAML результат load имеет тип Any; структура проверяется
     утверждениями теста, поэтому тип уточняется один раз здесь.
     """
     return cast(
@@ -97,105 +98,92 @@ def expand_braces(pattern: str) -> list[str]:
     ]
 
 
+def review_contract(text: str) -> object:
+    """Прочитать только явный контракт; согласованность прозы проверяется ревью."""
+    blocks: list[str] = re.findall(
+        r"```json review-contract\s*\n(.*?)\n```", text, re.DOTALL
+    )
+    if len(blocks) != 1:
+        raise ValueError("Ожидается единственный структурированный контракт ревью")
+    return cast(object, json.loads(blocks[0]))
+
+
 class ReviewInstructionTests(unittest.TestCase):
-    skill: ClassVar[str]
-    workflow: ClassVar[str]
-    preflight: ClassVar[str]
-
-    @classmethod
-    @override
-    def setUpClass(cls) -> None:
-        cls.skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
-        cls.workflow = (SKILL / "references/review-workflow.md").read_text(
-            encoding="utf-8"
+    def test_declared_authorization_update_and_completion_invariants(self):
+        text = (SKILL / "references/review-workflow.md").read_text(encoding="utf-8")
+        expected = {
+            "authorization": "explicit-positive-user-request",
+            "deep": "explicit-intent",
+            "paid": "separate-explicit-consent",
+            "preflight_order": [
+                "resolve-executable",
+                "lookup-latest-stable",
+                "update-if-outdated",
+                "verify-installed-version",
+                "discover-interface",
+                "review",
+            ],
+            "latest_stable_url": "https://cli.coderabbit.ai/releases/latest/VERSION",
+            "update": {
+                "current": "skip-reinstall",
+                "outdated": "automatic-supported-unattended",
+                "windows": "verify-authenticode",
+                "failure": "block-before-discovery",
+                "other-tools": "no-update",
+            },
+            "completion": [
+                "full-stream-to-eof",
+                "successful-terminal-outcome",
+                "full-requested-file-coverage",
+                "no-errors-or-contradictions",
+                "successful-exit",
+                "fresh-review-evidence",
+            ],
+            "incomplete": [
+                "review_skipped",
+                "too_many_files",
+                "unreviewedFileCount",
+                "reused: true",
+            ],
+            "incomplete_credit": 0,
+            "incomplete_marker": False,
+            "fresh_retry": "same-mode-base-scope-focus",
+            "automatic_clear": False,
+            "default_iterations": 3,
+            "explicit_count_overrides_default": True,
+            "clean_shortens_cycle": False,
+            "clean_marker_commit": True,
+            "base": "actual-direct-pr-base",
+            "publication_owner": "git-workflow",
+        }
+        self.assertEqual(review_contract(text), expected)
+        # Переносы и редакция окружающей прозы не меняют технические инварианты.
+        declaration = text[text.index("```json review-contract") :]
+        self.assertEqual(
+            review_contract("Reworded instructions.\n" + declaration), expected
         )
-        cls.preflight = cls.workflow.split(
-            "## 3. Mandatory latest-stable preflight\n", 1
-        )[1].split("## 4.", 1)[0]
-
-    def test_outdated_cli_requires_unattended_update_then_version_proof_and_discovery(
-        self,
-    ):
-        # Закрепляется порядок ворот инструкции, не работа внешнего updater.
-        stages = [
-            "1. Resolve the real executable",
-            "2. Read the latest stable version",
-            "3. If the installed executable",
-            "4. On Windows",
-            "5. Resolve executable paths again",
-            "6. If release lookup",
-        ]
-        positions = [self.preflight.index(stage) for stage in stages]
-        self.assertEqual(positions, sorted(positions))
-        for requirement in (
-            "automatically update without asking",
-            "https://cli.coderabbit.ai/releases/latest/VERSION",
-            "Homebrew-managed installations",
-            "brew upgrade coderabbit",
-            "Authenticode",
-            "Do not bypass signature",
-            "both command",
+        for field, value in (
+            ("authorization", "automatic"),
+            ("incomplete_credit", 1),
+            ("incomplete_marker", True),
+            ("automatic_clear", True),
         ):
-            self.assertIn(requirement, self.preflight)
-        self.assertIn(
-            "Only after confirmed latest stable proceed to section 4", self.preflight
-        )
-        self.assertLess(
-            self.workflow.index("## 4. Discover"),
-            self.workflow.index("### 5.1 Invocation"),
-        )
-
-    def test_current_cli_proves_latest_and_skips_reinstallation(self):
-        self.assertIn(
-            "already matches confirmed latest stable, skip\n   reinstalling it",
-            self.preflight,
-        )
-        self.assertIn("before every separately requested cycle", self.preflight)
-        self.assertIn("actual installed executable's\n   version", self.preflight)
-        self.assertIn("No unattended update\nof any other tool", self.preflight)
-
-    def test_unconfirmed_update_blocks_before_discovery_review_or_marker(self):
-        for requirement in (
-            "report a blocker before interface discovery or review",
-            "Do not continue\n   on an unconfirmed version",
-            "An updater's\n   exit code or promise to update does not prove replacement succeeded",
-            "zero completed iterations and no marker commit",
-        ):
-            self.assertIn(requirement, self.preflight)
-
-    def test_explicit_activation_iteration_and_completion_boundaries(self):
-        for requirement in (
-            "explicit_positive_user_count ?? 3",
-            "Three is the default, not a maximum",
-            "clean pass does not shorten",
-            "meaningful empty marker commit",
-            "Never create marker commits for them",
-            "creating or testing this skill does not authorize",
-        ):
-            self.assertIn(requirement, self.skill + self.workflow)
-        for outcome in (
-            "review_skipped",
-            "too_many_files",
-            "unreviewedFileCount",
-            "reviewedFiles",
-            "reused: true",
-            "Retry that same unfinished requested mode with `--fresh`",
-            "review_context.expectedDuration",
-            "allow at least\n15 minutes",
-            "confirmed",
-            "partially confirmed",
-            "stale/repeated",
-            "false positive",
-        ):
-            self.assertIn(outcome, self.workflow)
-        self.assertIn("actual direct base", self.workflow)
-        self.assertIn("Deep requires explicit deep intent", self.skill)
-        self.assertIn("Paid usage requires separate explicit consent", self.skill)
-        self.assertIn("Never call `--clear` automatically", self.workflow)
-        self.assertIn("git-workflow", self.skill)
+            altered = dict(expected)
+            altered[field] = value
+            self.assertNotEqual(
+                review_contract(
+                    "```json review-contract\n" + json.dumps(altered) + "\n```"
+                ),
+                expected,
+            )
         self.assertFalse(
-            (SKILL / "scripts").exists(), "цикл не должен становиться CLI-wrapper"
+            (SKILL / "scripts").exists(), "Навык не должен становиться обёрткой CLI"
         )
+
+    def test_missing_or_duplicate_contract_is_rejected(self):
+        for text in ("Do not review.", "```json review-contract\n{}\n```\n" * 2):
+            with self.assertRaises(ValueError):
+                _ = review_contract(text)
 
 
 class ProviderConfigurationTests(unittest.TestCase):

@@ -24,14 +24,10 @@ def instruction_prose(text: str) -> str:
 
 
 def requires_russian_output(text: str) -> bool:
-    """Требует ли инструкция русскоязычного результата.
-
-    Проверяется наличие языка результата в прозе, а не конкретная английская
-    конструкция: «Communicate ... in Russian», «Use Russian for ...», «must be
-    Russian», «the result language is Russian» и любая равнозначная
-    формулировка проходят одинаково.
-    """
-    return re.search(r"\bRussian\b", instruction_prose(text)) is not None
+    """Проверить явную директиву; смысл произвольной прозы проверяется ревью."""
+    return re.findall(
+        r"(?m)^<!-- output-language: ([a-z-]+) -->$", instruction_prose(text)
+    ) == ["ru"]
 
 
 class AgentContractTests(unittest.TestCase):
@@ -49,8 +45,8 @@ class AgentContractTests(unittest.TestCase):
             # Литералы контракта выделяются кодом; окружающая инструкция английская.
             prose = instruction_prose(path.read_text(encoding="utf-8"))
             self.assertIsNone(re.search(r"[А-Яа-яЁё]", prose), str(path))
-        # Требование русскоязычного результата задаётся в прозе корневого
-        # контракта и навыка. Проверяется сам язык, поэтому равноценная
+        # Язык задаётся явной директивой корневого контракта и навыка;
+        # проверка не интерпретирует английскую прозу, поэтому равноценная
         # переформулировка правила не ломает CI.
         for path in (
             ROOT / "AGENTS.md",
@@ -79,22 +75,26 @@ class AgentContractTests(unittest.TestCase):
         )
         self.assertFalse(requires_russian_output("Write everything in English."))
 
-    def test_russian_output_requirement_is_phrasing_independent(self):
-        # Равноценные формулировки постоянного контракта проходят одинаково:
-        # тест не должен закреплять одну-две конкретные английские конструкции.
+    def test_language_directive_is_independent_of_prose(self):
+        for prose in (
+            "Communicate in Russian.",
+            "Reports use Russian.",
+            "Reworded prose.\n",
+        ):
+            self.assertTrue(
+                requires_russian_output(prose + "\n<!-- output-language: ru -->")
+            )
         for text in (
-            "Communicate with the user in Russian.",
-            "Use Russian for all user-facing communication.",
-            "All user-facing output must be Russian.",
-            "The result language is Russian.",
-            "Write everything in Russian.",
-            "Reports are authored in Russian.",
+            "Do not write in Russian.",
+            "Russian output is forbidden.",
+            "See `Russian`.",
+            "```text\nRussian\n```",
+            "```text\n<!-- output-language: ru -->\n```",
+            "<!-- output-language: en -->",
+            "<!-- output-language: ru -->\n<!-- output-language: en -->",
         ):
             with self.subTest(text=text):
-                self.assertTrue(requires_russian_output(text))
-        # Упоминание языка внутри литерала требованием не является.
-        self.assertFalse(requires_russian_output("See `Russian` in the example."))
-        self.assertFalse(requires_russian_output("```text\nRussian\n```"))
+                self.assertFalse(requires_russian_output(text))
 
     def test_real_repository_skill_and_map_links(self):
         self.assertEqual(validate_tree(ROOT), [])
@@ -112,6 +112,27 @@ class AgentContractTests(unittest.TestCase):
             "python .github/scripts/check_skill_contracts.py",
         ):
             self.assertIn(command, text)
+
+    def test_actions_use_verified_node24_releases_and_coverage_guard(self):
+        expected = {
+            "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "actions/setup-python": "6d4fd22b20465ccc0f7354476588e8df7c9ca0e0",
+        }
+        for filename in ("ci.yml", "pr-body.yml", "pr-body-trusted.yml"):
+            text = (ROOT / ".github/workflows" / filename).read_text(encoding="utf-8")
+            for action, sha in expected.items():
+                refs = re.findall(re.escape(action) + r"@([^\s]+)", text)
+                self.assertTrue(refs, (filename, action))
+                self.assertEqual(set(refs), {sha}, (filename, action))
+        ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            'python .github/scripts/check_python_coverage.py "$RUNNER_TEMP/basedpyright-report.json" .github/pyrightconfig.json',
+            ci,
+        )
+        trusted = (ROOT / ".github/workflows/pr-body-trusted.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("allow-unsafe-pr-checkout:", trusted)
 
     def test_trusted_workflow_only_executes_base_validator(self):
         text = (ROOT / ".github/workflows/pr-body-trusted.yml").read_text(
@@ -134,7 +155,7 @@ class AgentContractTests(unittest.TestCase):
         runs = re.findall(r"(?m)^\s+run: (.+)$", text)
         self.assertEqual(runs, ["python .github/scripts/check_coderabbit_comment.py"])
 
-    def test_replaced_head_validator_does_not_change_base_result(self):
+    def test_event_path_cli_compatibility_ignores_pythonpath_head(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             base, head = root / "base", root / "head"

@@ -141,3 +141,8 @@ The PR body validator and candidate workflow own deterministic structure checks;
 the trusted workflow uses only base code. Their trust and activation boundaries
 are documented by the Git skill. Do not claim an absent hosted context is
 pending or successful, or alter protection rules to bypass its activation.
+
+<!-- output-language: ru -->
+
+The output-language directive above is the statically checked language contract.
+It requires Russian authored output; prose consistency is checked by review.
