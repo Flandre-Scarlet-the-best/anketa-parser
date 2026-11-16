@@ -33,6 +33,37 @@ for any agent; it does not copy full guides or task procedures. This file owns
 mandatory constraints and source precedence. Skills own procedures. Code,
 configuration, tests and CI establish behavior; prose cannot override them.
 
+## Durable code and documentation
+
+Avoid unjustified hardcoding and assumptions tied to a development phase or a
+temporary repository, deployment or workstation state. Apply this rule to code,
+tests, configuration, scripts, identifiers, comments, instructions and product
+documentation. Base behavior and terminology on enduring responsibilities,
+explicit requirements and supported contracts, not milestone numbers, active
+branches, PR identities or which features happen to exist when a change is made.
+
+Read environment-dependent or operationally variable values from the existing
+configuration pipeline, inputs or authoritative metadata; derive values when a
+reliable source already exists. Do not duplicate a source of truth or silently
+bake local paths, addresses, credentials, incidental counts or temporary limits
+into reusable behavior. Fixed protocol values, domain invariants, deterministic
+test fixtures, illustrative examples, justified defaults and reproducibility or
+security pins are legitimate when their purpose and scope are clear. Explain
+non-obvious constraints at their owner; do not turn every constant into a setting
+or introduce abstractions for hypothetical variability.
+
+Document implemented behavior, constraints and verification precisely without
+making a passing development state a permanent design rule. Prefer capability
+and condition-based descriptions to wording such as "for this stage", "until
+the next phase" or "the only current implementation". Keep necessary snapshots,
+dates, commit identities and temporary workarounds in appropriately scoped
+reports, PRs or local artifacts, with provenance and a removal or review condition
+where applicable. This does not permit hiding missing capabilities, removing
+valid scope boundaries or presenting planned behavior as implemented. Before
+finishing, review changed code and prose for assumptions that would become false
+after an ordinary environment change or the next supported feature; remove them
+or make their justified scope explicit.
+
 ## Scope and architecture
 
 This repository is a C#/.NET infrastructure foundation for anketa-parser. The
