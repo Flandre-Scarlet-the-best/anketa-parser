@@ -140,14 +140,14 @@ class AgentContractTests(unittest.TestCase):
             base, head = root / "base", root / "head"
             base.mkdir()
             head.mkdir()
-            shutil.copy(ROOT / ".github/scripts/check_pr_body.py", base)
-            (head / "check_pr_body.py").write_text(
+            _ = shutil.copy(ROOT / ".github/scripts/check_pr_body.py", base)
+            _ = (head / "check_pr_body.py").write_text(
                 "raise RuntimeError('Код head выполнен')", encoding="utf-8"
             )
             event = root / "event.json"
             env = dict(os.environ, PYTHONPATH=str(head))
             for body, status in ((valid_body(), 0), ("## Цель\nНеполный текст", 1)):
-                event.write_text(
+                _ = event.write_text(
                     json.dumps({"pull_request": {"body": body}}), encoding="utf-8"
                 )
                 # Ожидаемое поведение CLI проверяется по коду возврата, поэтому
@@ -170,7 +170,7 @@ class AgentContractTests(unittest.TestCase):
                 (valid_body(), 0, "Структура описания PR соответствует контракту"),
                 ("## Goal\nОписание", 1, "Отсутствует обязательный заголовок: ## Цель"),
             ):
-                body.write_text(content, encoding="utf-8")
+                _ = body.write_text(content, encoding="utf-8")
                 # Ненулевой код возврата — ожидаемый результат проверки.
                 # Аргументы — путь этого же файла в репозитории, без shell.
                 result = subprocess.run(  # noqa: S603
@@ -189,4 +189,4 @@ class AgentContractTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    _ = unittest.main()

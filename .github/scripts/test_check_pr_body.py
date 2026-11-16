@@ -8,7 +8,13 @@ import unittest
 from pathlib import Path
 
 from check_coderabbit_comment import visible_comment
-from check_pr_body import is_automation_pr, sections, validate, validate_coderabbit
+from check_pr_body import (
+    JSONValue,
+    is_automation_pr,
+    sections,
+    validate,
+    validate_coderabbit,
+)
 
 HEADINGS = (
     "Цель",
@@ -69,7 +75,7 @@ def coderabbit(*lines: str) -> str:
     return valid_body() + "\n\n## CodeRabbit review и disposition\n" + "\n".join(lines)
 
 
-def validate_comment_table(content):
+def validate_comment_table(content: str) -> list[str]:
     return validate_coderabbit(visible_comment(content))
 
 
@@ -466,7 +472,7 @@ class PrBodyContractTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as tmp:
             event = Path(tmp) / "event.json"
-            event.write_text(
+            _ = event.write_text(
                 json.dumps(
                     {
                         "action": "synchronize",
@@ -495,7 +501,7 @@ class PrBodyContractTests(unittest.TestCase):
             self.assertIn("компактную", proc.stderr)
             self.assertIn("не применимо", proc.stderr)
             # Исключение dependency-ботов сохраняется и для нового раздела.
-            event.write_text(
+            _ = event.write_text(
                 json.dumps(
                     {
                         "pull_request": {
@@ -522,7 +528,7 @@ class PrBodyContractTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0)
 
     def test_bot_exception_is_limited_to_account_and_branch(self):
-        def payload(login, branch):
+        def payload(login: str, branch: str) -> JSONValue:
             return {"pull_request": {"user": {"login": login}, "head": {"ref": branch}}}
 
         self.assertTrue(
@@ -540,7 +546,7 @@ class PrBodyContractTests(unittest.TestCase):
         # Событие `pull_request_target` несёт тот же объект `pull_request`.
         with tempfile.TemporaryDirectory() as tmp:
             event = Path(tmp) / "event.json"
-            event.write_text(
+            _ = event.write_text(
                 json.dumps(
                     {
                         "action": "edited",
@@ -570,7 +576,7 @@ class PrBodyContractTests(unittest.TestCase):
     def test_cli_rejects_event_without_pull_request(self):
         with tempfile.TemporaryDirectory() as tmp:
             event = Path(tmp) / "event.json"
-            event.write_text(json.dumps({"action": "edited"}), encoding="utf-8")
+            _ = event.write_text(json.dumps({"action": "edited"}), encoding="utf-8")
             # Нужен код возврата CLI; команда запускает локальный файл без shell.
             proc = subprocess.run(  # noqa: S603
                 [
@@ -888,4 +894,4 @@ class CodeRabbitTableTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    _ = unittest.main()

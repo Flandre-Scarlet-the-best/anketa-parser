@@ -3,6 +3,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from typing import override
 
 from check_skill_contracts import validate_skill, validate_tree
 
@@ -11,9 +12,9 @@ class SkillContractTests(unittest.TestCase):
     def __init__(self, methodName: str = "runTest") -> None:
         super().__init__(methodName)
         self.tmp: tempfile.TemporaryDirectory[str] | None = None
-        self.root = Path()
-        self.folder = Path()
-        self.file = Path()
+        self.root: Path = Path()
+        self.folder: Path = Path()
+        self.file: Path = Path()
 
     def test_plain_scalar_punctuation_is_valid(self):
         for ending in ("]", "}", "[", "{", ",", "\\"):
@@ -70,7 +71,8 @@ class SkillContractTests(unittest.TestCase):
                 self.write_skill(f"---\nname: sample-skill\n{fields}\n---\n")
                 self.assertTrue(validate_skill(self.file))
 
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -78,17 +80,25 @@ class SkillContractTests(unittest.TestCase):
         self.folder.mkdir(parents=True)
         self.file = self.folder / "SKILL.md"
 
-    def write_skill(self, metadata=None, body="See [details](references/details.md)."):
-        self.file.write_text(
+    def write(self, path: Path, content: str) -> None:
+        """Записать фикстуру, не используя счётчик записанных символов."""
+        _ = path.write_text(content, encoding="utf-8")
+
+    def write_skill(
+        self,
+        metadata: str | None = None,
+        body: str = "See [details](references/details.md).",
+    ) -> None:
+        self.write(
+            self.file,
             metadata
             or "---\nname: sample-skill\ndescription: >-\n  Use this to perform a concrete skill task.\n---\n"
             + body,
-            encoding="utf-8",
         )
 
     def test_valid_skill_and_local_ref(self):
         (self.folder / "references").mkdir()
-        (self.folder / "references/details.md").write_text("Details", encoding="utf-8")
+        self.write(self.folder / "references/details.md", "Details")
         self.write_skill()
         self.assertEqual(validate_tree(self.root), [])
 
@@ -107,17 +117,17 @@ class SkillContractTests(unittest.TestCase):
         (self.folder / "references").mkdir()
         reference = self.folder / "references/details.md"
         self.write_skill()
-        reference.write_text("[Вложенная ссылка](absent.md)", encoding="utf-8")
+        self.write(reference, "[Вложенная ссылка](absent.md)")
         self.assertTrue(any("absent.md" in error for error in validate_tree(self.root)))
-        reference.write_text("[Вход](../SKILL.md)", encoding="utf-8")
+        self.write(reference, "[Вход](../SKILL.md)")
         self.assertEqual(validate_tree(self.root), [])
 
     def test_supported_link_forms_resolve_existing_targets(self):
         # Допустимые формы Markdown: вложенные скобки, title, угловая форма и
         # ссылочные определения. Проверка не должна давать ложных ошибок.
         (self.folder / "references").mkdir()
-        (self.folder / "references/a_(b).md").write_text("x", encoding="utf-8")
-        (self.folder / "references/plain.md").write_text("x", encoding="utf-8")
+        self.write(self.folder / "references/a_(b).md", "x")
+        self.write(self.folder / "references/plain.md", "x")
         bodies = (
             "[d](references/a_(b).md)",
             '[d](references/plain.md "Заголовок")',
@@ -178,10 +188,8 @@ class SkillContractTests(unittest.TestCase):
         # В CommonMark определения действуют в пределах своего документа.
         (self.folder / "references").mkdir()
         self.write_skill(body="Без ссылок.")
-        (self.folder / "references/a.md").write_text(
-            "[Текст][x]\n\n[x]: missing.md\n", encoding="utf-8"
-        )
-        (self.folder / "references/b.md").write_text("[Текст][x]\n", encoding="utf-8")
+        self.write(self.folder / "references/a.md", "[Текст][x]\n\n[x]: missing.md\n")
+        self.write(self.folder / "references/b.md", "[Текст][x]\n")
         errors = validate_tree(self.root)
         self.assertTrue(any("a.md" in error for error in errors), errors)
         self.assertFalse(any("b.md" in error for error in errors), errors)
@@ -206,7 +214,7 @@ class SkillContractTests(unittest.TestCase):
         # Незакрытый fenced-блок заканчивается вместе с пунктом списка, поэтому
         # ссылка за пределами списка снова обычный Markdown и проверяется.
         (self.folder / "references").mkdir()
-        (self.folder / "references/real.md").write_text("Текст", encoding="utf-8")
+        self.write(self.folder / "references/real.md", "Текст")
         bodies = (
             "- ```md\n  [Пример](references/absent.md)\n\n[Настоящая ссылка](references/missing.md)",
             "- ```md\n  [Пример](references/absent.md)\n  ```\n\n[Настоящая ссылка](references/missing.md)",
@@ -232,10 +240,10 @@ class SkillContractTests(unittest.TestCase):
 
     def test_escape_and_root_map_links_are_checked(self):
         self.write_skill(body="[Выход](../../outside.md)")
-        (self.root / ".agents/outside.md").write_text("Текст", encoding="utf-8")
+        self.write(self.root / ".agents/outside.md", "Текст")
         self.assertTrue(any("ссылка" in error for error in validate_tree(self.root)))
         self.write_skill(body="Без ссылок.")
-        (self.root / "AGENTS.md").write_text("[Карта](missing.md)", encoding="utf-8")
+        self.write(self.root / "AGENTS.md", "[Карта](missing.md)")
         self.assertTrue(
             any("missing.md" in error for error in validate_tree(self.root))
         )
@@ -325,4 +333,4 @@ class SkillContractTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    _ = unittest.main()

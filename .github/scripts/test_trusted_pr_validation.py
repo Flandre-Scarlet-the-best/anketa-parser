@@ -8,7 +8,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast, override
 
 from test_check_pr_body import CR_DELIMITER, CR_HEADER, CR_ROW, valid_body
 
@@ -24,10 +26,11 @@ class TrustedWorkflowTests(unittest.TestCase):
 
     def __init__(self, methodName: str = "runTest") -> None:
         super().__init__(methodName)
-        self.text = ""
-        self.yaml = ""
+        self.text: str = ""
+        self.yaml: str = ""
 
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         self.text = TRUSTED.read_text(encoding="utf-8")
         # Комментарии не участвуют в контракте: проверяется только сам YAML.
         self.yaml = "\n".join(
@@ -90,11 +93,11 @@ class TrustedWorkflowTests(unittest.TestCase):
                 directory.mkdir(parents=True)
             for name in ("check_coderabbit_comment.py", "check_pr_body.py"):
                 for directory in (base_scripts, head_scripts):
-                    shutil.copy(Path(__file__).with_name(name), directory / name)
+                    _ = shutil.copy(Path(__file__).with_name(name), directory / name)
 
             # sitecustomize подменяет только транспорт и записывает происхождение
             # модулей; любой случайный выход в сеть завершается ошибкой.
-            (shim / "sitecustomize.py").write_text(
+            _ = (shim / "sitecustomize.py").write_text(
                 """\
 import atexit
 import io
@@ -145,7 +148,7 @@ atexit.register(record)
             )
             sha = "a" * 40
             event = root / "event.json"
-            event.write_text(
+            _ = event.write_text(
                 json.dumps(
                     {
                         "repository": {"full_name": "owner/repo"},
@@ -210,8 +213,10 @@ atexit.register(record)
                 "https://api.github.com/repos/owner/repo/issues/17/comments?per_page=100&page=1",
             ]
 
-            def run_case(body, current_comment):
-                fixture.write_text(
+            def run_case(
+                body: str, current_comment: Mapping[str, object]
+            ) -> subprocess.CompletedProcess[str]:
+                _ = fixture.write_text(
                     json.dumps(
                         {"pr": {**pr, "body": body}, "comments": [current_comment]}
                     ),
@@ -227,18 +232,27 @@ atexit.register(record)
                     encoding="utf-8",
                     check=False,
                 )
-                provenance = json.loads(trace.read_text(encoding="utf-8"))
-                self.assertIsNotNone(provenance["entry"], result.stderr)
-                self.assertIsNotNone(provenance["validator"], result.stderr)
+                # json.loads в stubs возвращает Any; запись создаёт этот же тест,
+                # а форма проверяется перед использованием.
+                provenance = cast(
+                    dict[str, object], json.loads(trace.read_text(encoding="utf-8"))
+                )
+                entry = provenance.get("entry")
+                validator = provenance.get("validator")
+                if not isinstance(entry, str) or not isinstance(validator, str):
+                    self.fail(
+                        "sitecustomize не записал происхождение модулей: "
+                        + result.stderr
+                    )
                 self.assertEqual(
-                    Path(provenance["entry"]).resolve(),
+                    Path(entry).resolve(),
                     base_scripts / "check_coderabbit_comment.py",
                 )
                 self.assertEqual(
-                    Path(provenance["validator"]).resolve(),
+                    Path(validator).resolve(),
                     base_scripts / "check_pr_body.py",
                 )
-                self.assertEqual(provenance["requests"], expected_requests)
+                self.assertEqual(provenance.get("requests"), expected_requests)
                 return result
 
             baseline = {}
@@ -249,10 +263,10 @@ atexit.register(record)
                     self.assertIn(diagnostic, result.stderr)
                     baseline[name] = (result.returncode, result.stdout, result.stderr)
 
-            (head_scripts / "check_coderabbit_comment.py").write_text(
+            _ = (head_scripts / "check_coderabbit_comment.py").write_text(
                 "print('ТОЧКА ВХОДА HEAD ВЫПОЛНЕНА')\n", encoding="utf-8"
             )
-            (head_scripts / "check_pr_body.py").write_text(
+            _ = (head_scripts / "check_pr_body.py").write_text(
                 "raise RuntimeError('ВАЛИДАТОР HEAD ИМПОРТИРОВАН')\n", encoding="utf-8"
             )
             for name, body, current_comment, _, _ in cases:
