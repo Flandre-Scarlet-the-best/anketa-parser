@@ -4,14 +4,16 @@ import copy
 import http.client
 import io
 import json
+import os
 import tempfile
+import time
 import traceback
 import unittest
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import ClassVar, TypedDict
+from typing import ClassVar, NotRequired, TypedDict, cast, override
 from unittest.mock import patch
 
 import check_coderabbit_comment as check
@@ -44,6 +46,112 @@ class PullRequestPayload(TypedDict):
     state: str
 
 
+class EventRef(TypedDict):
+    sha: str
+
+
+class EventPullRequest(TypedDict):
+    number: int
+    head: EventRef
+    base: NotRequired[EventRef]
+    body: str
+
+
+class EventRepository(TypedDict):
+    full_name: str
+
+
+class PullRequestEvent(TypedDict):
+    repository: EventRepository
+    pull_request: EventPullRequest
+
+
+class GetJsonRecorder:
+    """Типизированная замена check.get_json с очередью ответов и учётом вызовов."""
+
+    def __init__(self) -> None:
+        self.queue: list[tuple[object, str | None] | BaseException] = []
+        self.reply: tuple[object, str | None] | BaseException | None = None
+        self.failure: Exception | None = None
+        self.paths: list[str] = []
+
+    def respond(self, *pages: tuple[object, str | None] | BaseException) -> None:
+        """Поставить очередь ответов: по одному на каждый вызов get_json."""
+        self.queue.extend(pages)
+
+    def __call__(self, path: str, token: str) -> tuple[check.JSONValue, str | None]:
+        self.paths.append(path)
+        if self.failure is not None:
+            raise self.failure
+        item = self.queue.pop(0) if self.queue else self.reply
+        if isinstance(item, BaseException):
+            raise item
+        if item is None:
+            raise AssertionError("нет подготовленного ответа GitHub API")
+        value, link = item
+        return cast(check.JSONValue, value), link
+
+    def reset(self) -> None:
+        self.queue.clear()
+        self.paths.clear()
+
+
+class FakeOpener:
+    """Типизированная замена opener'а urllib: очередь ответов и счётчик вызовов."""
+
+    def __init__(self) -> None:
+        self.queue: list[object] = []
+        self.reply: object | None = None
+        self.requests: list[urllib.request.Request] = []
+
+    def add(self, *items: object) -> None:
+        """Поставить очередь ответов или исключений транспорта."""
+        self.queue.extend(items)
+
+    def open(self, request: urllib.request.Request, **options: object) -> io.BytesIO:
+        # Валидатор всегда запрашивает таймаут 30 с; иные параметры — ошибка теста.
+        if options != {"timeout": 30}:
+            raise AssertionError("неожиданные параметры HTTP-запроса")
+        self.requests.append(request)
+        item = self.queue.pop(0) if self.queue else self.reply
+        if item is None:
+            raise AssertionError("нет подготовленного HTTP-ответа")
+        if isinstance(item, BaseException):
+            raise item
+        if not isinstance(item, io.BytesIO):
+            raise AssertionError("ответ должен быть потоком")
+        return item
+
+    def reset(self) -> None:
+        self.queue.clear()
+        self.requests.clear()
+
+
+class OpenerFactory:
+    """Замена urllib.request.build_opener: помнит обработчики и отдаёт FakeOpener."""
+
+    def __init__(self) -> None:
+        self.opener: FakeOpener = FakeOpener()
+        self.handlers: list[object] = []
+
+    def __call__(self, handler: object) -> FakeOpener:
+        self.handlers.append(handler)
+        return self.opener
+
+
+class SleepRecorder:
+    """Замена time.sleep: фиксирует паузы между повторами вместо ожидания."""
+
+    def __init__(self) -> None:
+        self.calls: list[float] = []
+
+    def __call__(self, seconds: float) -> None:
+        self.calls.append(seconds)
+
+    def reset(self) -> None:
+        self.calls.clear()
+
+
 def comment(
     identifier: int, author: int = 1, body: str | None = MARKED
 ) -> dict[str, check.JSONValue]:
@@ -62,7 +170,7 @@ def pr() -> PullRequestPayload:
     }
 
 
-def event():
+def event() -> PullRequestEvent:
     return {
         "repository": {"full_name": REPO},
         "pull_request": {
@@ -81,7 +189,24 @@ def set_invalid_author_id(payload: PullRequestPayload) -> None:
     user["id"] = True
 
 
-def link(page, host="api.github.com", path=None):
+def corrupt(payload: Mapping[str, object], **fields: object) -> None:
+    """Внести в фикстуру значения, недопустимые по контракту payload.
+
+    Тесты защитных проверок намеренно подают данные неверного типа, поэтому
+    запись выполняется через представление отображения, а не по типу TypedDict.
+    """
+    cast(dict[str, object], payload).update(fields)
+
+
+def corrupt_nested(payload: Mapping[str, object], key: str, **fields: object) -> None:
+    """Внести недопустимые значения во вложенное отображение фикстуры."""
+    nested = payload.get(key)
+    if not isinstance(nested, dict):
+        raise AssertionError(f"В фикстуре нет отображения {key}")
+    cast(dict[str, object], nested).update(fields)
+
+
+def link(page: int, host: str = "api.github.com", path: str | None = None) -> str:
     path = path or f"/repos/{REPO}/issues/{NUMBER}/comments"
     return f'<https://{host}{path}?per_page=100&page={page}>; rel="next"'
 
@@ -176,8 +301,15 @@ class CommentTests(unittest.TestCase):
 
 
 class PaginationTests(unittest.TestCase):
-    @patch.object(check, "get_json")
-    def test_unrelated_null_user_on_same_or_different_pages(self, get):
+    def __init__(self, methodName: str = "runTest") -> None:
+        super().__init__(methodName)
+        self.get_json: GetJsonRecorder = GetJsonRecorder()
+
+    @override
+    def setUp(self) -> None:
+        _ = self.enterContext(patch.object(check, "get_json", self.get_json))
+
+    def test_unrelated_null_user_on_same_or_different_pages(self) -> None:
         ordinary = {"id": 2, "user": None, "body": "Обычный комментарий"}
         for pages in (
             ([ordinary, comment(1)],),
@@ -185,57 +317,54 @@ class PaginationTests(unittest.TestCase):
             ([comment(1)], [ordinary]),
         ):
             with self.subTest(pages=pages):
-                get.reset_mock()
-                get.side_effect = [
-                    (page, link(index + 2) if index + 1 < len(pages) else None)
-                    for index, page in enumerate(pages)
-                ]
+                self.get_json.reset()
+                self.get_json.respond(
+                    *[
+                        (page, link(index + 2) if index + 1 < len(pages) else None)
+                        for index, page in enumerate(pages)
+                    ]
+                )
                 comments = check.list_comments(REPO, NUMBER, "token")
                 self.assertEqual(len(comments), 2)
                 self.assertEqual(check.validate_comments(comments, 1), [])
-                self.assertEqual(get.call_count, len(pages))
+                self.assertEqual(len(self.get_json.paths), len(pages))
 
-    @patch.object(check, "get_json")
-    def test_duplicates_on_different_pages_rejected_before_author_check(self, get):
+    def test_duplicates_on_different_pages_rejected_before_author_check(self) -> None:
         other = comment(2, author=2)
-        get.side_effect = [([comment(1)], link(2)), ([other], None)]
+        self.get_json.respond(([comment(1)], link(2)), ([other], None))
         comments = check.list_comments(REPO, NUMBER, "token")
         self.assertEqual(
             check.validate_comments(comments, 1),
             ["Найдено несколько служебных комментариев CodeRabbit"],
         )
 
-    @patch.object(check, "get_json")
-    def test_follows_next_even_short_page_and_finds_duplicate(self, get):
-        get.side_effect = [([comment(1)], link(2)), ([comment(2)], None)]
+    def test_follows_next_even_short_page_and_finds_duplicate(self) -> None:
+        self.get_json.respond(([comment(1)], link(2)), ([comment(2)], None))
         comments = check.list_comments(REPO, NUMBER, "token")
         self.assertEqual(len(comments), 2)
         self.assertTrue(check.validate_comments(comments, 1))
-        self.assertIn("page=2", get.call_args_list[1].args[0])
+        self.assertIn("page=2", self.get_json.paths[1])
 
-    @patch.object(check, "get_json")
-    def test_canonical_repository_id_link_fetches_original_repository(self, get):
-        get.side_effect = [
+    def test_canonical_repository_id_link_fetches_original_repository(self) -> None:
+        self.get_json.respond(
             ([comment(1)], link(2, path=f"/repositories/123/issues/{NUMBER}/comments")),
             ([comment(2, body="другой комментарий")], None),
-        ]
+        )
         self.assertEqual(len(check.list_comments(REPO, NUMBER, "token")), 2)
         self.assertEqual(
-            get.call_args_list[1].args[0],
+            self.get_json.paths[1],
             f"/repos/{REPO}/issues/{NUMBER}/comments?per_page=100&page=2",
         )
 
-    @patch.object(check, "get_json")
-    def test_full_page_without_link_fetches_next(self, get):
-        get.side_effect = [
+    def test_full_page_without_link_fetches_next(self) -> None:
+        self.get_json.respond(
             ([comment(i, body="other") for i in range(1, 101)], None),
             ([comment(101)], None),
-        ]
+        )
         self.assertEqual(len(check.list_comments(REPO, NUMBER, "token")), 101)
-        self.assertEqual(get.call_count, 2)
+        self.assertEqual(len(self.get_json.paths), 2)
 
-    @patch.object(check, "get_json")
-    def test_malformed_and_duplicate_comment_fail_closed(self, get):
+    def test_malformed_and_duplicate_comment_fail_closed(self) -> None:
         responses: list[tuple[object, str | None]] = [
             ({}, None),
             ([{"id": 1}], None),
@@ -244,12 +373,11 @@ class PaginationTests(unittest.TestCase):
         ]
         for response in responses:
             with self.subTest(response=response):
-                get.return_value = response
+                self.get_json.reply = response
                 with self.assertRaises(check.CheckError):
                     _ = check.list_comments(REPO, NUMBER, "token")
 
-    @patch.object(check, "get_json")
-    def test_untrusted_links_and_errors_fail_closed(self, get):
+    def test_untrusted_links_and_errors_fail_closed(self) -> None:
         for value in (
             link(2, host="attacker.invalid"),
             link(3),
@@ -265,41 +393,39 @@ class PaginationTests(unittest.TestCase):
             link(2).replace(">; rel=", "#fragment>; rel="),
         ):
             with self.subTest(link=value):
-                get.return_value = ([comment(1)], value)
+                self.get_json.reply = ([comment(1)], value)
                 with self.assertRaises(check.CheckError):
                     _ = check.list_comments(REPO, NUMBER, "token")
-        get.side_effect = check.CheckError("Ошибка API")
+        self.get_json.failure = check.CheckError("Ошибка API")
         with self.assertRaises(check.CheckError):
             _ = check.list_comments(REPO, NUMBER, "token")
 
-    @patch.object(check, "get_json")
-    def test_empty_page_with_continuation_and_oversized_page_are_rejected(self, get):
+    def test_empty_page_with_continuation_and_oversized_page_are_rejected(self) -> None:
         responses: tuple[tuple[object, str | None], ...] = (
             ([], link(2)),
             ([comment(i) for i in range(1, 102)], None),
         )
         for response in responses:
             with self.subTest(response_size=len(response[0])):
-                get.return_value = response
+                self.get_json.reply = response
                 with self.assertRaises(check.CheckError):
                     _ = check.list_comments(REPO, NUMBER, "token")
 
-    @patch.object(check, "get_json")
-    def test_invalid_last_link_or_missing_next_cannot_hide_comments(self, get):
+    def test_invalid_last_link_or_missing_next_cannot_hide_comments(self) -> None:
         for value in (
             link(2, host="attacker.invalid").replace('rel="next"', 'rel="last"'),
             link(2).replace('rel="next"', 'rel="last"'),
             '<https://[broken/>; rel="last"',
         ):
             with self.subTest(link=value):
-                get.return_value = ([comment(1)], value)
+                self.get_json.reply = ([comment(1)], value)
                 with self.assertRaises(check.CheckError):
                     _ = check.list_comments(REPO, NUMBER, "token")
 
-    def test_consistent_first_prev_next_last_and_final_page_are_accepted(self):
+    def test_consistent_first_prev_next_last_and_final_page_are_accepted(self) -> None:
         path = f"/repos/{REPO}/issues/{NUMBER}/comments"
 
-        def relation(page, name):
+        def relation(page: int, name: str) -> str:
             return link(page).replace('rel="next"', f'rel="{name}"')
 
         full = ", ".join(
@@ -323,23 +449,43 @@ class PaginationTests(unittest.TestCase):
             relation(3, "next") + ", " + relation(2, "last"),
         ):
             with self.subTest(link=bad), self.assertRaises(check.CheckError):
-                check.next_page(bad, path, 2)
+                _ = check.next_page(bad, path, 2)
 
 
 class RequestTests(unittest.TestCase):
     class Response(io.BytesIO):
-        status = 200
+        status: int = 200
         # Двойник ответа HTTP: заголовки общие для класса, а не поле экземпляра.
         headers: ClassVar[dict[str, str]] = {}
 
-    @patch("urllib.request.build_opener")
-    def test_request_headers_and_decode(self, opener):
-        opener.return_value.open.return_value = self.Response(b'{"ok": true}')
+    def __init__(self, methodName: str = "runTest") -> None:
+        super().__init__(methodName)
+        self.factory: OpenerFactory = OpenerFactory()
+        self.sleep: SleepRecorder = SleepRecorder()
+        self.opener: FakeOpener = self.factory.opener
+
+    @override
+    def setUp(self) -> None:
+        _ = self.enterContext(patch("urllib.request.build_opener", self.factory))
+        _ = self.enterContext(patch.object(time, "sleep", self.sleep))
+
+    @staticmethod
+    def http_error(code: int) -> urllib.error.HTTPError:
+        return urllib.error.HTTPError(
+            "https://example.invalid/secret",
+            code,
+            "secret",
+            http.client.HTTPMessage(),
+            io.BytesIO(b"secret"),
+        )
+
+    def test_request_headers_and_decode(self) -> None:
+        self.opener.reply = self.Response(b'{"ok": true}')
         self.assertEqual(check.get_json("/test", "secret"), ({"ok": True}, None))
-        request = opener.return_value.open.call_args.args[0]
+        request = self.opener.requests[0]
         self.assertEqual(request.full_url, "https://api.github.com/test")
         self.assertEqual(request.get_header("Authorization"), "Bearer secret")
-        self.assertIs(opener.call_args.args[0], check.NoRedirect)
+        self.assertIs(self.factory.handlers[0], check.NoRedirect)
         self.assertIsNone(
             check.NoRedirect().redirect_request(
                 urllib.request.Request("https://api.github.com/test"),
@@ -351,19 +497,7 @@ class RequestTests(unittest.TestCase):
             )
         )
 
-    @staticmethod
-    def http_error(code):
-        return urllib.error.HTTPError(
-            "https://example.invalid/secret",
-            code,
-            "secret",
-            http.client.HTTPMessage(),
-            io.BytesIO(b"secret"),
-        )
-
-    @patch.object(check.time, "sleep")
-    @patch("urllib.request.build_opener")
-    def test_transient_failures_then_success(self, opener, sleep):
+    def test_transient_failures_then_success(self) -> None:
         for failure in (
             self.http_error(500),
             self.http_error(503),
@@ -372,83 +506,68 @@ class RequestTests(unittest.TestCase):
             OSError("network"),
         ):
             with self.subTest(failure=failure):
-                opener.return_value.open.reset_mock(side_effect=True)
-                sleep.reset_mock()
-                opener.return_value.open.side_effect = [
-                    failure,
-                    self.Response(b'{"ok": true}'),
-                ]
+                self.opener.reset()
+                self.sleep.reset()
+                self.opener.add(failure, self.Response(b'{"ok": true}'))
                 self.assertEqual(
                     check.get_json("/test", "secret"), ({"ok": True}, None)
                 )
-                self.assertEqual(opener.return_value.open.call_count, 2)
-                sleep.assert_called_once_with(0.1)
+                self.assertEqual(len(self.opener.requests), 2)
+                self.assertEqual(self.sleep.calls, [0.1])
                 if isinstance(failure, urllib.error.HTTPError):
                     self.assertTrue(failure.closed)
 
-    @patch.object(check.time, "sleep")
-    @patch("urllib.request.build_opener")
-    def test_http_protocol_failures_retry_without_exposing_response(
-        self, opener, sleep
-    ):
+    def test_http_protocol_failures_retry_without_exposing_response(self) -> None:
         for failure in (
             http.client.IncompleteRead(b"secret"),
             http.client.BadStatusLine("secret"),
             http.client.LineTooLong("secret"),
         ):
             with self.subTest(failure=type(failure).__name__):
-                opener.return_value.open.reset_mock(side_effect=True)
-                sleep.reset_mock()
-                opener.return_value.open.side_effect = [failure, self.Response(b"{}")]
+                self.opener.reset()
+                self.sleep.reset()
+                self.opener.add(failure, self.Response(b"{}"))
                 self.assertEqual(check.get_json("/test", "token"), ({}, None))
-                self.assertEqual(opener.return_value.open.call_count, 2)
-                sleep.assert_called_once_with(0.1)
-                opener.return_value.open.reset_mock(side_effect=True)
-                sleep.reset_mock()
-                opener.return_value.open.side_effect = [failure, failure, failure]
+                self.assertEqual(len(self.opener.requests), 2)
+                self.assertEqual(self.sleep.calls, [0.1])
+                self.opener.reset()
+                self.sleep.reset()
+                self.opener.add(failure, failure, failure)
                 with self.assertRaises(check.CheckError) as caught:
                     _ = check.get_json("/test", "token")
                 self.assertNotIn(
                     "secret", "".join(traceback.format_exception(caught.exception))
                 )
-                self.assertEqual(opener.return_value.open.call_count, 3)
-                self.assertEqual(
-                    [call.args for call in sleep.call_args_list], [(0.1,), (0.2,)]
-                )
+                self.assertEqual(len(self.opener.requests), 3)
+                self.assertEqual(self.sleep.calls, [0.1, 0.2])
 
-    @patch.object(check.time, "sleep")
-    @patch("urllib.request.build_opener")
-    def test_incomplete_http_response_read_retries_and_closes(self, opener, sleep):
+    def test_incomplete_http_response_read_retries_and_closes(self) -> None:
         class IncompleteResponse(self.Response):
-            def read(self, *args):
+            @override
+            def read(self, *args: object) -> bytes:
                 raise http.client.IncompleteRead(b"secret")
 
         response = IncompleteResponse(b"")
-        opener.return_value.open.side_effect = [response, self.Response(b"{}")]
+        self.opener.add(response, self.Response(b"{}"))
         self.assertEqual(check.get_json("/test", "token"), ({}, None))
         self.assertTrue(response.closed)
-        self.assertEqual(opener.return_value.open.call_count, 2)
-        sleep.assert_called_once_with(0.1)
+        self.assertEqual(len(self.opener.requests), 2)
+        self.assertEqual(self.sleep.calls, [0.1])
 
-    @patch.object(check.time, "sleep")
-    @patch("urllib.request.build_opener")
-    def test_transport_failure_while_reading_retries_and_closes_response(
-        self, opener, sleep
-    ):
+    def test_transport_failure_while_reading_retries_and_closes_response(self) -> None:
         class BrokenResponse(self.Response):
-            def read(self, *args):
+            @override
+            def read(self, *args: object) -> bytes:
                 raise TimeoutError("secret")
 
         response = BrokenResponse(b"")
-        opener.return_value.open.side_effect = [response, self.Response(b"{}")]
+        self.opener.add(response, self.Response(b"{}"))
         self.assertEqual(check.get_json("/test", "secret"), ({}, None))
         self.assertTrue(response.closed)
-        self.assertEqual(opener.return_value.open.call_count, 2)
-        sleep.assert_called_once_with(0.1)
+        self.assertEqual(len(self.opener.requests), 2)
+        self.assertEqual(self.sleep.calls, [0.1])
 
-    @patch.object(check.time, "sleep")
-    @patch("urllib.request.build_opener")
-    def test_persistent_failures_are_bounded_and_safe(self, opener, sleep):
+    def test_persistent_failures_are_bounded_and_safe(self) -> None:
         for failures in (
             [self.http_error(503) for _ in range(3)],
             [urllib.error.URLError("secret") for _ in range(3)],
@@ -456,96 +575,99 @@ class RequestTests(unittest.TestCase):
             [OSError("secret") for _ in range(3)],
         ):
             with self.subTest(failure=type(failures[0]).__name__):
-                opener.return_value.open.reset_mock(side_effect=True)
-                sleep.reset_mock()
-                opener.return_value.open.side_effect = failures
+                self.opener.reset()
+                self.sleep.reset()
+                self.opener.add(*failures)
                 with self.assertRaises(check.CheckError) as caught:
                     _ = check.get_json("/test", "secret")
                 self.assertNotIn(
                     "secret", "".join(traceback.format_exception(caught.exception))
                 )
-                self.assertEqual(opener.return_value.open.call_count, 3)
-                self.assertEqual(
-                    [call.args for call in sleep.call_args_list], [(0.1,), (0.2,)]
-                )
+                self.assertEqual(len(self.opener.requests), 3)
+                self.assertEqual(self.sleep.calls, [0.1, 0.2])
                 for failure in failures:
                     if isinstance(failure, urllib.error.HTTPError):
                         self.assertTrue(failure.closed)
 
-    @patch.object(check.time, "sleep")
-    @patch("urllib.request.build_opener")
-    def test_http_4xx_and_redirect_fail_without_retry(self, opener, sleep):
+    def test_http_4xx_and_redirect_fail_without_retry(self) -> None:
         for code in (302, 400, 403, 404, 429):
             with self.subTest(code=code):
-                opener.return_value.open.reset_mock(side_effect=True)
+                self.opener.reset()
+                self.sleep.reset()
                 error = self.http_error(code)
-                opener.return_value.open.side_effect = error
+                self.opener.reply = error
                 with self.assertRaises(check.CheckError) as caught:
                     _ = check.get_json("/test", "secret")
                 self.assertNotIn(
                     "secret", "".join(traceback.format_exception(caught.exception))
                 )
                 self.assertTrue(error.closed)
-                self.assertEqual(opener.return_value.open.call_count, 1)
-        sleep.assert_not_called()
+                self.assertEqual(len(self.opener.requests), 1)
+        self.assertEqual(self.sleep.calls, [])
 
-    @patch.object(check.time, "sleep")
-    @patch("urllib.request.build_opener")
-    def test_invalid_json_and_unicode_fail_without_retry(self, opener, sleep):
+    def test_invalid_json_and_unicode_fail_without_retry(self) -> None:
         for body in (b"bad-json secret", b'"\xff secret"'):
             with self.subTest(body=body):
-                opener.return_value.open.reset_mock(side_effect=True)
+                self.opener.reset()
+                self.sleep.reset()
                 response = self.Response(body)
-                opener.return_value.open.return_value = response
+                self.opener.reply = response
                 with self.assertRaises(check.CheckError) as caught:
                     _ = check.get_json("/test", "secret")
                 self.assertNotIn(
                     "secret", "".join(traceback.format_exception(caught.exception))
                 )
                 self.assertTrue(response.closed)
-                self.assertEqual(opener.return_value.open.call_count, 1)
-        sleep.assert_not_called()
+                self.assertEqual(len(self.opener.requests), 1)
+        self.assertEqual(self.sleep.calls, [])
 
-    @patch.object(check.time, "sleep")
-    @patch("urllib.request.build_opener")
-    def test_non_200_response_statuses(self, opener, sleep):
+    def test_non_200_response_statuses(self) -> None:
         response = self.Response(b"")
         response.status = 503
-        opener.return_value.open.side_effect = [response, self.Response(b"{}")]
+        self.opener.add(response, self.Response(b"{}"))
         self.assertEqual(check.get_json("/test", "secret"), ({}, None))
         self.assertTrue(response.closed)
-        self.assertEqual(opener.return_value.open.call_count, 2)
-        sleep.assert_called_once_with(0.1)
-        opener.return_value.open.reset_mock(side_effect=True)
-        sleep.reset_mock()
+        self.assertEqual(len(self.opener.requests), 2)
+        self.assertEqual(self.sleep.calls, [0.1])
+        self.opener.reset()
+        self.sleep.reset()
         response = self.Response(b"")
         response.status = 302
-        opener.return_value.open.return_value = response
+        self.opener.reply = response
         with self.assertRaises(check.CheckError):
             _ = check.get_json("/test", "secret")
         self.assertTrue(response.closed)
-        self.assertEqual(opener.return_value.open.call_count, 1)
-        sleep.assert_not_called()
+        self.assertEqual(len(self.opener.requests), 1)
+        self.assertEqual(self.sleep.calls, [])
 
 
 class PublishedPrTests(unittest.TestCase):
     def __init__(self, methodName: str = "runTest") -> None:
         super().__init__(methodName)
         self.tmp: tempfile.TemporaryDirectory[str] | None = None
-        self.event_path = Path()
+        self.event_path: Path = Path()
         self.env: dict[str, str] = {}
+        self._recorder: GetJsonRecorder | None = None
 
-    def setUp(self):
+    @override
+    def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.event_path = Path(self.tmp.name) / "event.json"
-        self.event_path.write_text(json.dumps(event()), encoding="utf-8")
+        _ = self.event_path.write_text(json.dumps(event()), encoding="utf-8")
         self.env = {
             "GITHUB_REPOSITORY": REPO,
             "PR_NUMBER": str(NUMBER),
             "GITHUB_TOKEN": "token",
             "GITHUB_EVENT_PATH": str(self.event_path),
         }
+
+    def transport(self) -> GetJsonRecorder:
+        """Подменить get_json двойником один раз на тест, сохранив учёт вызовов."""
+        if self._recorder is None:
+            self._recorder = GetJsonRecorder()
+            _ = self.enterContext(patch.object(check, "get_json", self._recorder))
+        return self._recorder
 
     def execute(
         self,
@@ -555,22 +677,23 @@ class PublishedPrTests(unittest.TestCase):
         comment_snapshot: list[Mapping[str, check.JSONValue]] = copy.deepcopy(
             list(comments or [])
         )
-        responses = [
+        recorder = self.transport()
+        recorder.reset()
+        recorder.respond(
             (actual, None),
             (comments or [], None),
             (copy.deepcopy(actual), None),
             (comment_snapshot, None),
-        ]
-        with patch.object(check, "get_json", side_effect=responses):
-            return check.run(self.env)
+        )
+        return check.run(self.env)
 
-    def test_actual_body_not_event_and_absent_comment(self):
+    def test_actual_body_not_event_and_absent_comment(self) -> None:
         self.assertEqual(self.execute(pr()), [])
         actual = pr()
         actual["body"] = "некорректно"
         self.assertTrue(self.execute(actual))
 
-    def test_bot_exception_uses_actual_login_and_branch(self):
+    def test_bot_exception_uses_actual_login_and_branch(self) -> None:
         actual = pr()
         actual["body"] = ""
         user = actual["user"]
@@ -582,7 +705,7 @@ class PublishedPrTests(unittest.TestCase):
         actual["head"]["ref"] = "feature/fake"
         self.assertTrue(self.execute(actual))
 
-    def test_head_and_identity_are_validated(self):
+    def test_head_and_identity_are_validated(self) -> None:
         mutations: tuple[Callable[[PullRequestPayload], None], ...] = (
             lambda p: p["head"].update(sha="b" * 40),
             set_invalid_author_id,
@@ -594,14 +717,14 @@ class PublishedPrTests(unittest.TestCase):
             actual = pr()
             mutate(actual)
             with self.subTest(actual=actual), self.assertRaises(check.CheckError):
-                self.execute(actual)
+                _ = self.execute(actual)
         invalid = copy.deepcopy(event())
         invalid["repository"]["full_name"] = "other/project"
-        self.event_path.write_text(json.dumps(invalid), encoding="utf-8")
+        _ = self.event_path.write_text(json.dumps(invalid), encoding="utf-8")
         with self.assertRaises(check.CheckError):
-            self.execute(pr())
+            _ = self.execute(pr())
 
-    def test_comment_and_api_failure_propagate(self):
+    def test_comment_and_api_failure_propagate(self) -> None:
         self.assertTrue(self.execute(pr(), [comment(1, author=2)]))
         marked_without_user = comment(1)
         marked_without_user["user"] = None
@@ -610,151 +733,133 @@ class PublishedPrTests(unittest.TestCase):
         self.assertEqual(self.execute(pr(), [ordinary_without_user, comment(1)]), [])
         self.assertEqual(self.execute(pr(), [ordinary_without_user]), [])
         self.assertEqual(self.execute(pr(), [comment(1)]), [])
-        with (
-            patch.object(
-                check, "get_json", side_effect=[(pr(), None), check.CheckError("API")]
-            ),
-            self.assertRaises(check.CheckError),
-        ):
-            check.run(self.env)
+        recorder = self.transport()
+        recorder.reset()
+        recorder.respond((pr(), None), check.CheckError("API"))
+        with self.assertRaises(check.CheckError):
+            _ = check.run(self.env)
 
-    @patch.object(check.time, "sleep")
-    @patch("urllib.request.build_opener")
-    def test_protocol_failure_main_returns_sanitized_error(self, opener, sleep):
-        opener.return_value.open.side_effect = http.client.BadStatusLine("secret")
+    def test_protocol_failure_main_returns_sanitized_error(self) -> None:
+        # get_json настоящий: проверяется обработка сбоя транспорта в main.
+        factory = OpenerFactory()
+        sleep = SleepRecorder()
+        _ = self.enterContext(patch("urllib.request.build_opener", factory))
+        _ = self.enterContext(patch.object(time, "sleep", sleep))
+        factory.opener.reply = http.client.BadStatusLine("secret")
         stderr = io.StringIO()
-        with (
-            patch.dict(check.os.environ, self.env, clear=True),
-            patch("sys.stderr", stderr),
-        ):
+        with patch.dict(os.environ, self.env, clear=True), patch("sys.stderr", stderr):
             self.assertEqual(check.main(), 2)
-        self.assertEqual(opener.return_value.open.call_count, 3)
-        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(len(factory.opener.requests), 3)
+        self.assertEqual(sleep.calls, [0.1, 0.2])
         self.assertNotIn("secret", stderr.getvalue())
         self.assertIn("Не удалось проверить PR", stderr.getvalue())
 
-    def test_pr_changes_during_pagination_are_rejected(self):
+    def test_pr_changes_during_pagination_are_rejected(self) -> None:
+        recorder = self.transport()
         changed = pr()
         changed["head"]["sha"] = "b" * 40
-        with (
-            patch.object(
-                check,
-                "get_json",
-                side_effect=[(pr(), None), ([], None), (changed, None)],
-            ),
-            self.assertRaises(check.CheckError),
-        ):
-            check.run(self.env)
+        recorder.reset()
+        recorder.respond((pr(), None), ([], None), (changed, None))
+        with self.assertRaises(check.CheckError):
+            _ = check.run(self.env)
         changed = pr()
         changed["body"] = "изменилось"
-        with (
-            patch.object(
-                check,
-                "get_json",
-                side_effect=[(pr(), None), ([], None), (changed, None)],
-            ),
-            self.assertRaises(check.CheckError),
-        ):
-            check.run(self.env)
+        recorder.reset()
+        recorder.respond((pr(), None), ([], None), (changed, None))
+        with self.assertRaises(check.CheckError):
+            _ = check.run(self.env)
 
-    def test_comment_changes_between_snapshots_fail_closed(self):
+    def test_comment_changes_between_snapshots_fail_closed(self) -> None:
         changed_login = comment(1)
         user = changed_login["user"]
-        if not check._is_json_object(user):
+        if not isinstance(user, dict):
             self.fail("В фикстуре комментария должен быть автор")
         user["login"] = "other-author"
-        snapshots = (
+        snapshots: tuple[list[dict[str, check.JSONValue]], ...] = (
             [comment(1, body=MARKED.replace(CR_ROW, "| повреждённая |"))],
             [comment(1, author=2)],
             [comment(1), comment(2)],
             [],
             [changed_login],
         )
+        recorder = self.transport()
         for latest in snapshots:
             with self.subTest(latest=latest):
-                with (
-                    patch.object(
-                        check,
-                        "get_json",
-                        side_effect=[
-                            (pr(), None),
-                            ([comment(1)], None),
-                            (pr(), None),
-                            (latest, None),
-                        ],
-                    ) as get,
-                    self.assertRaises(check.CheckError),
-                ):
-                    check.run(self.env)
-                self.assertEqual(get.call_count, 4)
+                recorder.reset()
+                recorder.respond(
+                    (pr(), None),
+                    ([comment(1)], None),
+                    (pr(), None),
+                    (latest, None),
+                )
+                with self.assertRaises(check.CheckError):
+                    _ = check.run(self.env)
+                self.assertEqual(len(recorder.paths), 4)
 
-    def test_base_draft_state_and_author_races_fail_closed(self):
-        for mutate in (
+    def test_base_draft_state_and_author_races_fail_closed(self) -> None:
+        mutations: tuple[Callable[[PullRequestPayload], None], ...] = (
             lambda p: p["base"].update(sha="d" * 40),
             lambda p: p["base"].update(ref="other-base"),
             lambda p: p.update(draft=False),
             lambda p: p.update(state="closed"),
-            lambda p: p["user"].update(id=2),
-            lambda p: p["user"].update(login="other"),
+            lambda p: corrupt_nested(p, "user", id=2),
+            lambda p: corrupt_nested(p, "user", login="other"),
             lambda p: p["head"].update(ref="other-head"),
-        ):
+        )
+        recorder = self.transport()
+        for mutate in mutations:
             changed = pr()
             mutate(changed)
+            recorder.reset()
+            recorder.respond((pr(), None), ([], None), (changed, None))
             with (
                 self.subTest(changed=changed),
-                patch.object(
-                    check,
-                    "get_json",
-                    side_effect=[(pr(), None), ([], None), (changed, None)],
-                ),
                 self.assertRaises(check.CheckError),
             ):
-                check.run(self.env)
+                _ = check.run(self.env)
 
-    def test_stale_event_base_and_malformed_metadata_fail_before_comment_read(self):
-        for mutate in (
+    def test_stale_event_base_and_malformed_metadata_fail_before_comment_read(
+        self,
+    ) -> None:
+        mutations: tuple[Callable[[PullRequestPayload], None], ...] = (
             lambda p: p["base"].update(sha="d" * 40),
-            lambda p: p.update(base=None),
+            lambda p: corrupt(p, base=None),
             lambda p: p["base"].update(sha="bad"),
             lambda p: p["base"].update(ref=""),
-            lambda p: p.update(draft=1),
-            lambda p: p.update(state=[]),
-        ):
+            lambda p: corrupt(p, draft=1),
+            lambda p: corrupt(p, state=[]),
+        )
+        recorder = self.transport()
+        for mutate in mutations:
             actual = pr()
             mutate(actual)
-            with (
-                self.subTest(actual=actual),
-                patch.object(check, "get_json", return_value=(actual, None)) as get,
-            ):
-                with self.assertRaises(check.CheckError):
-                    check.run(self.env)
-                self.assertEqual(get.call_count, 1)
+            recorder.reset()
+            recorder.reply = (actual, None)
+            with self.subTest(actual=actual), self.assertRaises(check.CheckError):
+                _ = check.run(self.env)
+            self.assertEqual(len(recorder.paths), 1)
 
-    def test_missing_event_base_and_failed_reread_fail_closed(self):
-        with (
-            patch.object(
-                check,
-                "get_json",
-                side_effect=[(pr(), None), ([], None), check.CheckError("Ошибка API")],
-            ),
-            self.assertRaises(check.CheckError),
-        ):
-            check.run(self.env)
+    def test_missing_event_base_and_failed_reread_fail_closed(self) -> None:
+        recorder = self.transport()
+        recorder.reset()
+        recorder.respond((pr(), None), ([], None), check.CheckError("Ошибка API"))
+        with self.assertRaises(check.CheckError):
+            _ = check.run(self.env)
         payload = event()
         del payload["pull_request"]["base"]
-        self.event_path.write_text(json.dumps(payload), encoding="utf-8")
-        with patch.object(check, "get_json") as get:
-            with self.assertRaises(check.CheckError):
-                check.run(self.env)
-            get.assert_not_called()
+        _ = self.event_path.write_text(json.dumps(payload), encoding="utf-8")
+        recorder.reset()
+        with self.assertRaises(check.CheckError):
+            _ = check.run(self.env)
+        self.assertEqual(recorder.paths, [])
 
-    def test_missing_environment_fails(self):
+    def test_missing_environment_fails(self) -> None:
         for key in self.env:
             env = dict(self.env)
             del env[key]
             with self.subTest(key=key), self.assertRaises(check.CheckError):
-                check.run(env)
+                _ = check.run(env)
 
 
 if __name__ == "__main__":
-    unittest.main()
+    _ = unittest.main()
