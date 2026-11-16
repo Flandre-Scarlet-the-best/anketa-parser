@@ -223,6 +223,37 @@ class MarkdownLinkTests(unittest.TestCase):
             with self.subTest(case=case):
                 self.assertEqual(self.errors(source), [])
 
+    def test_definition_title_on_next_line_keeps_run(self) -> None:
+        self.assertEqual(
+            self.errors('[ok]: notes.md\n  "Название"\n[bad]: missing.md\n\n[bad]\n'),
+            ["docs/page.md:3: цель ссылки не существует: missing.md"],
+        )
+
+    def test_text_after_destination_is_not_a_definition(self) -> None:
+        for case, source in (
+            ("plain", "[пример]: absent.md лишний текст\n"),
+            ("after-title", '[пример]: absent.md "Титул" текст\n'),
+        ):
+            with self.subTest(case=case):
+                self.assertEqual(self.errors(source), [])
+
+    def test_markdown_entities_are_resolved_in_destinations(self) -> None:
+        _ = (self.root / "docs" / "a&b.md").write_text("# Страница\n", encoding="utf-8")
+        self.assertEqual(self.errors("[a]: a&amp;b.md\n\n[a]\n"), [])
+        self.assertEqual(self.errors("[ссылка](a&amp;b.md)\n"), [])
+        self.assertEqual(
+            self.errors("[ссылка](a&amp;gone.md)\n"),
+            ["docs/page.md:1: цель ссылки не существует: a&amp;gone.md"],
+        )
+
+    def test_quoted_indented_code_is_not_a_link(self) -> None:
+        for case, source in (
+            ("document", ">     [пример](absent.md)\n"),
+            ("after-blank", "> текст\n>\n>     [пример](absent.md)\n"),
+        ):
+            with self.subTest(case=case):
+                self.assertEqual(self.errors(source), [])
+
     def test_indented_examples_and_list_or_paragraph_continuations(self) -> None:
         self.assertEqual(
             self.errors(

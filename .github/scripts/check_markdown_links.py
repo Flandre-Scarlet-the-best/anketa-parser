@@ -8,6 +8,7 @@ Flandre-Scarlet-the-best/anki-deck-toolkit (.github/scripts/check_markdown_links
 """
 
 import argparse
+import html
 import re
 import subprocess
 import sys
@@ -40,6 +41,8 @@ BLOCK_LEAF = re.compile(
 )
 INLINE = re.compile(r"!?\[(?:[^\[\]\n]|\n(?![ \t]*\n)|\[[^\[\]\n]*\])*\]\(")
 REFERENCE = re.compile(r" {0,3}\[(?!\^)[^\]\n]+\]:[ \t]*(?:\n[ \t]*)?(<[^<>\n]*>|\S+)")
+# Необязательный титул определения: на той же строке или на следующей.
+TITLE = re.compile(r"[ \t]*(?:\n[ \t]*)?(?:\"[^\"\n]*\"|'[^'\n]*'|\([^)\n]*\))")
 
 
 def blank_text(text: str) -> str:
@@ -150,7 +153,7 @@ def visible_lines(text: str) -> list[str]:
                     fence = None
                 lines.append(blank_text(line))
                 continue
-        blank = not line.strip()
+        blank = not line[quote_offset(line, 0) :].strip()
         indentation = len(line) - len(line.lstrip(" "))
         if indented is not None and (blank or indentation >= indented):
             lines.append(blank_text(line))
@@ -168,6 +171,9 @@ def visible_lines(text: str) -> list[str]:
                 _ = containers.pop()
         indented = None
         column = containers[-1] if containers and indentation >= containers[-1] else 0
+        # Содержимое цитаты начинается после маркеров `>`: отступный код внутри
+        # цитаты считается от него, а не от начала строки.
+        column = max(column, quote_offset(line, 0))
         starts_item = False
         while marker := LIST_MARKER.match(line[column:]):
             # Более четырёх пробелов после маркера: один разделяет пункт,
@@ -241,23 +247,28 @@ def destinations(text: str) -> list[tuple[int, str]]:
 def content_offset(text: str, position: int) -> int:
     """Смещение содержимого строки после маркеров цитаты и списка."""
     while True:
-        quote = QUOTE_MARKER.match(text, position)
-        if quote is not None:
-            position = quote.end()
-            continue
+        position = quote_offset(text, position)
         marker = LIST_MARKER.match(text, position)
         if marker is None:
             return position
         position = marker.end()
 
 
+def quote_offset(text: str, position: int) -> int:
+    """Смещение содержимого строки после маркеров цитаты."""
+    while quote := QUOTE_MARKER.match(text, position):
+        position = quote.end()
+    return position
+
+
 def reference_destinations(visible: str, start: int, end: int) -> list[tuple[int, str]]:
     """Определения ссылок, допустимые в начале блока и после предыдущего.
 
-    Определение не может прерывать абзац, поэтому проверяются только позиции от
-    начала блока, а подряд идущие определения образуют один ряд: титул внутри
-    предыдущего определения ряд не разрывает, а маркеры цитаты и списка перед
-    содержимым строки распознаванию не мешают.
+    Определение не может прерывать абзац и содержать лишний текст после адреса
+    и необязательного титула, который тоже может стоять на следующей строке.
+    Проверяются только позиции от начала блока, подряд идущие определения
+    образуют один ряд, а маркеры цитаты и списка перед содержимым строки
+    распознаванию не мешают.
     """
     found: list[tuple[int, str]] = []
     position = content_offset(visible, start)
@@ -265,20 +276,28 @@ def reference_destinations(visible: str, start: int, end: int) -> list[tuple[int
         match = REFERENCE.match(visible, position, end)
         if match is None:
             break
+        rest = match.end()
+        title = TITLE.match(visible, rest, end)
+        if title is not None:
+            rest = title.end()
+        line_end = visible.find("\n", rest, end)
+        if line_end < 0:
+            line_end = end
+        if visible[rest:line_end].strip():
+            break
         bracket = match.start() + match.group().index("[")
         if not escaped(visible, bracket):
             address = match.group(1).removeprefix("<").removesuffix(">")
             found.append((visible.count("\n", 0, match.start(1)) + 1, address))
-        line_end = visible.find("\n", match.end(), end)
-        if line_end < 0:
+        if line_end >= end:
             break
         position = content_offset(visible, line_end + 1)
     return found
 
 
 def local_target(root: Path, page: Path, address: str) -> Path | None:
-    """Отбросить внешние URL, запросы и якоря; раскрыть кодирование пути."""
-    parsed = urlsplit(address)
+    """Отбросить внешние URL, запросы и якоря; раскрыть сущности и кодирование."""
+    parsed = urlsplit(html.unescape(address))
     if parsed.scheme or parsed.netloc:
         return None
     relative = unquote(parsed.path)
