@@ -35,6 +35,8 @@ jobs:
           python .github/scripts/check_python_coverage.py "$RUNNER_TEMP/basedpyright-report.json" .github/pyrightconfig.json
       - name: Проверить метаданные skills и локальные ссылки
         run: python .github/scripts/check_skill_contracts.py
+      - name: Проверить ссылки во всём отслеживаемом Markdown
+        run: python .github/scripts/check_markdown_links.py
 
   build:
     runs-on: ubuntu-latest

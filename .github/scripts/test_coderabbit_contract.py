@@ -228,7 +228,14 @@ class ProviderConfigurationTests(unittest.TestCase):
     def test_each_path_rule_matches_real_owned_paths(self):
         paths = [
             path.relative_to(ROOT).as_posix()
-            for directory in ("src", "tests", ".github", ".agents")
+            for directory in (
+                "src",
+                "tests",
+                ".github",
+                ".agents",
+                "docs",
+                ".codex/context",
+            )
             for path in (ROOT / directory).rglob("*")
             if path.is_file() and not {"bin", "obj", "__pycache__"} & set(path.parts)
         ]

@@ -16,6 +16,8 @@ standard Git/gh and suitable GitHub APIs/connectors with the same postconditions
 It does not own application scope, repository verification requirements or
 provider-specific review invocation, adjudication, iteration and rate limits.
 Those remain with the task, root agent contract and applicable review owner.
+Product guides live in `docs/`; `.codex/context/INDEX.md` routes engineering
+questions to behavior and verification owners without copying this procedure.
 Do not create a wrapper CLI, publication state machine, persistent journal or
 duplicate procedure in another document.
 

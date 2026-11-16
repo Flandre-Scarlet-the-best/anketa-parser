@@ -8,8 +8,9 @@ documentation, source comments, application-owned logs and human-readable
 diagnostics in Russian. For Conventional Commits keep the type and optional
 scope in English and write the description after the colon in Russian.
 
-This file and all instructional files in the canonical Git skill are maintained
-in English. Their language does not change the required Russian behavior.
+This file, instructional files in repository skills and all authored prose in
+`.codex/context/` are maintained in English. Their language does not change the
+required Russian behavior. Human guides in `docs/` and root README are Russian.
 Preserve exact Russian literals required by validators even inside English
 instructions. Keep API names, identifiers, paths, commands, JSON keys, exit
 codes, protocol values and immutable external messages unchanged. Independent
@@ -22,6 +23,15 @@ area. Follow higher-priority instructions and explicit task requirements.
 Current code, configuration, tests and observed runtime behavior take precedence
 over historical descriptions. Distinguish verified facts, hypotheses and future
 capabilities; resolve contradictions against the actual behavior owner.
+
+## Knowledge ownership
+
+[README.md](README.md) owns introduction and minimal quick start;
+[docs](docs/README.md) owns human explanations of implemented product behavior.
+[Context](.codex/context/INDEX.md) maps tasks to code, contracts, tests and checks
+for any agent; it does not copy full guides or task procedures. This file owns
+mandatory constraints and source precedence. Skills own procedures. Code,
+configuration, tests and CI establish behavior; prose cannot override them.
 
 ## Scope and architecture
 
@@ -50,8 +60,9 @@ database, not a distributed domain architecture.
 
 ## Configuration, diagnostics and data
 
-[README.md](README.md) owns operational usage, configuration keys and diagnostic
-examples. [AnketaParserConfiguration.cs](src/AnketaParser.Infrastructure/Configuration/AnketaParserConfiguration.cs)
+[Operations](docs/operations.md), [configuration](docs/configuration.md) and
+[diagnostics](docs/diagnostics.md) own human usage and examples.
+[AnketaParserConfiguration.cs](src/AnketaParser.Infrastructure/Configuration/AnketaParserConfiguration.cs)
 owns configuration precedence: optional `appsettings.json`, environment-specific
 JSON selected by `DOTNET_ENVIRONMENT`, ignored `appsettings.Local.json`, then
 `ANKETAPARSER_` environment variables with `__` for nested keys. Host and CLI
@@ -98,6 +109,7 @@ dotnet test --no-build -c Release
 docker compose config --quiet
 python -m unittest discover -s .github/scripts -p "test_*.py"
 python .github/scripts/check_skill_contracts.py
+python .github/scripts/check_markdown_links.py
 ```
 
 Choose checks proportionate to the change and run required repository checks.

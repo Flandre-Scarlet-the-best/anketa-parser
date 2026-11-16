@@ -31,6 +31,25 @@ def requires_russian_output(text: str) -> bool:
 
 
 class AgentContractTests(unittest.TestCase):
+    def test_public_context_is_addable_while_tool_state_stays_private(self):
+        public = (".codex/context/INDEX.md", ".codex/context/maps/figure.svg")
+        private = (
+            ".codex/local/pr/example/body.md",
+            ".codex/config.toml",
+            ".codex/cache/state.json",
+            ".serena/memories/example.md",
+        )
+        # --no-index проверяет сами ignore-правила и после добавления context.
+        result = subprocess.run(  # noqa: S603
+            ["git", "check-ignore", "--no-index", *public, *private],  # noqa: S607
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(result.stdout.splitlines()), set(private))
+
     def test_english_instructions_keep_russian_contract_literals(self):
         """Языковой контракт инструкций, а не их текущий состав и формулировки.
 
@@ -39,7 +58,11 @@ class AgentContractTests(unittest.TestCase):
         русским литералам контракта сохраняются.
         """
         skill = ROOT / ".agents/skills/git-workflow"
-        files = [ROOT / "AGENTS.md", *sorted((ROOT / ".agents/skills").rglob("*.md"))]
+        files = [
+            ROOT / "AGENTS.md",
+            *sorted((ROOT / ".agents/skills").rglob("*.md")),
+            *sorted((ROOT / ".codex/context").rglob("*.md")),
+        ]
         self.assertTrue((skill / "SKILL.md").is_file(), "нужен сам канонический skill")
         for path in files:
             # Литералы контракта выделяются кодом; окружающая инструкция английская.
@@ -110,6 +133,7 @@ class AgentContractTests(unittest.TestCase):
             "docker compose config --quiet",
             "python -m unittest discover",
             "python .github/scripts/check_skill_contracts.py",
+            "python .github/scripts/check_markdown_links.py",
         ):
             self.assertIn(command, text)
 

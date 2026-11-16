@@ -32,8 +32,10 @@ pushes, exact live remote SHA verification, PR identity, publication, Draft/Read
 and separately authorized merge. Its `references/pr-body.md` owns the cumulative
 journal format; `references/pr-lifecycle.md` owns comment publication, migration
 and read-back. Supply factual iteration data to those owners; do not duplicate
-their procedures here. Application checks belong to `AGENTS.md`, CI and the
-affected component. `.coderabbit.yaml` is separate provider configuration.
+their procedures here. The engineering router is `.codex/context/INDEX.md`;
+human product explanations live in `docs/`. Application checks belong to
+`AGENTS.md`, CI and the affected component. `.coderabbit.yaml` is separate
+provider configuration.
 
 Do not introduce a CLI wrapper, state machine, persistent review database,
 compatibility skill copies or a second Git procedure. Temporary raw evidence is
