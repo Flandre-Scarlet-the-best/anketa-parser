@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 
 # Этап SDK восстанавливает зависимости в locked mode по графу из репозитория.
-ARG DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:10.0.402-noble
+# Образ обязан содержать SDK, который допускает global.json: восстановление внутри
+# контейнера завершается ошибкой, если запрошенная версия SDK в образе отсутствует.
+ARG DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:10.0.404-noble
 ARG DOTNET_RUNTIME_IMAGE=mcr.microsoft.com/dotnet/runtime:10.0.14-noble
 
 FROM ${DOTNET_SDK_IMAGE} AS build
