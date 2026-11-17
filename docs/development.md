@@ -171,6 +171,29 @@ $env:GITLEAKS_BINARY = (Get-Command gitleaks).Source
 правило, путь, строку и коммит. Ограничения и реакция на находку описаны в
 [безопасности](security.md).
 
+## Аудит зависимостей
+
+Политика аудита принадлежит [Directory.Build.props](../Directory.Build.props):
+`NuGetAuditMode=all` и `NuGetAuditLevel=low`. Восстановление с `--force`
+гарантирует, что аудит выполняется, а строгая сборка делает найденный advisory
+ошибкой. После изменения политики проверьте, что `packages.lock.json` не
+изменились.
+
+```powershell
+dotnet restore --locked-mode --force
+dotnet package list --vulnerable --include-transitive --format json > "$env:TEMP/nuget-audit.json"
+.venv/Scripts/python .github/scripts/check_nuget_audit.py --report "$env:TEMP/nuget-audit.json" --root .
+.venv/Scripts/python .github/scripts/check_osv.py --root . --binary <путь>/osv-scanner
+```
+
+[check_nuget_audit.py](../.github/scripts/check_nuget_audit.py) считает успехом
+только отчёт, в котором есть все проекты решения и запрошен транзитивный режим.
+[check_osv.py](../.github/scripts/check_osv.py) перечисляет отслеживаемые
+manifests, считает пакеты по ним и сверяет код выхода сканера с этим инвентарём;
+непустой lock-файл без найденных пакетов считается ошибкой разбора.
+Закреплённые версии, ограничения покрытия и негативные сценарии описаны в
+[безопасности](security.md).
+
 ## Какую проверку выбрать
 
 | Изменение | Что проверять | Что это доказывает |

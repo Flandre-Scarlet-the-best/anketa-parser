@@ -22,7 +22,12 @@
   <PropertyGroup>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <NuGetAudit>true</NuGetAudit>
-    <NuGetAuditMode>direct</NuGetAuditMode>
+    <!-- Аудит покрывает прямые и транзитивные зависимости: известная уязвимость
+         транзитивного пакета не должна оставаться незамеченной. Уровень low
+         сохраняется явно, а строгая сборка превращает предупреждения NU190x
+         в ошибку. -->
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <NuGetAuditLevel>low</NuGetAuditLevel>
   </PropertyGroup>
 
 </Project>
