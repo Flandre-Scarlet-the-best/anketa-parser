@@ -75,7 +75,7 @@ RUN apk upgrade --no-cache \
  && gosu nobody true
 
 # Обслуживание использует штатные утилиты PostgreSQL 18 и тот же собранный CLI.
-FROM mcr.microsoft.com/dotnet/runtime:10.0.15-alpine3.24 AS maintenance-runtime
+FROM mcr.microsoft.com/dotnet/runtime:11.0.0-alpine3.24 AS maintenance-runtime
 FROM postgres AS maintenance
 # Версии APK определяет репозиторий Alpine базового образа; пересмотреть при
 # появлении поддерживаемого снимка пакетов с обновлениями безопасности.
