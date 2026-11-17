@@ -243,6 +243,16 @@ def verify(expected: list[Change], reported_changes: list[Change]) -> list[str]:
         )
         for change in reported_changes
     }
+    expected_keys = {
+        (
+            change.kind,
+            change.ecosystem.lower(),
+            change.name,
+            change.version,
+            change.manifest,
+        )
+        for change in expected
+    }
     gaps: list[str] = []
     unconfirmed: list[str] = []
     for change in expected:
@@ -262,6 +272,26 @@ def verify(expected: list[Change], reported_changes: list[Change]) -> list[str]:
         raise CoverageError(
             "Dependency Review не подтвердил изменения зависимостей: "
             + "; ".join(gaps[:MAX_DIAGNOSTIC])
+        )
+    extras = [
+        change
+        for change in reported_changes
+        if change.ecosystem.lower() not in UNCONFIRMED_ECOSYSTEMS
+        and (
+            change.kind,
+            change.ecosystem.lower(),
+            change.name,
+            change.version,
+            change.manifest,
+        )
+        not in expected_keys
+    ]
+    if extras:
+        # Обратное расхождение означает, что действие обнаружило изменение,
+        # которого нет в разобранных манифестах: охват разбора не доказан.
+        raise CoverageError(
+            "Dependency Review сообщил об изменениях вне разобранных манифестов: "
+            + "; ".join(change.describe() for change in extras[:MAX_DIAGNOSTIC])
         )
     notes = [f"покрытие подтверждено для {len(expected) - len(unconfirmed)} изменений"]
     if unconfirmed:

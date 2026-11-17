@@ -76,6 +76,16 @@ def parse_report(text: str, root: Path) -> tuple[list[str], list[str]]:
         isinstance(entry, str) for entry in cast(list[object], sources)
     ):
         raise CoverageError("Отчёт не содержит источников vulnerability data")
+    problems = report.get("problems")
+    if problems is not None:
+        if not isinstance(problems, list):
+            raise CoverageError("Раздел problems отчёта имеет неизвестный формат")
+        if problems:
+            # Предупреждения о недоступности данных об уязвимостях не доказывают
+            # аудит: пустой список advisories в таком отчёте ничего не значит.
+            raise CoverageError(
+                f"Отчёт содержит проблемы NuGet: {describe_problems(cast(list[object], problems))}"
+            )
     projects = report.get("projects")
     if not isinstance(projects, list) or not projects:
         raise CoverageError("Отчёт не содержит ни одного проекта")
@@ -94,6 +104,23 @@ def parse_report(text: str, root: Path) -> tuple[list[str], list[str]]:
     if len(set(paths)) != len(paths):
         raise CoverageError("Отчёт содержит повторяющиеся проекты")
     return paths, advisories
+
+
+def describe_problems(problems: list[object]) -> str:
+    """Краткое описание проблем отчёта без необработанного JSON."""
+    described: list[str] = []
+    for entry in problems[:3]:
+        text = ""
+        if isinstance(entry, dict):
+            item = cast(dict[str, object], entry)
+            for key in ("text", "message", "code"):
+                value = item.get(key)
+                if isinstance(value, str) and value:
+                    text = value
+                    break
+        described.append(text or "запись без описания")
+    joined = "; ".join(described)[:MAX_DIAGNOSTIC]
+    return f"{len(problems)}: {joined}"
 
 
 def describe_frameworks(project: dict[str, object], name: str) -> list[str]:

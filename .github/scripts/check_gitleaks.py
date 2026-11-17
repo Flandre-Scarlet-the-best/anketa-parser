@@ -65,12 +65,16 @@ class Scan:
         )
 
     def log_opts(self) -> str:
-        """Аргументы git log для Gitleaks: диффы слияний входят в проверку."""
+        """Аргументы git log для Gitleaks: диффы слияний и текстовые диффы.
+
+        `--text` обязателен: атрибут `-diff` в `.gitattributes` помечает файл как
+        двоичный, и без него Gitleaks пропускает содержимое такого файла.
+        """
         if self.mode == RANGE_MODE:
-            return f"--diff-merges=on {self.base}..{self.head}"
+            return f"--diff-merges=on --text {self.base}..{self.head}"
         if self.mode == HISTORY_MODE:
-            return f"--diff-merges=on {self.head}"
-        return "--diff-merges=on --all"
+            return f"--diff-merges=on --text {self.head}"
+        return "--diff-merges=on --text --all"
 
     def revision(self) -> str:
         """Ревизия для подсчёта коммитов и полноты объектов."""

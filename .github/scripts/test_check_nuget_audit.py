@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from typing import override
+from typing import cast, override
 
 from check_nuget_audit import (
     CHECK_ERROR_CODE,
@@ -160,6 +160,19 @@ class ParseTests(ReportCase):
         )
         with self.assertRaises(CoverageError):
             _ = parse_report(without_vulnerable, self.root)
+
+    def test_reported_problems_block_the_audit(self) -> None:
+        report = cast(
+            dict[str, object],
+            json.loads(self.report([{"path": self.absolute("a.csproj")}])),
+        )
+        report["problems"] = [
+            {"text": "Unable to load service index для источника уязвимостей"}
+        ]
+        with self.assertRaisesRegex(CoverageError, "проблемы NuGet"):
+            _ = parse_report(json.dumps(report), self.root)
+        report["problems"] = []
+        self.assertEqual(len(parse_report(json.dumps(report), self.root)[0]), 1)
         empty = self.report([])
         with self.assertRaises(CoverageError):
             _ = parse_report(empty, self.root)

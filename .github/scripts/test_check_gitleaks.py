@@ -75,7 +75,7 @@ class GitleaksEventTests(EventTestCase):
             {"pull_request": {"base": {"sha": base}, "head": {"sha": head}}},
         )
         self.assertEqual(scan.mode, check_gitleaks.RANGE_MODE)
-        self.assertEqual(scan.log_opts(), f"--diff-merges=on {base}..{head}")
+        self.assertEqual(scan.log_opts(), f"--diff-merges=on --text {base}..{head}")
 
     def test_merge_group_uses_group_shas(self) -> None:
         scan = self.resolve(
@@ -88,7 +88,7 @@ class GitleaksEventTests(EventTestCase):
         self.assertEqual(range_scan.mode, check_gitleaks.RANGE_MODE)
         new_ref = self.resolve("push", {"before": "0" * 40, "after": "f" * 40})
         self.assertEqual(new_ref.mode, check_gitleaks.HISTORY_MODE)
-        self.assertEqual(new_ref.log_opts(), f"--diff-merges=on {'f' * 40}")
+        self.assertEqual(new_ref.log_opts(), f"--diff-merges=on --text {'f' * 40}")
 
     def test_deleted_ref_reports_absent_tree(self) -> None:
         scan = self.resolve("push", {"before": "e" * 40, "after": "0" * 40})
@@ -117,7 +117,7 @@ class GitleaksEventTests(EventTestCase):
 
     def test_audit_mode_covers_all_refs(self) -> None:
         scan = Scan(check_gitleaks.AUDIT_MODE, description="аудит")
-        self.assertEqual(scan.log_opts(), "--diff-merges=on --all")
+        self.assertEqual(scan.log_opts(), "--diff-merges=on --text --all")
         self.assertEqual(scan.revision(), "--all")
 
 

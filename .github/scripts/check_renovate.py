@@ -38,6 +38,7 @@ ACTION_USE = re.compile(
     r"uses:\s*[\"']?(?P<action>[^@\s\"']+)@(?P<ref>[^@\s\"']+)[\"']?(?:\s+#\s*(?P<comment>v?\S+))?"
 )
 MAX_DIAGNOSTIC = 2000
+DOCKER_PREFIX = "docker://"
 
 
 class CoverageError(Exception):
@@ -308,23 +309,33 @@ def expected_nuget(root: Path, paths: list[str]) -> set[Declaration]:
                     found.add(Declaration("nuget", path, name, item["version"]))
             continue
         tree = ElementTree.fromstring(text)  # noqa: S314
-        for item in tree.iter():
-            if item.tag.rsplit("}", 1)[-1] not in (
+        for element in tree.iter():
+            sdk = element.get("Sdk")
+            if sdk:
+                # `Sdk="Вендор.Sdk/1.2.3"` — зависимость NuGet в форме MSBuild SDK.
+                name, separator, version = sdk.partition("/")
+                if "$(" in sdk:
+                    raise CoverageError(
+                        f"{path}: вычисляемое объявление Sdk требует отдельного доказательства версии"
+                    )
+                if separator and version:
+                    found.add(Declaration("nuget", path, name, version))
+            if element.tag.rsplit("}", 1)[-1] not in (
                 "PackageVersion",
                 "PackageReference",
                 "GlobalPackageReference",
             ):
                 continue
-            name = item.get("Include") or item.get("Update")
+            name = element.get("Include") or element.get("Update")
             if not name:
                 raise CoverageError(f"{path}: не определено имя пакета")
             child_versions = {
-                child.tag.rsplit("}", 1)[-1]: child.text or "" for child in item
+                child.tag.rsplit("}", 1)[-1]: child.text or "" for child in element
             }
             version = (
-                item.get("VersionOverride")
+                element.get("VersionOverride")
                 or child_versions.get("VersionOverride")
-                or item.get("Version")
+                or element.get("Version")
                 or child_versions.get("Version")
                 or ""
             )
@@ -469,6 +480,19 @@ def workflow_images(path: str, content: str) -> set[Declaration]:
             raise CoverageError(f"{path}: неподдерживаемое объявление образа workflow")
         found.add(image_declaration("github-actions", path, value))
 
+    def add_steps(steps: object) -> None:
+        """Docker action в шагах движок извлекает как образ, а не как ссылку."""
+        if steps is None:
+            return
+        if not isinstance(steps, list):
+            raise CoverageError(f"{path}: неподдерживаемый список шагов")
+        for step in cast(list[object], steps):
+            if not isinstance(step, dict):
+                raise CoverageError(f"{path}: неподдерживаемое объявление шага")
+            uses = cast(dict[str, object], step).get("uses")
+            if isinstance(uses, str) and uses.lower().startswith(DOCKER_PREFIX):
+                add_image(uses[len(DOCKER_PREFIX) :])
+
     jobs = document.get("jobs", {})
     if not isinstance(jobs, dict):
         raise CoverageError(f"{path}: неподдерживаемый раздел jobs")
@@ -484,12 +508,19 @@ def workflow_images(path: str, content: str) -> set[Declaration]:
                 raise CoverageError(f"{path}: неподдерживаемый раздел services")
             for service in cast(dict[str, object], services).values():
                 add_image(service)
+        add_steps(entry.get("steps"))
     runs = document.get("runs")
     if isinstance(runs, dict):
         image = cast(dict[str, object], runs).get("image")
-        if isinstance(image, str) and image.lower().startswith("docker://"):
-            add_image(image[len("docker://") :])
+        if isinstance(image, str) and image.lower().startswith(DOCKER_PREFIX):
+            add_image(image[len(DOCKER_PREFIX) :])
+        add_steps(cast(dict[str, object], runs).get("steps"))
     return found
+
+
+def comment_only(content: str, position: int) -> bool:
+    """Объявление стоит в комментарии YAML и движком не извлекается."""
+    return "#" in content[content.rfind("\n", 0, position) + 1 : position]
 
 
 def expected_actions(root: Path, paths: list[str]) -> set[Declaration]:
@@ -499,9 +530,13 @@ def expected_actions(root: Path, paths: list[str]) -> set[Declaration]:
         content = read_text(root / path)
         for match in ACTION_USE.finditer(content):
             name, ref = match.group("action"), match.group("ref")
+            if comment_only(content, match.start()) or name.startswith(DOCKER_PREFIX):
+                # Закомментированную ссылку движок не извлекает, а Docker action
+                # разбирается как образ, а не как ссылка на репозиторий.
+                continue
             parts = name.split("/")
             subpath = ""
-            if len(parts) > 2 and not name.startswith("docker://"):
+            if len(parts) > 2:
                 name, subpath = "/".join(parts[:2]), "/".join(parts[2:])
             if re.fullmatch(r"[0-9a-f]{40}", ref):
                 found.add(

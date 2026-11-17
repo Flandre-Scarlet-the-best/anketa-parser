@@ -280,6 +280,18 @@ class ComparisonTests(unittest.TestCase):
         with self.assertRaisesRegex(CoverageError, "которых нет в манифестах"):
             _ = verify([], [reported_change])
 
+    def test_reported_change_outside_manifests_is_a_gap(self) -> None:
+        expected = [Change("added", "pip", "ruff", "0.17.5", "requirements.txt")]
+        extra = Change("added", "pip", "httpx", "0.28.0", "tools/setup.py")
+        with self.assertRaisesRegex(CoverageError, "вне разобранных манифестов"):
+            _ = verify(expected, [*expected, extra])
+        self.assertEqual(
+            verify(expected, expected), ["покрытие подтверждено для 1 изменений"]
+        )
+        # Неподтверждённая экосистема Actions не превращается в пробел разбора.
+        actions = Change("added", "actions", "actions/checkout", "a" * 40, "w.yml")
+        self.assertIn("1 изменений", verify(expected, [*expected, actions])[0])
+
     def test_actions_ecosystem_is_never_claimed_as_covered(self) -> None:
         expected = [
             Change(

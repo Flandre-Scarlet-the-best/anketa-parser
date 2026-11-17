@@ -429,6 +429,43 @@ class ManifestTests(RepositoryCase):
             },
         )
 
+    def test_commented_action_reference_is_not_a_declaration(self) -> None:
+        path = ".github/workflows/comments.yml"
+        sha = "a" * 40
+        _ = self.write(
+            path,
+            f"jobs:\n  test:\n    steps:\n      # - uses: actions/checkout@v6\n      - uses: actions/checkout@{sha} # v7.0.1\n",
+        )
+        self.assertEqual(
+            expected_actions(self.root, [path]),
+            {Declaration("github-actions", path, "actions/checkout", "v7.0.1", sha)},
+        )
+
+    def test_docker_action_is_verified_as_image(self) -> None:
+        path = ".github/workflows/docker-action.yml"
+        _ = self.write(
+            path,
+            "jobs:\n  test:\n    steps:\n      - uses: docker://alpine:3.22\n",
+        )
+        self.assertEqual(
+            expected_actions(self.root, [path]),
+            {Declaration("github-actions", path, "alpine", "3.22")},
+        )
+
+    def test_msbuild_sdk_declaration_is_verified(self) -> None:
+        path = "src/App/App.csproj"
+        _ = self.write(
+            path,
+            '<Project Sdk="MSBuild.Sdk.Extras/3.0.44"><ItemGroup><PackageReference Include="Npgsql" Version="10.0.4" /></ItemGroup></Project>',
+        )
+        self.assertEqual(
+            expected_nuget(self.root, [path]),
+            {
+                Declaration("nuget", path, "MSBuild.Sdk.Extras", "3.0.44"),
+                Declaration("nuget", path, "Npgsql", "10.0.4"),
+            },
+        )
+
     def test_copy_external_images_require_exact_extraction(self) -> None:
         path = "Dockerfile"
         _ = self.write(
