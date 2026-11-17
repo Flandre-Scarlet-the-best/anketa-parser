@@ -15,6 +15,9 @@ public sealed class DatabaseSettings
     /// </summary>
     public string ConnectionString { get; set; } = string.Empty;
 
+    /// <summary>Отдельный пароль, переопределяющий значение Password в строке подключения.</summary>
+    public string? Password { get; set; }
+
     /// <summary>При true недоступная БД прерывает запуск хоста.</summary>
     public bool Required { get; set; }
 

@@ -45,7 +45,9 @@ Copy-Item .env.example .env
 cp .env.example .env
 ```
 
-Откройте `.env` и задайте свой `POSTGRES_PASSWORD`. Затем в любой оболочке:
+Откройте `.env` и задайте свои пароли PostgreSQL и трёх служебных ролей.
+Выполните [provisioning и миграции](persistence.md#новая-бд-и-переход-существующей-установки)
+перед первым запуском Host или переходом существующей установки. Затем:
 
 ```sh
 docker compose config --quiet
@@ -69,7 +71,7 @@ docker compose logs -f host
 | Перезапуск | `restart: unless-stopped`; остановка Host получает 30 секунд |
 
 `pg_isready` проверяет доступность сервера; проба Host дополнительно открывает
-соединение с учётными данными и выполняет `SELECT 1`. Готовая PostgreSQL ещё
+соединение с учётными данными, выполняет `SELECT 1` и проверяет версию миграций. Готовая PostgreSQL ещё
 не доказывает, что приложение подключится. Код `4` CLI означает неуспешную
 проверку; после заданного числа отказов Docker отмечает контейнер `unhealthy`.
 Сам healthcheck контейнер не перезапускает.
@@ -80,8 +82,8 @@ docker compose logs -f host
 docker compose exec -T host dotnet /app/cli/AnketaParser.Cli.dll doctor --json
 ```
 
-При штатной БД ожидайте `status: healthy`, `exitCode: 0` и пробу `postgres`
-со статусом `healthy`.
+При штатной БД проба `postgres` имеет статус `healthy` и код `0`.
+Проба `backup` даёт общую деградацию до свежей проверки копии восстановлением.
 
 ### Переменные Compose
 

@@ -40,6 +40,7 @@
 | `Host:StartupDiagnosticsEnabled` | bool | `true` | Начальная проверка готовности |
 | `Host:ReadinessCheckIntervalSeconds` | int | `60` | 0–86400; `0` отключает монитор |
 | `Database:ConnectionString` | string | пусто | Строка Npgsql; секрет; пусто означает отсутствие настройки |
+| `Database:Password` | string | не задано | Отдельный секрет, переопределяющий пароль строки подключения через NpgsqlConnectionStringBuilder |
 | `Database:Required` | bool | `false` | Отказ начальной проверки останавливает хост при `true` |
 | `Database:ConnectTimeoutSeconds` | int | `5` | 1–120; подключение |
 | `Database:CommandTimeoutSeconds` | int | `5` | 1–600; команда проверки |
@@ -101,3 +102,10 @@ ANKETAPARSER_Host__InstanceName=local-check dotnet run --project src/AnketaParse
 настройки дают код `3`. Повреждённый синтаксис JSON у Host обрабатывается как
 внутренняя ошибка `1`, а у CLI загрузка выполняется до обработчика исключений:
 возможен необработанный отказ без JSON и без нормализованного кода приложения.
+
+## Настройки хранилища
+
+Секции Backup, Provision и Restore используют тот же порядок загрузки
+конфигурации. Их параметры и
+права описаны в [регламенте хранения](persistence.md). Host не использует
+секреты Provision/Restore; Compose передаёт их только обслуживающим операциям.

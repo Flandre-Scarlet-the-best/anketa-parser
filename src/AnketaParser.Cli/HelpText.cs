@@ -17,6 +17,7 @@ internal static class HelpText
               doctor    Проверить конфигурацию, среду выполнения и готовность зависимостей.
               version   Показать версию инструмента.
               help      Показать эту справку.
+              storage   Обслуживание схемы и резервных копий; список операций: storage help.
 
             Параметры:
               --json         Машинный отчёт doctor/version: один JSON-документ в stdout,
@@ -32,7 +33,7 @@ internal static class HelpText
               4  настроенная зависимость недоступна
 
             Конфигурация:
-              appsettings.json, appsettings.<DOTNET_ENVIRONMENT>.json and appsettings.Local.json
+              appsettings.json, appsettings.<DOTNET_ENVIRONMENT>.json и appsettings.Local.json
               рядом с программой, затем переменные окружения с префиксом ANKETAPARSER_
               (вложенные ключи разделяются двойным подчёркиванием, например
               ANKETAPARSER_Database__ConnectionString).

@@ -1,8 +1,10 @@
 using AnketaParser.Core.Diagnostics;
+using AnketaParser.Core.Persistence;
 using AnketaParser.Infrastructure.Configuration;
 using AnketaParser.Infrastructure.Diagnostics;
 using AnketaParser.Infrastructure.Persistence;
 
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -59,13 +61,29 @@ public static class InfrastructureServiceCollectionExtensions
             new ConfigurationChangeTokenSource<DiagnosticsSettings>(
                 Options.DefaultName, configuration.GetSection(DiagnosticsSettings.SectionName)));
 
+        services.AddOptions<BackupSettings>()
+            .Configure(options => BindSettings(configuration.GetSection(BackupSettings.SectionName), options))
+            .ValidateOnStart();
+        services.AddSingleton<IValidateOptions<BackupSettings>, BackupSettingsValidator>();
+        services.AddSingleton<IOptionsChangeTokenSource<BackupSettings>>(
+            new ConfigurationChangeTokenSource<BackupSettings>(
+                Options.DefaultName, configuration.GetSection(BackupSettings.SectionName)));
+
         services.TryAddSingleton(TimeProvider.System);
+        services.AddDbContext<ProductDbContext>((provider, options) =>
+            options.UseNpgsql(
+                provider.GetRequiredService<IOptions<DatabaseSettings>>().Value.ConnectionString,
+                ProductDbContext.ConfigureProvider));
+        services.AddScoped<IProductStore, ProductStore>();
         services.AddSingleton(new EnvironmentDescriptor(environmentName));
         services.AddSingleton(new ConfigurationSourceSet(configurationSources));
         services.TryAddSingleton<ReadinessStateStore>();
 
         services.TryAddSingleton<IRuntimeSnapshotProvider, RuntimeSnapshotProvider>();
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IReadinessProbe, PostgresReadinessProbe>());
+        if (!string.IsNullOrWhiteSpace(configuration[$"{BackupSettings.SectionName}:Directory"]))
+            services.AddSingleton<IReadinessProbe>(provider =>
+                new BackupReadinessProbe(provider.GetRequiredService<IOptions<BackupSettings>>()));
         services.TryAddSingleton<DiagnosticsRunner>();
 
         return services;

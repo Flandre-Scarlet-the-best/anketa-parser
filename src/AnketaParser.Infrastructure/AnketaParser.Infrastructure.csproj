@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\AnketaParser.Core\AnketaParser.Core.csproj" />
+    <InternalsVisibleTo Include="AnketaParser.Tests" />
   </ItemGroup>
 
   <ItemGroup>
@@ -20,6 +21,9 @@
     <PackageReference Include="Microsoft.Extensions.Options" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
     <PackageReference Include="Npgsql" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" PrivateAssets="all" />
   </ItemGroup>
 
 </Project>

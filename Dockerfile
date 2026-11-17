@@ -49,3 +49,14 @@ HEALTHCHECK --interval=30s --timeout=15s --start-period=20s --retries=3 \
 
 USER $APP_UID
 ENTRYPOINT ["dotnet", "/app/host/AnketaParser.Host.dll"]
+
+# Обслуживание использует штатные утилиты PostgreSQL 18 и тот же собранный CLI.
+FROM mcr.microsoft.com/dotnet/runtime:10.0.14-alpine3.24 AS maintenance-runtime
+FROM postgres:18.6-alpine AS maintenance
+RUN apk add --no-cache libstdc++ icu-libs krb5-libs \
+ && mkdir /backups && chown 1654:1654 /backups
+COPY --from=maintenance-runtime /usr/share/dotnet /usr/share/dotnet
+COPY --from=build /out/cli /app/cli
+ENV PATH="/usr/share/dotnet:${PATH}" DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
+USER 1654:1654
+ENTRYPOINT ["dotnet", "/app/cli/AnketaParser.Cli.dll"]

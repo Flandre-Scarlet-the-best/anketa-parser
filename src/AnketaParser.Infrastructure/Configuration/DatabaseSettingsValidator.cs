@@ -23,9 +23,15 @@ public sealed class DatabaseSettingsValidator : IValidateOptions<DatabaseSetting
                 "Задайте ANKETAPARSER_Database__ConnectionString или отключите Database:Required.");
         }
 
-        if (options.IsConfigured && !TryParseConnectionString(options.ConnectionString, out var error))
+        if (!ConnectionStringPassword.TryApply(options.ConnectionString, options.Password, out var effectiveConnectionString))
         {
-            failures.Add($"Database:ConnectionString не является корректной строкой подключения PostgreSQL ({error}).");
+            failures.Add("Database:ConnectionString не является корректной строкой подключения PostgreSQL.");
+        }
+        else
+        {
+            options.ConnectionString = effectiveConnectionString;
+            if (options.IsConfigured && !TryParseConnectionString(options.ConnectionString, out var error))
+                failures.Add($"Database:ConnectionString не является корректной строкой подключения PostgreSQL ({error}).");
         }
 
         return failures.Count == 0

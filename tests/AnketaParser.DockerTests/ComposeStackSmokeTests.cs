@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace AnketaParser.DockerTests;
 
@@ -8,9 +9,8 @@ namespace AnketaParser.DockerTests;
 /// сохранность данных после пересоздания контейнера. Требует Docker и явного включения:
 /// <code>ANKETAPARSER_DOCKER_TESTS=1 dotnet test --project tests/AnketaParser.DockerTests</code>
 /// </summary>
-public sealed class ComposeStackSmokeTests
+public sealed class ComposeStackSmokeTests(ComposeImageFixture images)
 {
-    private const string EnableVariable = "ANKETAPARSER_DOCKER_TESTS";
     private const string DatabaseUser = "smoke_user";
     private static readonly TimeSpan StartTimeout = TimeSpan.FromMinutes(12);
     private static readonly TimeSpan ShortCommandTimeout = TimeSpan.FromMinutes(2);
@@ -20,12 +20,12 @@ public sealed class ComposeStackSmokeTests
     [Fact]
     public async Task ComposeStackIsHealthyAndDatabaseDataSurvivesContainerRecreation()
     {
-        if (!string.Equals(Environment.GetEnvironmentVariable(EnableVariable), "1", StringComparison.Ordinal))
+        if (!ComposeImageFixture.Enabled)
         {
-            Assert.Skip($"Задайте {EnableVariable}=1 для запуска smoke-теста Docker/PostgreSQL.");
+            Assert.Skip($"Задайте {ComposeImageFixture.EnableVariable}=1 для запуска smoke-теста Docker/PostgreSQL.");
         }
 
-        var repositoryRoot = FindRepositoryRoot();
+        var repositoryRoot = images.RepositoryRoot;
         var (environmentFile, processEnvironment) = CreateEnvironmentFile();
         var projectName = $"anketa-parser-smoke-{RandomNumberGenerator.GetHexString(6, lowercase: true)}";
         var compose = new DockerCli(repositoryRoot, processEnvironment);
@@ -39,9 +39,19 @@ public sealed class ComposeStackSmokeTests
 
         try
         {
-            // Оба сервиса должны пройти проверки готовности.
+            await compose.RunAsync([.. composePrefix, "up", "-d", "--wait", "postgres"], StartTimeout, _cancellationToken);
+            // Образы собираются явно: наличие и работоспособность целей Dockerfile проверяется здесь,
+            // поэтому повторная сборка при запуске стека не нужна.
+            await compose.RunAsync([.. composePrefix, "build", "maintenance", "host"], StartTimeout, _cancellationToken);
+            await compose.RunAsync([.. composePrefix, "run", "--rm", "-e",
+                $"ANKETAPARSER_Database__ConnectionString=Host=postgres;Database=anketa_parser;Username={DatabaseUser}",
+                "-e", $"ANKETAPARSER_Database__Password={processEnvironment["POSTGRES_PASSWORD"]}",
+                "maintenance", "storage", "provision"], ShortCommandTimeout, _cancellationToken);
+            await compose.RunAsync([.. composePrefix, "run", "--rm", "maintenance", "storage", "migrate"], ShortCommandTimeout, _cancellationToken);
+            // Оба сервиса должны пройти проверки готовности. Образы уже собраны выше,
+            // поэтому повторная сборка на этом шаге только дублировала бы работу.
             await compose.RunAsync(
-                [.. composePrefix, "up", "-d", "--build", "--wait", "--wait-timeout", "600"],
+                [.. composePrefix, "up", "-d", "--wait", "--wait-timeout", "600"],
                 StartTimeout,
                 _cancellationToken);
 
@@ -70,6 +80,18 @@ public sealed class ComposeStackSmokeTests
                 ShortCommandTimeout,
                 _cancellationToken);
             Assert.Equal("healthy", health);
+
+            // Копия должна появиться от фонового сервиса без ручной команды backup.
+            var automaticBackupCreated = false;
+            for (var attempt = 0; attempt < 15 && !automaticBackupCreated; attempt++)
+            {
+                var status = await compose.RunAsync([.. composePrefix, "run", "--rm", "maintenance", "storage", "backup-status"],
+                    ShortCommandTimeout, _cancellationToken);
+                using var backup = JsonDocument.Parse(status);
+                automaticBackupCreated = backup.RootElement.GetProperty("LastSuccess").ValueKind == JsonValueKind.String;
+                if (!automaticBackupCreated) await Task.Delay(TimeSpan.FromSeconds(1), _cancellationToken);
+            }
+            Assert.True(automaticBackupCreated, "Фоновый сервис должен создать резервную копию автоматически.");
 
             // Маркер хранится в одноразовой тестовой БД и не создаёт продуктовую схему.
             await RunPsqlAsync(

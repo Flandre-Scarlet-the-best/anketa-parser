@@ -68,9 +68,10 @@ or make their justified scope explicit.
 
 This repository is a C#/.NET infrastructure foundation for anketa-parser. The
 implemented surface is a long-running Generic Host, a diagnostic CLI, shared
-configuration/readiness logic and Docker/PostgreSQL infrastructure. Parsing,
-profiles, Telegram, LLM integrations, domain persistence and migrations are not
-implemented. Do not introduce fictitious domain entities or future frameworks.
+configuration/readiness logic, PostgreSQL product persistence, controlled EF Core
+migrations and backup maintenance. Source parsing, Telegram clients and LLM
+integrations are not implemented. See docs/persistence.md for storage contracts.
+Do not introduce fictitious domain entities or future frameworks.
 
 | Owner | Responsibility |
 | --- | --- |
@@ -111,7 +112,8 @@ diagnostics go to stderr. Preserve schema keys, machine status values and the
 exit-code contract in [ExitCodes.cs](src/AnketaParser.Core/ExitCodes.cs): success,
 internal error, invalid arguments, invalid configuration and unavailable required
 dependency have distinct codes. A running process does not prove readiness.
-The PostgreSQL probe performs `SELECT 1`; it does not create a domain schema.
+The PostgreSQL probe performs `SELECT 1` and checks migration compatibility; it
+does not apply migrations. Storage maintenance is an explicit CLI operation.
 An optional unconfigured dependency is skipped/degraded; an unavailable required
 dependency must not be reported healthy.
 

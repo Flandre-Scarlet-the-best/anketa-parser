@@ -7,6 +7,7 @@ using AnketaParser.Core.Diagnostics;
 using AnketaParser.Infrastructure;
 using AnketaParser.Infrastructure.Configuration;
 using AnketaParser.Infrastructure.Diagnostics;
+using AnketaParser.Infrastructure.Persistence;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -45,6 +46,8 @@ public static class CliApplication
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(stdout);
         ArgumentNullException.ThrowIfNull(stderr);
+        if (args is ["storage", ..])
+            return await StorageCommands.RunAsync(args, stdout, stderr, contentRootPath, cancellationToken).ConfigureAwait(false);
 
         var info = ApplicationInfo.ForEntryAssembly();
         var invocation = CommandLineParser.Parse(args);
@@ -67,8 +70,16 @@ public static class CliApplication
                 return ExitCodes.Success;
 
             case CliCommand.Doctor:
-                return await RunDoctorAsync(invocation, info, stdout, stderr, contentRootPath, cancellationToken)
-                    .ConfigureAwait(false);
+                try
+                {
+                    return await RunDoctorAsync(invocation, info, stdout, stderr, contentRootPath, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    await stderr.WriteLineAsync("Диагностика остановлена.").ConfigureAwait(false);
+                    return ExitCodes.UnexpectedError;
+                }
 
             default:
                 await stderr.WriteLineAsync($"Неподдерживаемая команда '{invocation.Command}'.").ConfigureAwait(false);
@@ -195,11 +206,21 @@ public static class CliApplication
             _ = provider.GetRequiredService<IOptions<HostSettings>>().Value;
             var databaseSettings = provider.GetRequiredService<IOptions<DatabaseSettings>>().Value;
             var diagnosticsSettings = provider.GetRequiredService<IOptions<DiagnosticsSettings>>().Value;
+            _ = provider.GetRequiredService<IOptions<BackupSettings>>().Value;
 
             var runner = provider.GetRequiredService<DiagnosticsRunner>();
-            var report = await runner
-                .RunAsync(sources, TimeSpan.FromSeconds(diagnosticsSettings.ProbeTimeoutSeconds), cancellationToken)
-                .ConfigureAwait(false);
+            DiagnosticReport report;
+            try
+            {
+                report = await runner
+                    .RunAsync(sources, TimeSpan.FromSeconds(diagnosticsSettings.ProbeTimeoutSeconds), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return await WriteCancelledDoctorAsync(
+                    info, sources, databaseSettings, invocation.IsMachineReadable, stdout, stderr).ConfigureAwait(false);
+            }
 
             var exitCode = report.Status == HealthStatus.Unhealthy
                 ? ExitCodes.DependencyUnavailable
@@ -207,9 +228,15 @@ public static class CliApplication
 
             var document = CreateDocument(info, report, databaseSettings, exitCode);
 
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return await WriteCancelledDoctorAsync(
+                    info, sources, databaseSettings, invocation.IsMachineReadable, stdout, stderr).ConfigureAwait(false);
+            }
+
             if (invocation.IsMachineReadable)
             {
-                await WriteDocumentAsync(document, stdout, cancellationToken).ConfigureAwait(false);
+                await WriteDocumentAsync(document, stdout, CancellationToken.None).ConfigureAwait(false);
             }
             else
             {
@@ -257,7 +284,7 @@ public static class CliApplication
                     Errors = [.. exception.Failures],
                 };
 
-                await WriteDocumentAsync(document, stdout, cancellationToken).ConfigureAwait(false);
+                await WriteDocumentAsync(document, stdout, CancellationToken.None).ConfigureAwait(false);
             }
 
             return exitCode;
@@ -269,6 +296,52 @@ public static class CliApplication
                 .ConfigureAwait(false);
             return ExitCodes.UnexpectedError;
         }
+    }
+
+    private static async Task<int> WriteCancelledDoctorAsync(
+        ApplicationInfo info,
+        IReadOnlyList<ConfigurationSourceInfo> sources,
+        DatabaseSettings databaseSettings,
+        bool machineReadable,
+        TextWriter stdout,
+        TextWriter stderr)
+    {
+        const int exitCode = ExitCodes.UnexpectedError;
+        const string message = "Диагностика остановлена.";
+        await stderr.WriteLineAsync(message).ConfigureAwait(false);
+        if (machineReadable)
+        {
+            var document = new DiagnosticsDocument
+            {
+                Tool = info.ProductName,
+                ToolVersion = info.Version,
+                Command = "doctor",
+                GeneratedAtUtc = DateTimeOffset.UtcNow,
+                Status = "unhealthy",
+                ExitCode = exitCode,
+                Configuration = new ConfigurationDocument
+                {
+                    Valid = true,
+                    Sources = sources.Select(static source => new ConfigurationSourceDocument
+                    {
+                        Name = source.Name,
+                        Kind = source.Kind,
+                    }).ToArray(),
+                    Database = new DatabaseDocument
+                    {
+                        Configured = databaseSettings.IsConfigured,
+                        Required = databaseSettings.Required,
+                        Target = ConnectionStringDescriptor.Describe(databaseSettings.ConnectionString),
+                        ConnectTimeoutSeconds = databaseSettings.ConnectTimeoutSeconds,
+                    },
+                },
+                Probes = [],
+                Errors = [message],
+            };
+            await WriteDocumentAsync(document, stdout, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        return exitCode;
     }
 
     private static DiagnosticsDocument CreateDocument(

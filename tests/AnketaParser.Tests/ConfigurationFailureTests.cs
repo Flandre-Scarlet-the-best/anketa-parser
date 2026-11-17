@@ -22,6 +22,8 @@ public sealed class ConfigurationFailureTests
     [InlineData("Host", "int", "ANKETAPARSER_Host__ShutdownTimeoutSeconds")]
     [InlineData("Cli", "int", "ANKETAPARSER_Database__ConnectTimeoutSeconds")]
     [InlineData("Host", "int", "ANKETAPARSER_Database__ConnectTimeoutSeconds")]
+    [InlineData("Cli", "int", "ANKETAPARSER_Backup__TimeoutSeconds")]
+    [InlineData("Host", "int", "ANKETAPARSER_Backup__TimeoutSeconds")]
     public async Task InvalidInputsHaveSafeConfigurationExitCode(string application, string kind, string variable)
     {
         var json = kind == "json" ? $"{{\"{Secret}\": invalid" : "{}";

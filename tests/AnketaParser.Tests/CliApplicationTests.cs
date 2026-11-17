@@ -7,9 +7,74 @@ namespace AnketaParser.Tests;
 
 public sealed class CliApplicationTests
 {
+    [Fact]
+    public async Task StorageHelpBypassesInvalidConfigurationAndUnknownCommandIsUsageError()
+    {
+        using var root = new Support.TemporaryContentRoot("{}");
+        foreach (var json in new[] { "{}", "{неверный JSON}", """{"Database":{"ConnectionString":"invalid"},"Backup":{"Directory":null,"TimeoutSeconds":0}}""" })
+        {
+            await File.WriteAllTextAsync(Path.Combine(root.Path, "appsettings.json"), json, TestContext.Current.CancellationToken);
+            var result = await RunAsync(["storage", "help"], root.Path);
+            Assert.Equal(ExitCodes.Success, result.ExitCode);
+            Assert.Contains("restore-empty", result.Stdout, StringComparison.Ordinal);
+            Assert.Contains("backup-daemon", result.Stdout, StringComparison.Ordinal);
+            Assert.Empty(result.Stderr);
+            Assert.Equal(ExitCodes.InvalidUsage, (await RunAsync(["storage", "unknown"], root.Path)).ExitCode);
+        }
+    }
+
+    [Theory]
+    [InlineData("Host", "ShutdownTimeoutSeconds")]
+    [InlineData("Database", "ConnectTimeoutSeconds")]
+    [InlineData("Diagnostics", "ProbeTimeoutSeconds")]
+    [InlineData("Backup", "TimeoutSeconds")]
+    public async Task StorageUsesSharedTypedValidators(string section, string key)
+    {
+        using var root = new Support.TemporaryContentRoot($$"""
+            { "{{section}}": { "{{key}}": 0 }, "Backup": { "Directory": "unused" } }
+            """);
+        var result = await RunAsync(["storage", "backup-list"], root.Path);
+        Assert.Equal(ExitCodes.InvalidConfiguration, result.ExitCode);
+        Assert.Empty(result.Stdout);
+    }
+
+    [Fact]
+    public async Task StorageCancellationIsFailureExceptForBackupDaemonShutdown()
+    {
+        using var root = new Support.TemporaryContentRoot("""
+            { "Backup": { "Directory": "unused" } }
+            """);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var operation = await RunAsync(["storage", "backup"], root.Path, cancellation.Token);
+        Assert.Equal(ExitCodes.UnexpectedError, operation.ExitCode);
+        Assert.Empty(operation.Stdout);
+        Assert.Contains("остановлена", operation.Stderr, StringComparison.Ordinal);
+
+        var daemon = await RunAsync(["storage", "backup-daemon"], root.Path, cancellation.Token);
+        Assert.Equal(ExitCodes.Success, daemon.ExitCode);
+        Assert.Empty(daemon.Stdout);
+    }
+
+    [Theory]
+    [InlineData("backup-verify", "../outside.dump")]
+    [InlineData("restore-empty", "../outside.dump")]
+    [InlineData("backup-verify", "outside.txt")]
+    public async Task StorageInvalidArchiveIsUsageError(string command, string archive)
+    {
+        using var root = new Support.TemporaryContentRoot("""
+            { "Backup": { "Directory": "unused" } }
+            """);
+        var result = await RunAsync(["storage", command, archive], root.Path);
+        Assert.Equal(ExitCodes.InvalidUsage, result.ExitCode);
+        Assert.Empty(result.Stdout);
+    }
+
     private static async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(
         string[] args,
-        string? contentRootPath = null)
+        string? contentRootPath = null,
+        CancellationToken? cancellationToken = null)
     {
         using var stdout = new StringWriter();
         using var stderr = new StringWriter();
@@ -18,7 +83,7 @@ public sealed class CliApplicationTests
             args,
             stdout,
             stderr,
-            TestContext.Current.CancellationToken,
+            cancellationToken ?? TestContext.Current.CancellationToken,
             contentRootPath);
 
         return (exitCode, stdout.ToString(), stderr.ToString());
@@ -165,6 +230,41 @@ public sealed class CliApplicationTests
         Assert.Contains("проверка postgres", result.Stdout, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task CancelledDoctorReturnsFailureAndOneJsonDocument()
+    {
+        using var root = new Support.TemporaryContentRoot("{}");
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var result = await RunAsync(["doctor", "--json"], root.Path, cancellation.Token);
+
+        Assert.Equal(ExitCodes.UnexpectedError, result.ExitCode);
+        using var document = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("doctor", document.RootElement.GetProperty("command").GetString());
+        Assert.Equal("unhealthy", document.RootElement.GetProperty("status").GetString());
+        Assert.Equal(ExitCodes.UnexpectedError, document.RootElement.GetProperty("exitCode").GetInt32());
+        Assert.Equal("Диагностика остановлена.", Assert.Single(document.RootElement.GetProperty("errors").EnumerateArray()).GetString());
+        Assert.Contains("Диагностика остановлена.", result.Stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DoctorCompletesJsonPublicationWhenCancellationArrivesAfterWriting()
+    {
+        using var root = new Support.TemporaryContentRoot("{}");
+        using var cancellation = new CancellationTokenSource();
+        using var stdout = new CancellingWriter(cancellation);
+        using var stderr = new StringWriter();
+
+        var exitCode = await CliApplication.RunAsync(
+            ["doctor", "--json"], stdout, stderr, cancellation.Token, root.Path);
+
+        Assert.Equal(ExitCodes.Success, exitCode);
+        using var document = JsonDocument.Parse(stdout.ToString());
+        Assert.Equal(ExitCodes.Success, document.RootElement.GetProperty("exitCode").GetInt32());
+        Assert.Equal("degraded", document.RootElement.GetProperty("status").GetString());
+    }
+
     [Theory]
     [InlineData("doctor", "version")]
     [InlineData("version", "doctor")]
@@ -238,5 +338,15 @@ public sealed class CliApplicationTests
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("Команды:", result.Stdout, StringComparison.Ordinal);
         Assert.Empty(result.Stderr);
+    }
+
+    private sealed class CancellingWriter(CancellationTokenSource cancellation) : StringWriter
+    {
+        public override Task WriteLineAsync(string? value)
+        {
+            var write = base.WriteLineAsync(value);
+            cancellation.Cancel();
+            return write;
+        }
     }
 }
