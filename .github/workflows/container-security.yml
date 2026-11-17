@@ -168,7 +168,7 @@ jobs:
               failed=1
               continue
             fi
-            jq -r '.Results[] | . as $r | .Vulnerabilities[]? | [$r.Class, $r.Type, .VulnerabilityID, .PkgName, .InstalledVersion, (.FixedVersion // "нет исправления"), (.Status // "неизвестно"), .Severity] | @tsv' "$report"
+            jq -r '.Results[] | . as $r | .Vulnerabilities[]? | [$r.Class, $r.Type, $r.Target, .VulnerabilityID, .PkgName, .InstalledVersion, (.FixedVersion // "нет исправления"), (.Status // "неизвестно"), .Severity, (.DataSource.Name // "источник не указан")] | @tsv' "$report"
             [[ "$status" == 0 ]] || failed=1
           done
           missing="anketa-security-missing:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"

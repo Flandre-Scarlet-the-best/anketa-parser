@@ -56,7 +56,7 @@ jobs:
           awk 'BEGIN { src=0; tests=0 } /(^|\/)src\/.*\.cs$/ { src++ } /(^|\/)tests\/.*\.cs$/ { tests++ } END { printf "C#: src=%d tests=%d\n", src, tests; exit !(src > 0 && tests > 0) }' "$RUNNER_TEMP/codeql-csharp-sources.txt"
           git ls-files 'src/**/*.cs' 'tests/**/*.cs' | LC_ALL=C sort > "$RUNNER_TEMP/expected-sources.txt"
           test -s "$RUNNER_TEMP/expected-sources.txt"
-          LC_ALL=C sort "$RUNNER_TEMP/codeql-csharp-sources.txt" > "$RUNNER_TEMP/extracted-sources.txt"
+          awk -v root="${GITHUB_WORKSPACE#/}/" 'index($0, root) == 1 { print substr($0, length(root) + 1) }' "$RUNNER_TEMP/codeql-csharp-sources.txt" | LC_ALL=C sort > "$RUNNER_TEMP/extracted-sources.txt"
           comm -23 "$RUNNER_TEMP/expected-sources.txt" "$RUNNER_TEMP/extracted-sources.txt" > "$RUNNER_TEMP/missing-sources.txt"
           if [[ -s "$RUNNER_TEMP/missing-sources.txt" ]]; then
             echo 'В базе C# отсутствуют отслеживаемые исходники:' >&2
@@ -107,7 +107,7 @@ jobs:
           awk 'BEGIN { scripts=0 } /(^|\/)\.github\/scripts\/.*\.py$/ { scripts++ } END { printf "Python: scripts=%d\n", scripts; exit !(scripts > 0) }' "$RUNNER_TEMP/codeql-python-sources.txt"
           git ls-files '.github/scripts/*.py' | LC_ALL=C sort > "$RUNNER_TEMP/expected-sources.txt"
           test -s "$RUNNER_TEMP/expected-sources.txt"
-          LC_ALL=C sort "$RUNNER_TEMP/codeql-python-sources.txt" > "$RUNNER_TEMP/extracted-sources.txt"
+          awk -v root="${GITHUB_WORKSPACE#/}/" 'index($0, root) == 1 { print substr($0, length(root) + 1) }' "$RUNNER_TEMP/codeql-python-sources.txt" | LC_ALL=C sort > "$RUNNER_TEMP/extracted-sources.txt"
           comm -23 "$RUNNER_TEMP/expected-sources.txt" "$RUNNER_TEMP/extracted-sources.txt" > "$RUNNER_TEMP/missing-sources.txt"
           if [[ -s "$RUNNER_TEMP/missing-sources.txt" ]]; then
             echo 'В базе Python отсутствуют отслеживаемые исходники:' >&2
