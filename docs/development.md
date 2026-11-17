@@ -98,8 +98,13 @@ python3 -m venv .venv
 официальных GitHub Releases. Версии, URL архивов Linux x86_64 и ожидаемые SHA256
 закреплены непосредственно в CI; архивы проверяются до распаковки. Бинарные файлы
 устанавливаются в `RUNNER_TEMP`, без изменения Python/.NET окружения.
-Задание рассчитано на hosted `ubuntu-24.04` x86_64 с Bash, curl, tar и sha256sum.
+Задание рассчитано на hosted `ubuntu-26.04` x86_64 с Bash, curl, tar и sha256sum.
 ShellCheck установлен явно и подключён к actionlint через `-shellcheck`.
+Все задания закреплены на `ubuntu-26.04`. В
+[actionlint.yaml](../.github/actionlint.yaml) эта официальная hosted-метка
+добавлена явно, поскольку справочник actionlint `1.7.12` её ещё не содержит.
+Дополнение удаляется после перехода на версию, распознающую метку самостоятельно;
+остальные проверки runner labels не отключаются.
 
 Для локального запуска скачайте архивы своей платформы из
 [actionlint Releases](https://github.com/rhysd/actionlint/releases/tag/v1.7.12),

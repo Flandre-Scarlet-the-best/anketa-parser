@@ -1,0 +1,9 @@
+# GitHub-hosted метка подтверждена actions/runner-images:
+# https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2604-Readme.md
+# actionlint 1.7.12 ещё не включает её в справочник. Удалить дополнение,
+# когда закреплённая версия начнёт распознавать метку без конфигурации.
+# Ключ self-hosted-runner — API actionlint для дополнительных меток,
+# он не переводит задания на self-hosted runner.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
