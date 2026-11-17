@@ -12,7 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import override
+from typing import cast, override
 
 from check_osv import (
     CHECK_ERROR_CODE,
@@ -25,6 +25,8 @@ from check_osv import (
     inventory,
     parse_lockfile,
     parse_requirements,
+    run_scanner,
+    scanner_command,
     vulnerabilities,
 )
 
@@ -196,38 +198,50 @@ class InventoryTests(RepositoryCase):
             _ = inventory(self.root)
 
 
+def report_packages(source: Source) -> list[dict[str, object]]:
+    """Синтетический полный отчёт; это проверка валидатора, а не приёмка сканера."""
+    return [
+        {
+            "source": {"path": source.path},
+            "packages": [
+                {
+                    "package": {
+                        "name": name,
+                        "version": version,
+                        "ecosystem": "PyPI" if source.ecosystem == "pip" else "NuGet",
+                    }
+                }
+                for name, version in sorted(source.packages)
+            ],
+        }
+    ]
+
+
 class ExitCodeTests(RepositoryCase):
     def test_clean_source_passes(self) -> None:
-        source = self.source()
-        self.run_plan({source.lockfile_argument(): {"code": 0, "results": []}})
-        self.assertEqual(check_source(self.binary(), source, self.root), [])
-
-    def test_findings_are_reported_without_absolute_paths(self) -> None:
         source = self.source()
         self.run_plan(
             {
                 source.lockfile_argument(): {
-                    "code": 1,
-                    "results": [
-                        {
-                            "source": {
-                                "path": "/home/runner/work/repo/src/Lib/packages.lock.json"
-                            },
-                            "packages": [
-                                {
-                                    "package": {
-                                        "name": "Transitive.Package",
-                                        "version": "2.0.0",
-                                        "ecosystem": "NuGet",
-                                    },
-                                    "vulnerabilities": [ADVISORY],
-                                }
-                            ],
-                        }
-                    ],
+                    "code": 0,
+                    "results": report_packages(source),
                 }
             }
         )
+        self.assertEqual(check_source(self.binary(), source, self.root), [])
+
+    def test_findings_are_reported_without_absolute_paths(self) -> None:
+        source = self.source()
+        results = report_packages(source)
+        packages = results[0]["packages"]
+        packages = cast(list[dict[str, object]], packages)
+        for entry in packages:
+            if (
+                cast(dict[str, object], entry["package"])["name"]
+                == "Transitive.Package"
+            ):
+                entry["vulnerabilities"] = [ADVISORY]
+        self.run_plan({source.lockfile_argument(): {"code": 1, "results": results}})
         findings = check_source(self.binary(), source, self.root)
         self.assertEqual(
             findings,
@@ -236,6 +250,61 @@ class ExitCodeTests(RepositoryCase):
             ],
         )
         self.assertNotIn("/home/runner", findings[0])
+
+    def test_partial_or_unknown_inventory_cannot_prove_full_coverage(self) -> None:
+        source = self.source()
+        self.assertIn("--all-packages", scanner_command(self.binary(), source))
+        complete = report_packages(source)
+        for results in (
+            [],
+            [
+                {
+                    "source": {"path": source.path},
+                    "packages": [
+                        {
+                            "package": {
+                                "name": "Direct.Package",
+                                "version": "1.0.0",
+                                "ecosystem": "NuGet",
+                            }
+                        }
+                    ],
+                }
+            ],
+            [
+                {
+                    "source": {"path": "other/" + source.path},
+                    "packages": complete[0]["packages"],
+                }
+            ],
+        ):
+            self.run_plan({source.lockfile_argument(): {"code": 0, "results": results}})
+            with self.subTest(results=results), self.assertRaises(CoverageError):
+                _ = check_source(self.binary(), source, self.root)
+
+    def test_wrong_version_or_ecosystem_cannot_replace_expected_package(self) -> None:
+        source = self.source()
+        for field, value in (
+            ("version", "9"),
+            ("ecosystem", "PyPI"),
+            ("name", "other"),
+        ):
+            results = report_packages(source)
+            packages = results[0]["packages"]
+            packages = cast(list[dict[str, object]], packages)
+            cast(dict[str, object], packages[0]["package"])[field] = value
+            self.run_plan({source.lockfile_argument(): {"code": 0, "results": results}})
+            with self.subTest(field=field), self.assertRaises(CoverageError):
+                _ = check_source(self.binary(), source, self.root)
+
+    def test_malformed_package_and_advisory_lists_are_rejected(self) -> None:
+        source = self.source()
+        for broken in ("not-a-list", {"id": "GHSA-aaaa-bbbb-cccc"}):
+            results = report_packages(source)
+            packages = cast(list[dict[str, object]], results[0]["packages"])
+            packages[0]["vulnerabilities"] = broken
+            with self.subTest(broken=broken), self.assertRaises(CoverageError):
+                _ = vulnerabilities(json.dumps({"results": results}), source, self.root)
 
     def test_scanner_error_and_empty_result_never_pass(self) -> None:
         source = self.source()
@@ -311,8 +380,24 @@ class ExitCodeTests(RepositoryCase):
         self.stage()
         self.run_plan(
             {
-                "src/Lib/packages.lock.json": {"code": 0, "results": []},
-                "requirements.txt:tools/requirements.txt": {"code": 0, "results": []},
+                "src/Lib/packages.lock.json": {
+                    "code": 0,
+                    "results": report_packages(
+                        parse_lockfile(
+                            self.root / "src/Lib/packages.lock.json",
+                            "src/Lib/packages.lock.json",
+                        )
+                    ),
+                },
+                "requirements.txt:tools/requirements.txt": {
+                    "code": 0,
+                    "results": report_packages(
+                        parse_requirements(
+                            self.root / "tools/requirements.txt",
+                            "tools/requirements.txt",
+                        )
+                    ),
+                },
                 "src/Core/packages.lock.json": {"code": 128, "results": []},
             }
         )
@@ -331,3 +416,38 @@ class ExitCodeTests(RepositoryCase):
         self.assertNotEqual(CHECK_FINDINGS_CODE, CLEAN_EXIT_CODE)
         self.assertNotEqual(CHECK_ERROR_CODE, CHECK_FINDINGS_CODE)
         self.assertNotEqual(CHECK_ERROR_CODE, CLEAN_EXIT_CODE)
+
+
+@unittest.skipUnless(
+    os.environ.get("OSV_SCANNER_BINARY"),
+    "Нужен закреплённый OSV_SCANNER_BINARY для интеграционной проверки",
+)
+class ScannerIntegrationTests(unittest.TestCase):
+    def test_real_scanner_inventory_and_partial_report_rejection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "packages.lock.json"
+            _ = path.write_text(LOCK_TEMPLATE, encoding="utf-8")
+            source = parse_lockfile(path, path.name)
+            binary = [os.environ["OSV_SCANNER_BINARY"]]
+            code, output = run_scanner(binary, source, root)
+            self.assertIn(code, (0, 1), output)
+            _ = vulnerabilities(output, source, root)
+            data = cast(dict[str, list[dict[str, object]]], json.loads(output))
+            packages = cast(list[object], data["results"][0]["packages"])
+            self.assertTrue(
+                any(
+                    cast(dict[str, dict[str, object]], entry)["package"]["version"]
+                    == ""
+                    for entry in packages
+                )
+            )
+            # Удаляем реальную запись пакета, а не локальную ссылку Project.
+            index = next(
+                index
+                for index, entry in enumerate(packages)
+                if cast(dict[str, dict[str, object]], entry)["package"]["version"]
+            )
+            del packages[index]
+            with self.assertRaises(CoverageError):
+                _ = vulnerabilities(json.dumps(data), source, root)

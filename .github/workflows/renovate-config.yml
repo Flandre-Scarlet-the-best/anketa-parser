@@ -1,6 +1,6 @@
 name: Политика Renovate
 
-# Renovate обнаруживает manifests по всему дереву, включая новые менеджеры.
+# Renovate обнаруживает манифесты по всему дереву, включая новые менеджеры.
 # Поэтому фильтра paths нет: новый файл не должен обходить проверку.
 on:
   pull_request:
@@ -31,11 +31,11 @@ jobs:
         with:
           persist-credentials: false
 
-      # Полное Git tree учитывает пути, удаления, новые manifests, настройки
-      # извлечения и сам workflow; SHA коммита не мешает повторному hit.
-      # Реестры и внешние presets меняются: proof годится только в тот же
+      # Полное дерево Git учитывает пути, удаления, новые манифесты, настройки
+      # извлечения и сам рабочий процесс; SHA коммита не мешает повторному попаданию в кэш.
+      # Реестры и внешние наборы настроек меняются: подтверждение годится только в тот же
       # UTC-день. Это проверка политики, а не свежий аудит уязвимостей.
-      - name: Определить входы и срок действия proof
+      - name: Определить входы и срок действия подтверждения
         id: inputs
         shell: bash
         run: |
@@ -44,8 +44,8 @@ jobs:
           echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
 
       # Только точное совпадение и lookup-only: содержимое кэша не исполняется.
-      # Cache action сохраняет marker в post только при success() всего job.
-      - name: Найти proof полного успешного запуска
+      # actions/cache сохраняет отметку завершающим обработчиком только при успехе задания.
+      - name: Найти подтверждение полного успешного запуска
         id: proof
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -53,9 +53,9 @@ jobs:
           key: renovate-proof-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.inputs.outputs.day }}-${{ steps.inputs.outputs.tree }}
           lookup-only: true
 
-      - name: Использовать proof идентичного дерева за текущий UTC-день
+      - name: Использовать подтверждение идентичного дерева за текущий UTC-день
         if: steps.proof.outputs.cache-hit == 'true' && github.event_name != 'workflow_dispatch'
-        run: echo 'Полная проверка политики уже прошла; для свежего lookup запустите workflow_dispatch'
+        run: echo 'Полная проверка политики уже прошла; для свежего поиска обновлений запустите workflow_dispatch'
 
       - name: Проверить версию закреплённого образа
         if: steps.proof.outputs.cache-hit != 'true' || github.event_name == 'workflow_dispatch'
@@ -94,10 +94,11 @@ jobs:
             --entrypoint sh "$RENOVATE_IMAGE" \
             -c "python3 -m unittest discover -s .github/scripts -p 'test_check_renovate.py' -v"
 
-      - name: Создать marker только после полного PASS
+      - name: Создать отметку только после успеха всех обязательных проверок
+        id: verified
         if: steps.proof.outputs.cache-hit != 'true' || github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/renovate-proof"
-          printf 'version, strict, extract, fixtures, negative control, unit: PASS\n' > "$RUNNER_TEMP/renovate-proof/verified"
+          printf 'Все обязательные проверки пройдены\n' > "$RUNNER_TEMP/renovate-proof/verified"

@@ -2,13 +2,14 @@
 """Проверка политики Renovate официальным движком: валидатор, извлечение, ветки.
 
 Три режима доказывают разные вещи: `validate` — конфигурация проходит строгий
-валидатор; `extract` — реальное извлечение покрывает отслеживаемые manifests с
+валидатор; `extract` — реальное извлечение покрывает отслеживаемые манифесты с
 теми же версиями, что объявлены в них; `fixtures` — независимые зависимости
 получают раздельные ветки, одна зависимость в нескольких файлах остаётся одной
 веткой, а отрицательный контроль подтверждает, что проверка различает группировку.
 """
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -19,26 +20,22 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
+from xml.etree import ElementTree
+
+import yaml
 
 # Dry-run в режиме local поддерживает только extract и lookup: full недоступен.
 EXTRACT_MODE = "extract"
 LOOKUP_MODE = "lookup"
 EXTRACT_MESSAGE = "Extracted dependencies"
 LOOKUP_MESSAGE = "packageFiles with updates"
-NUGET_VERSION = re.compile(
-    r'<PackageVersion\s+Include="(?P<name>[^"]+)"\s+Version="(?P<version>[^"]+)"'
-)
-PACKAGE_REFERENCE = re.compile(r'<PackageReference\s+Include="(?P<name>[^"]+)"')
 REQUIREMENT = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*(?P<version>[^\s;]+)"
 )
-DOCKER_FROM = re.compile(r"^\s*FROM\s+(?P<image>\S+)", re.MULTILINE)
 DOCKER_ARG = re.compile(r"^ARG\s+(?P<name>\w+)=(?P<image>\S+)", re.MULTILINE)
-COMPOSE_IMAGE = re.compile(r"^\s*image:\s*(?P<image>\S+)\s*$", re.MULTILINE)
 ACTION_USE = re.compile(
     r"uses:\s*(?P<action>[^@\s]+)@(?P<ref>\S+)(?:\s+#\s*(?P<comment>v?\S+))?"
 )
-PYTHON_INPUT = re.compile(r"python-version:\s*'(?P<version>[^']+)'")
 MAX_DIAGNOSTIC = 2000
 
 
@@ -185,180 +182,359 @@ def read_text(path: Path) -> str:
         raise CoverageError(f"Не удалось прочитать {path.name}: {error}") from error
 
 
-def expected_nuget(root: Path) -> dict[str, str]:
-    """Версии из central package management, global.json и dotnet-tools.json."""
-    expected: dict[str, str] = {}
-    central = root / "Directory.Packages.props"
-    if central.is_file():
-        for match in NUGET_VERSION.finditer(read_text(central)):
-            expected[match.group("name")] = match.group("version")
-    global_json = root / "global.json"
-    if global_json.is_file():
-        data = cast(object, json.loads(read_text(global_json)))
-        version = (
-            cast(dict[str, object], cast(dict[str, object], data).get("sdk", {})).get(
-                "version"
-            )
-            if isinstance(data, dict)
-            else None
+@dataclass(frozen=True, order=True)
+class Declaration:
+    """Идентичность объявления сохраняет менеджер, источник, версию и закрепление."""
+
+    manager: str
+    path: str
+    name: str
+    version: str
+    digest: str = ""
+
+
+def matched_sources(output: str) -> dict[str, list[str]]:
+    """Файлы из стадии обнаружения движка, до извлечения зависимостей.
+
+    TRACE содержит полный список, DEBUG — только число. Отсутствующий или
+    неполный список не позволяет доказать охват и блокирует проверку.
+    """
+    result: dict[str, list[str]] = {}
+    counts: dict[str, int] = {}
+    for event in events(output):
+        match = re.fullmatch(
+            r"Matched (\d+) file\(s\) for manager ([\w-]+)(?:: (.*))?",
+            str(event.get("msg", "")),
         )
-        if isinstance(version, str):
-            expected["dotnet-sdk"] = version
-    tools = root / ".config/dotnet-tools.json"
-    if tools.is_file():
-        data = cast(object, json.loads(read_text(tools)))
-        entries = (
-            cast(dict[str, object], data).get("tools")
-            if isinstance(data, dict)
-            else None
-        )
-        if isinstance(entries, dict):
-            for name, details in cast(dict[str, object], entries).items():
-                version = (
-                    cast(dict[str, object], details).get("version")
-                    if isinstance(details, dict)
-                    else None
+        if not match:
+            continue
+        count, manager, names = match.groups()
+        counts[manager] = int(count)
+        if names is not None:
+            files = names.split(", ")
+            if len(files) != int(count):
+                raise CoverageError(
+                    f"{manager}: список обнаруженных файлов неоднозначен"
                 )
-                if isinstance(version, str):
-                    expected[name] = version
-    return expected
+            result[manager] = files
+    if not counts or any(
+        len(result.get(manager, [])) != count for manager, count in counts.items()
+    ):
+        raise CoverageError(
+            "Нет полного списка обнаруженных манифестов; требуется LOG_LEVEL=trace"
+        )
+    return result
 
 
-def expected_pip(root: Path) -> dict[str, str]:
-    """Точные версии из файла требований."""
-    path = root / ".github/scripts/requirements.txt"
-    if not path.is_file():
-        return {}
-    expected: dict[str, str] = {}
-    for line in read_text(path).splitlines():
-        content = line.split(" #", 1)[0].strip()
-        match = REQUIREMENT.fullmatch(content)
-        if match:
-            expected[match.group("name")] = match.group("version")
-    return expected
+def source_inventory(root: Path, output: str) -> dict[str, list[str]]:
+    """Независимый список Git по действующим шаблонам обнаружения движка.
+
+    Шаблоны берутся до извлечения из закреплённого Renovate; перечень путей
+    репозитория не зашивается в проверку. Неизвестный синтаксис не игнорируется.
+    """
+    result = subprocess.run(  # noqa: S603
+        ["git", "ls-files", "-z"],  # noqa: S607
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if result.returncode:
+        raise CoverageError("Git не вернул список отслеживаемых файлов")
+    files = [name for name in result.stdout.split("\0") if name]
+    patterns: dict[str, list[str]] = {}
+    readers = {
+        "nuget",
+        "pip_requirements",
+        "dockerfile",
+        "docker-compose",
+        "github-actions",
+    }
+    for event in events(output):
+        match = re.fullmatch(
+            r"Using file pattern: (.+) for manager ([\w-]+)", str(event.get("msg", ""))
+        )
+        if match and match[2] in readers:
+            patterns.setdefault(match[2], []).append(match[1])
+    if set(patterns) != readers:
+        raise CoverageError(
+            "Нет полного набора шаблонов обнаружения движка; требуется LOG_LEVEL=trace"
+        )
+    inventory: dict[str, list[str]] = {}
+    for manager, entries in patterns.items():
+        selected: set[str] = set()
+        for pattern in entries:
+            if pattern.startswith("/") and pattern.endswith("/"):
+                expression = re.compile(pattern[1:-1])
+                selected.update(name for name in files if expression.search(name))
+            elif not any(character in pattern for character in "{}![]"):
+                selected.update(
+                    name
+                    for name in files
+                    if fnmatch.fnmatchcase(name, pattern)
+                    or (
+                        pattern.startswith("**/")
+                        and fnmatch.fnmatchcase(name, pattern[3:])
+                    )
+                )
+            else:
+                raise CoverageError(
+                    f"{manager}: шаблон требует независимой поддержки: {pattern}"
+                )
+        inventory[manager] = sorted(selected)
+    return inventory
 
 
-def image_name(image: str) -> str:
-    """Имя образа без тега и digest."""
-    return image.split("@", 1)[0].rsplit(":", 1)[0]
-
-
-def expected_docker(root: Path) -> dict[str, str]:
-    """Внешние образы Dockerfile и Compose с текущим тегом."""
-    expected: dict[str, str] = {}
-    dockerfile = root / "Dockerfile"
-    if dockerfile.is_file():
-        content = read_text(dockerfile)
-        for match in DOCKER_FROM.finditer(content):
-            image = match.group("image")
-            if image.startswith("$"):
+def expected_nuget(root: Path, paths: list[str]) -> set[Declaration]:
+    """Объявления во всех обнаруженных проектах, props, targets и файлах SDK/утилит."""
+    found: set[Declaration] = set()
+    for path in paths:
+        text = read_text(root / path)
+        if Path(path).name in ("global.json", "dotnet-tools.json"):
+            data = cast(dict[str, object], json.loads(text))
+            if Path(path).name == "global.json":
+                sdk = cast(dict[str, object], data.get("sdk", {}))
+                if isinstance(sdk.get("version"), str):
+                    found.add(
+                        Declaration("nuget", path, "dotnet-sdk", str(sdk["version"]))
+                    )
+            else:
+                for name, item in cast(
+                    dict[str, dict[str, str]], data.get("tools", {})
+                ).items():
+                    found.add(Declaration("nuget", path, name, item["version"]))
+            continue
+        tree = ElementTree.fromstring(text)  # noqa: S314
+        for item in tree.iter():
+            if item.tag not in (
+                "PackageVersion",
+                "PackageReference",
+                "GlobalPackageReference",
+            ):
                 continue
-            expected[image_name(image)] = image.split(":")[-1]
-        for match in DOCKER_ARG.finditer(content):
-            image = match.group("image")
-            _ = expected.setdefault(image_name(image), image.split(":")[-1])
-    compose = root / "compose.yaml"
-    if compose.is_file():
-        for match in COMPOSE_IMAGE.finditer(read_text(compose)):
-            image = match.group("image")
-            if image.startswith("$"):
-                continue
-            # Образы с тегом local собираются из репозитория: Renovate их не
-            # обновляет, поэтому они не входят в ожидаемое извлечение.
-            if image.split(":")[-1] == "local":
-                continue
-            _ = expected.setdefault(image_name(image), image.split(":")[-1])
-    return expected
+            name = item.get("Include") or item.get("Update")
+            if not name:
+                raise CoverageError(f"{path}: не определено имя пакета")
+            version = (
+                item.get("VersionOverride")
+                or item.get("Version")
+                or item.findtext("Version")
+                or ""
+            )
+            if "$(" in name or "$(" in version:
+                raise CoverageError(
+                    f"{path}: вычисляемое объявление {name} требует отдельного доказательства версии"
+                )
+            found.add(Declaration("nuget", path, name, version))
+    return found
 
 
-def expected_actions(root: Path) -> dict[str, str]:
-    """Actions и версии Python из рабочих процессов."""
-    expected: dict[str, str] = {}
-    directory = root / ".github/workflows"
-    if not directory.is_dir():
-        return expected
-    for path in sorted(directory.glob("*.y*ml")):
-        content = read_text(path)
+def expected_pip(root: Path, paths: list[str]) -> set[Declaration]:
+    """Каждая точная версия каждого обнаруженного файла требований."""
+    found: set[Declaration] = set()
+    for path in paths:
+        for line in read_text(root / path).splitlines():
+            content = line.split(" #", 1)[0].strip()
+            if not content or content.startswith("#"):
+                continue
+            if content.startswith(("-r ", "-c ", "--requirement ", "--constraint ")):
+                # Включённый файл также должен присутствовать в обнаружении движка.
+                included = (root / path).parent / content.split(maxsplit=1)[1]
+                if (
+                    included.resolve().relative_to(root.resolve()).as_posix()
+                    not in paths
+                ):
+                    raise CoverageError(
+                        f"{path}: включённый файл не охвачен: {content}"
+                    )
+                continue
+            match = REQUIREMENT.fullmatch(content)
+            if not match:
+                raise CoverageError(
+                    f"{path}: формат требования не позволяет независимо сверить версию: {content}"
+                )
+            found.add(
+                Declaration(
+                    "pip_requirements",
+                    path,
+                    match.group("name"),
+                    "==" + match.group("version"),
+                )
+            )
+    return found
+
+
+def image_declaration(manager: str, path: str, image: str) -> Declaration:
+    """Тег и digest образа сверяются независимо, включая адрес реестра с портом."""
+    image, _, digest = image.partition("@")
+    name, separator, version = image.rpartition(":")
+    if not separator or "/" in version:
+        name, version = image, ""
+    return Declaration(manager, path, name, version, digest)
+
+
+def expected_docker(root: Path, sources: dict[str, list[str]]) -> set[Declaration]:
+    """Внешние образы всех обнаруженных Dockerfile и Compose."""
+    found: set[Declaration] = set()
+    for manager in ("dockerfile", "docker-compose"):
+        for path in sources.get(manager, []):
+            content = read_text(root / path)
+            if manager == "docker-compose":
+                data = cast(dict[str, object], yaml.safe_load(content))
+                services = cast(dict[str, dict[str, object]], data.get("services", {}))
+                for service in services.values():
+                    image = service.get("image")
+                    # Compose с build описывает локальную сборку, а не внешний образ.
+                    if isinstance(image, str) and "build" not in service:
+                        if "$" in image:
+                            raise CoverageError(
+                                f"{path}: вычисляемый образ {image} требует отдельной сверки"
+                            )
+                        found.add(image_declaration(manager, path, image))
+                continue
+            arguments = {
+                m.group("name"): m.group("image") for m in DOCKER_ARG.finditer(content)
+            }
+            stages: set[str] = set()
+            syntax = re.search(r"^#\s*syntax=(\S+)", content, re.MULTILINE)
+            if syntax:
+                found.add(image_declaration(manager, path, syntax[1]))
+            for match in re.finditer(
+                r"^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?",
+                content,
+                re.MULTILINE | re.IGNORECASE,
+            ):
+                image, stage = match.groups()
+                image = re.sub(
+                    r"\$\{(\w+)\}|\$(\w+)",
+                    lambda m, arguments=arguments: arguments.get(m[1] or m[2], m[0]),
+                    image,
+                )
+                if "$" in image:
+                    raise CoverageError(f"{path}: не разрешён образ {image}")
+                if image not in stages and image != "scratch":
+                    found.add(image_declaration(manager, path, image))
+                if stage:
+                    stages.add(stage)
+    return found
+
+
+def expected_actions(root: Path, paths: list[str]) -> set[Declaration]:
+    """Ссылки действий, закрепления и версии среды в каждом workflow/action-файле."""
+    found: set[Declaration] = set()
+    for path in paths:
+        content = read_text(root / path)
         for match in ACTION_USE.finditer(content):
-            # SHA-пин сопровождается комментарием с версией: сверяется она,
-            # иначе ожидание пути файла не соответствовало бы извлечению.
-            version = match.group("comment") or match.group("ref")
-            _ = expected.setdefault(match.group("action"), version)
-        for match in PYTHON_INPUT.finditer(content):
-            _ = expected.setdefault("python", match.group("version"))
-    return expected
+            name, ref = match.group("action"), match.group("ref")
+            if re.fullmatch(r"[0-9a-f]{40}", ref):
+                found.add(
+                    Declaration(
+                        "github-actions", path, name, match.group("comment") or "", ref
+                    )
+                )
+            else:
+                found.add(Declaration("github-actions", path, name, ref))
+        for match in re.finditer(
+            r"(?:python-version|dotnet-version):\s*['\"]?([^'\"\s]+)", content
+        ):
+            name = "python" if match[0].startswith("python") else "dotnet-sdk"
+            found.add(Declaration("github-actions", path, name, match[1]))
+        for match in re.finditer(
+            r"runs-on:\s*['\"]?(ubuntu|windows|macos)-([^'\"\s]+)", content
+        ):
+            found.add(Declaration("github-actions", path, match[1], match[2]))
+    return found
 
 
-def extraction_index(output: str) -> dict[str, list[tuple[str, str]]]:
-    """Индекс извлечения: имя зависимости → список пар «файл, версия»."""
-    index: dict[str, list[tuple[str, str]]] = {}
-    for _, package_file, deps in iter_package_files(output):
-        for dependency in deps:
-            if not isinstance(dependency, dict):
-                continue
-            dep = cast(dict[str, object], dependency)
+def extraction_index(output: str) -> set[Declaration]:
+    """Извлечение сохраняет все версии каждой зависимости в каждом источнике."""
+    found: set[Declaration] = set()
+    for manager, path, deps in iter_package_files(output):
+        for entry in deps:
+            if not isinstance(entry, dict):
+                raise CoverageError(f"{path}: неизвестный формат зависимости")
+            dep = cast(dict[str, object], entry)
             name = str(dep.get("depName") or dep.get("packageName") or "")
-            current = str(dep.get("currentValue") or "")
             if name:
-                index.setdefault(name, []).append((package_file, current))
-    return index
+                found.add(
+                    Declaration(
+                        manager,
+                        path,
+                        name,
+                        str(dep.get("currentValue") or ""),
+                        str(dep.get("currentDigest") or ""),
+                    )
+                )
+    return found
 
 
 def verify_expected(
-    expected: dict[str, str],
-    index: dict[str, list[tuple[str, str]]],
-    kind: str,
+    expected: set[Declaration], index: set[Declaration], kind: str
 ) -> list[str]:
-    """Каждая объявленная зависимость должна быть извлечена с объявленной версией."""
-    notes: list[str] = []
-    missing: list[str] = []
-    mismatched: list[str] = []
-    for name, version in sorted(expected.items()):
-        entries = index.get(name)
-        if not entries:
-            missing.append(name)
-            continue
-        versions = {current.lstrip("=") for _, current in entries}
-        if version not in versions and not any(
-            current and version.startswith(current) for current in versions
-        ):
-            mismatched.append(
-                f"{name}: ожидалась {version}, извлечено {sorted(versions)}"
-            )
-        else:
-            file_names = sorted({path for path, _ in entries})
-            notes.append(f"{kind} {name} {version} из {len(file_names)} файл(ов)")
+    """Совпадение в другом файле или с другой версией не доказывает извлечение."""
+    missing = expected - index
     if missing:
         raise CoverageError(
-            f"{kind}: не извлечены зависимости: {', '.join(sorted(missing))}"
+            f"{kind}: не извлечены точные объявления: {sorted(missing)}"
         )
-    if mismatched:
-        raise CoverageError(
-            f"{kind}: версии не совпали с manifests: {'; '.join(mismatched)}"
-        )
-    return notes
+    return [
+        f"{item.manager} {item.path}: {item.name} {item.version} {item.digest}".rstrip()
+        for item in sorted(expected)
+    ]
 
 
 def verify_extraction(root: Path, output: str) -> list[str]:
-    """Доказать покрытие всех поддерживаемых менеджеров реальным извлечением."""
+    """Сверить все обнаруженные источники; неизвестный менеджер не получает подтверждения."""
+    sources = matched_sources(output)
+    inventory = source_inventory(root, output)
+    for manager, paths in inventory.items():
+        if set(paths) != set(sources.get(manager, [])):
+            raise CoverageError(
+                f"{manager}: обнаружение не совпало с деревом Git: {paths}"
+            )
+    # Эти менеджеры обслуживают конфигурацию/правила замен, а не отдельный
+    # инвентарь пакетов. Их workflow-файлы уже сверяются github-actions.
+    supported = {
+        "nuget",
+        "pip_requirements",
+        "dockerfile",
+        "docker-compose",
+        "github-actions",
+        "renovate-config",
+        "jsonata",
+        "regex",
+    }
+    unknown = set(sources) - supported
+    if unknown:
+        raise CoverageError(
+            f"Нет независимой сверки объявлений для менеджеров: {sorted(unknown)}"
+        )
+    if set(sources.get("jsonata", [])) - set(sources.get("github-actions", [])):
+        raise CoverageError(
+            "Пользовательский jsonata-менеджер требует независимой сверки объявлений"
+        )
+    config_path = root / "renovate.json"
+    if config_path.is_file() and cast(
+        dict[str, object], json.loads(read_text(config_path))
+    ).get("customManagers"):
+        raise CoverageError(
+            "Пользовательские менеджеры требуют независимой сверки объявлений"
+        )
+    if sources.get("regex"):
+        raise CoverageError(
+            "Пользовательский regex-менеджер требует независимой сверки объявлений"
+        )
     index = extraction_index(output)
-    if not index:
-        raise CoverageError("Renovate не опубликовал ни одной извлечённой зависимости")
-    notes: list[str] = []
-    for kind, expected in (
-        ("nuget", expected_nuget(root)),
-        ("pip", expected_pip(root)),
-        ("docker", expected_docker(root)),
-        ("actions", expected_actions(root)),
-    ):
-        if not expected:
-            raise CoverageError(f"{kind}: нет объявленных зависимостей для сверки")
-        notes.extend(verify_expected(expected, index, kind))
-    manifests = sorted(
-        {path for entries in index.values() for path, _ in entries if path}
+    expected = (
+        expected_nuget(root, sources.get("nuget", []))
+        | expected_pip(root, sources.get("pip_requirements", []))
+        | expected_docker(root, sources)
+        | expected_actions(root, sources.get("github-actions", []))
     )
-    notes.append(f"manifests: {', '.join(manifests)}")
-    return notes
+    if not expected:
+        raise CoverageError("Нет объявленных зависимостей для сверки")
+    return verify_expected(expected, index, "Renovate")
 
 
 def branches_by_dep(
@@ -515,10 +691,12 @@ def run_fixtures(
 ) -> list[str]:
     """Ограничить число процессов; выдавать полный результат в порядке сценариев.
 
-    Будущие результаты читаются все до печати PASS. Исключение любого lookup,
+    Будущие результаты читаются все до сообщения об успехе. Исключение любого lookup,
     включая отрицательный контроль, выходит в main; executor ждёт завершения
     остальных процессов до удаления временных каталогов.
     """
+    if workers not in (1, 2):
+        raise CoverageError("Допустимы только один или два lookup-процесса")
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = [
             executor.submit(run_scenario, node, script, config_file, scenario)
@@ -596,7 +774,7 @@ def build_parser() -> argparse.ArgumentParser:
     _ = parser.add_argument(
         "--workers",
         type=int,
-        choices=(1, 2, 3),
+        choices=(1, 2),
         default=2,
         help="Число одновременных lookup-процессов; 1 для последовательного замера",
     )
@@ -638,7 +816,7 @@ def main() -> int:
                 ],
                 root,
                 {
-                    "LOG_LEVEL": "debug",
+                    "LOG_LEVEL": "trace",
                     "LOG_FORMAT": "json",
                     "RENOVATE_PLATFORM": "local",
                     "RENOVATE_CONFIG_FILE": str(config),
@@ -650,7 +828,7 @@ def main() -> int:
         notes = run_fixtures(
             args.node, require(args.renovate, "renovate.js"), config, args.workers
         )
-    except CoverageError as error:
+    except (CoverageError, ValueError, ElementTree.ParseError, yaml.YAMLError) as error:
         print(f"::error::Проверка Renovate не доказана: {error}", file=sys.stderr)
         return 1
     for note in notes:

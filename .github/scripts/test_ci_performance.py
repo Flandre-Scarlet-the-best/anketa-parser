@@ -1,4 +1,4 @@
-"""Регрессии CI: точный proof, отсутствие marker после ошибки и один анализ типов."""
+"""Регрессии CI: точное подтверждение, отсутствие отметки после ошибки и один анализ типов."""
 
 import json
 import os
@@ -74,7 +74,7 @@ class RenovateProofTests(unittest.TestCase):
     def test_proof_has_exact_daily_tree_key_and_all_events_cover_new_manifests(self):
         workflow = load_workflow("renovate-config.yml")
         triggers = cast(dict[str, object], workflow["on"])
-        self.assertEqual(set(triggers), {"pull_request", "push", "workflow_dispatch"})
+        self.assertTrue({"pull_request", "push", "workflow_dispatch"} <= set(triggers))
         self.assertNotIn("paths", str(triggers))
         steps = job_steps(workflow, "renovate-config")
         inputs = next(step for step in steps if step.get("id") == "inputs")
@@ -91,31 +91,98 @@ class RenovateProofTests(unittest.TestCase):
             "inputs.outputs.day",
         ):
             self.assertIn(field, settings["key"])
-        full = [step for step in steps if "docker run" in str(step.get("run", ""))]
-        self.assertEqual(len(full), 5)
-        for step in [*full, steps[-1]]:
+        self.assert_proof_stages(steps)
+
+    def assert_proof_stages(self, steps: list[dict[str, object]]) -> None:
+        marker = next(step for step in steps if step.get("id") == "verified")
+        full = [
+            step
+            for step in steps
+            if step.get("if") == FULL_CHECK and step is not marker
+        ]
+        for operation in (
+            "--version",
+            "check_renovate.py validate",
+            "check_renovate.py extract",
+            "check_renovate.py fixtures",
+            "test_check_renovate.py",
+        ):
+            required = next(
+                step for step in steps if operation in str(step.get("run", ""))
+            )
+            self.assertIn(required, full)
+        self.assertTrue(full)
+        for step in [*full, marker]:
             self.assertEqual(step.get("if"), FULL_CHECK)
             self.assertNotIn("continue-on-error", step)
-        self.assertIn("renovate-proof/verified", str(steps[-1]["run"]))
+        self.assertTrue(all(steps.index(step) < steps.index(marker) for step in full))
+        self.assertIn("renovate-proof/verified", str(marker["run"]))
+
+    def test_additional_required_stage_and_trailing_step_preserve_contract(self):
+        steps = job_steps(load_workflow("renovate-config.yml"), "renovate-config")
+        marker = next(step for step in steps if step.get("id") == "verified")
+        steps.insert(
+            steps.index(marker),
+            {"name": "Дополнительная проверка", "if": FULL_CHECK, "run": "true"},
+        )
+        steps.append({"name": "Сообщить результат", "run": "echo завершено"})
+        self.assert_proof_stages(steps)
+
+    def test_exact_hit_tree_miss_and_manual_dispatch(self):
+        steps = job_steps(load_workflow("renovate-config.yml"), "renovate-config")
+        marker = next(step for step in steps if step.get("id") == "verified")
+        condition = str(marker["if"])
+        self.assertEqual(condition, FULL_CHECK)
+        expression = condition.replace(
+            "steps.proof.outputs.cache-hit", '"$CACHE_HIT"'
+        ).replace("github.event_name", '"$EVENT_NAME"')
+        for hit, event, expected in (
+            ("true", "pull_request", False),
+            ("false", "pull_request", True),
+            ("", "pull_request", True),
+            ("true", "workflow_dispatch", True),
+        ):
+            with self.subTest(hit=hit, event=event):
+                result = run_bash(
+                    f"if [[ {expression} ]]; then echo full; else echo cached; fi",
+                    ROOT,
+                    {"CACHE_HIT": hit, "EVENT_NAME": event},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    result.stdout.strip(), "full" if expected else "cached"
+                )
 
     def test_each_stage_failure_prevents_marker_and_full_success_creates_it(self):
         steps = job_steps(load_workflow("renovate-config.yml"), "renovate-config")
-        commands = [str(step["run"]) for step in steps if step.get("if") == FULL_CHECK]
+        # Дополнительный обязательный шаг также участвует в отрицательных проверках.
+        marker_step = next(step for step in steps if step.get("id") == "verified")
+        steps.insert(
+            steps.index(marker_step),
+            {"if": FULL_CHECK, "run": 'test "$FAIL_STAGE" != "$CURRENT_STAGE"'},
+        )
+        full = [step for step in steps if step.get("if") == FULL_CHECK]
+        commands = [
+            f"export CURRENT_STAGE={index}\n{step['run']}"
+            for index, step in enumerate(full)
+        ]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             docker = root / "docker"
             _ = docker.write_text(
                 "#!/usr/bin/env python\nimport os, sys\n"
                 "command = ' '.join(sys.argv)\n"
-                "stage = next((name for name in ('validate', 'extract', 'fixtures') "
-                "if ' ' + name + ' ' in command), 'unit')\n"
-                "if '--version' in command:\n    stage = 'version'\n    print('44.251.0')\n"
-                "sys.exit(7 if stage == os.environ.get('FAIL_STAGE') else 0)\n",
+                "if '--version' in command:\n    print('44.251.0')\n"
+                "sys.exit(7 if os.environ['CURRENT_STAGE'] == os.environ.get('FAIL_STAGE') else 0)\n",
                 encoding="utf-8",
             )
             docker.chmod(0o755)
-            for stage in ("version", "validate", "extract", "fixtures", "unit", ""):
-                with self.subTest(stage=stage or "success"):
+            for stage in [
+                str(index)
+                for index, step in enumerate(full)
+                if step.get("id") != "verified"
+            ] + [""]:
+                with self.subTest(stage=stage or "успех"):
                     marker = root / "renovate-proof/verified"
                     marker.unlink(missing_ok=True)
                     command = stub_command("docker", docker) + "\n".join(commands)
@@ -136,7 +203,7 @@ class RenovateProofTests(unittest.TestCase):
                     else:
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertIn(
-                            "negative control, unit: PASS",
+                            "Все обязательные проверки пройдены",
                             marker.read_text(encoding="utf-8"),
                         )
 

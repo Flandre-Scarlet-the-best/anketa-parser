@@ -1,6 +1,6 @@
-"""Регрессии проверки Renovate: разбор отчётов, ожидания manifests и ветки.
+"""Регрессии проверки Renovate: разбор отчётов, ожидания манифестов и ветки.
 
-Движок Renovate в этих тестах не требуется: события лога, manifests и фикстуры
+Движок Renovate в этих тестах не требуется: события лога, манифесты и фикстуры
 создаются в временном каталоге, поэтому проверяются решения проверки — пропущенная
 зависимость, расхождение версии, объединённая ветка и сбой инструмента не могут
 дать ложный успех.
@@ -19,9 +19,12 @@ from unittest.mock import patch
 from check_renovate import (
     NEGATIVE,
     SCENARIOS,
+    Arguments,
     CoverageError,
+    Declaration,
     Scenario,
     branches_by_dep,
+    build_parser,
     expected_actions,
     expected_docker,
     expected_nuget,
@@ -33,6 +36,7 @@ from check_renovate import (
     run_script,
     updates,
     verify_expected,
+    verify_extraction,
     verify_relation,
 )
 
@@ -159,74 +163,224 @@ class EventParsingTests(unittest.TestCase):
 
     def test_extraction_index_keeps_values_per_file(self) -> None:
         index = extraction_index(extract_event())
-        self.assertEqual(index["Npgsql"], [("Directory.Packages.props", "10.0.3")])
+        self.assertIn(
+            Declaration("nuget", "Directory.Packages.props", "Npgsql", "10.0.3"), index
+        )
         self.assertEqual(
-            index["ruff"], [(".github/scripts/requirements.txt", "==0.17.5")]
+            Declaration(
+                "pip_requirements",
+                ".github/scripts/requirements.txt",
+                "ruff",
+                "==0.17.5",
+            )
+            in index,
+            True,
         )
 
 
 class ManifestTests(RepositoryCase):
-    def test_expected_versions_come_from_manifests(self) -> None:
-        _ = self.write(
-            "Directory.Packages.props",
-            '<Project><ItemGroup>\n  <PackageVersion Include="Npgsql" Version="10.0.3" />\n</ItemGroup></Project>',
-        )
-        _ = self.write("global.json", json.dumps({"sdk": {"version": "10.0.402"}}))
-        _ = self.write(
-            ".config/dotnet-tools.json",
-            json.dumps({"tools": {"dotnet-ef": {"version": "10.0.14"}}}),
-        )
-        self.assertEqual(
-            expected_nuget(self.root),
-            {"Npgsql": "10.0.3", "dotnet-sdk": "10.0.402", "dotnet-ef": "10.0.14"},
+    @override
+    def setUp(self) -> None:
+        super().setUp()
+        _ = subprocess.run(  # noqa: S603
+            ["git", "init", "--quiet"],  # noqa: S607
+            cwd=self.root,
+            check=True,
+            capture_output=True,
         )
 
-    def test_pip_docker_and_actions_expectations(self) -> None:
-        _ = self.write(
-            ".github/scripts/requirements.txt", "# комментарий\nruff==0.17.5\n"
+    @override
+    def write(self, name: str, text: str) -> Path:
+        path = super().write(name, text)
+        _ = subprocess.run(  # noqa: S603
+            ["git", "add", "--", name],  # noqa: S607
+            cwd=self.root,
+            check=True,
+            capture_output=True,
         )
-        _ = self.write(
-            "Dockerfile",
-            "ARG SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:10.0.402-noble\nFROM ${SDK_IMAGE} AS build\nFROM mcr.microsoft.com/dotnet/runtime:10.0.14-noble\n",
+        return path
+
+    def extraction(
+        self, manager: str, declarations: dict[str, list[dict[str, str]]]
+    ) -> str:
+        paths = list(declarations)
+        patterns = {
+            "nuget": r"/\.(?:csproj|props|targets)$|(?:^|/)(?:global|dotnet-tools)\.json$/",
+            "pip_requirements": r"/(^|/)[\w-]*requirements([-._]\w+)?\.(txt|pip)$/",
+            "dockerfile": r"/(^|/)Dockerfile$/",
+            "docker-compose": r"/(^|/)compose[^/]*\.ya?ml$/",
+            "github-actions": r"/^\.github/workflows/[^/]+\.ya?ml$/",
+        }
+        discovery = [
+            json.dumps({"msg": f"Using file pattern: {pattern} for manager {name}"})
+            for name, pattern in patterns.items()
+        ]
+        return (
+            "\n".join(discovery)
+            + "\n"
+            + "\n".join(
+                json.dumps(item)
+                for item in (
+                    {
+                        "msg": f"Matched {len(paths)} file(s) for manager {manager}: {', '.join(paths)}"
+                    },
+                    {
+                        "msg": "Extracted dependencies",
+                        "packageFiles": {
+                            manager: [
+                                {"packageFile": path, "deps": deps}
+                                for path, deps in declarations.items()
+                            ]
+                        },
+                    },
+                )
+            )
         )
-        _ = self.write(
-            "compose.yaml",
-            "services:\n  db:\n    image: postgres:18.6-alpine\n  host:\n    image: anketa-parser-host:local\n",
-        )
-        _ = self.write(
-            ".github/workflows/ci.yml",
-            "steps:\n  - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n    with:\n      python-version: '3.15.2'\n",
-        )
-        self.assertEqual(expected_pip(self.root), {"ruff": "0.17.5"})
+
+    def test_new_requirements_manifest_and_each_version_must_be_extracted(self) -> None:
+        for path, version in (
+            ("requirements.txt", "1.0"),
+            ("nested/dev-requirements.pip", "2.0"),
+        ):
+            _ = self.write(path, f"package=={version}\n")
+        declarations = {
+            "requirements.txt": [{"depName": "package", "currentValue": "==1.0"}],
+            "nested/dev-requirements.pip": [
+                {"depName": "package", "currentValue": "==2.0"}
+            ],
+        }
         self.assertEqual(
-            expected_docker(self.root),
+            len(
+                verify_extraction(
+                    self.root, self.extraction("pip_requirements", declarations)
+                )
+            ),
+            2,
+        )
+        for entries in (
+            [],
+            [{"depName": "package", "currentValue": "==1.0"}],
+            [{"depName": "package", "currentValue": "==2"}],
+        ):
+            broken = {**declarations, "nested/dev-requirements.pip": entries}
+            with self.subTest(entries=entries), self.assertRaises(CoverageError):
+                _ = verify_extraction(
+                    self.root, self.extraction("pip_requirements", broken)
+                )
+
+    def test_git_inventory_catches_new_file_missing_from_detection(self) -> None:
+        _ = self.write("requirements.txt", "package==1.0\n")
+        _ = self.write("nested/dev-requirements.pip", "package==2.0\n")
+        output = self.extraction(
+            "pip_requirements",
+            {"requirements.txt": [{"depName": "package", "currentValue": "==1.0"}]},
+        )
+        with self.assertRaisesRegex(CoverageError, "деревом Git"):
+            _ = verify_extraction(self.root, output)
+
+    def test_nuget_all_detected_paths_preserve_versions(self) -> None:
+        paths = [
+            "nested/Directory.Packages.props",
+            "nested/global.json",
+            "nested/dotnet-tools.json",
+            "new/app.csproj",
+        ]
+        _ = self.write(
+            paths[0],
+            '<Project><ItemGroup><PackageVersion Include="Npgsql" Version="10.0.3" /></ItemGroup></Project>',
+        )
+        _ = self.write(paths[1], '{"sdk":{"version":"10.0.402"}}')
+        _ = self.write(paths[2], '{"tools":{"dotnet-ef":{"version":"10.0.14"}}}')
+        _ = self.write(
+            paths[3],
+            '<Project><ItemGroup><PackageReference Version="10.0.4" Include="Npgsql" /></ItemGroup></Project>',
+        )
+        expected = expected_nuget(self.root, paths)
+        self.assertEqual(
+            expected,
             {
-                "mcr.microsoft.com/dotnet/runtime": "10.0.14-noble",
-                "mcr.microsoft.com/dotnet/sdk": "10.0.402-noble",
-                "postgres": "18.6-alpine",
+                Declaration("nuget", paths[0], "Npgsql", "10.0.3"),
+                Declaration("nuget", paths[1], "dotnet-sdk", "10.0.402"),
+                Declaration("nuget", paths[2], "dotnet-ef", "10.0.14"),
+                Declaration("nuget", paths[3], "Npgsql", "10.0.4"),
             },
-        )
-        self.assertEqual(
-            expected_actions(self.root),
-            {"actions/checkout": "v7.0.1", "python": "3.15.2"},
-        )
-
-    def test_missing_or_mismatched_extraction_is_error(self) -> None:
-        index = {"Npgsql": [("Directory.Packages.props", "10.0.3")]}
-        self.assertEqual(
-            verify_expected({"Npgsql": "10.0.3"}, index, "nuget"),
-            ["nuget Npgsql 10.0.3 из 1 файл(ов)"],
         )
         with self.assertRaises(CoverageError):
             _ = verify_expected(
-                {"Npgsql": "10.0.3", "Serilog": "3.0.0"}, index, "nuget"
+                expected,
+                expected - {Declaration("nuget", paths[3], "Npgsql", "10.0.4")},
+                "nuget",
             )
-        with self.assertRaises(CoverageError):
-            _ = verify_expected({"Npgsql": "11.0.0"}, index, "nuget")
-        self.assertEqual(
-            verify_expected({"ruff": "0.17.5"}, {"ruff": [("req", "==0.17.5")]}, "pip"),
-            ["pip ruff 0.17.5 из 1 файл(ов)"],
+
+    def test_each_dockerfile_compose_and_workflow_preserves_identity(self) -> None:
+        _ = self.write(
+            "nested/Dockerfile",
+            "ARG SDK=registry:5000/sdk:1@sha256:abc\nFROM ${SDK} AS build\nFROM build AS final\nFROM postgres:18\n",
         )
+        _ = self.write(
+            "nested/compose.yml",
+            "services:\n  db:\n    image: postgres:19\n  local:\n    image: local:tag\n    build: .\n",
+        )
+        _ = self.write(
+            ".github/workflows/new.yml",
+            "steps:\n  - uses: actions/checkout@" + "a" * 40 + " # v7.0.1\n",
+        )
+        expected = expected_docker(
+            self.root,
+            {
+                "dockerfile": ["nested/Dockerfile"],
+                "docker-compose": ["nested/compose.yml"],
+            },
+        )
+        self.assertEqual(
+            expected,
+            {
+                Declaration(
+                    "dockerfile",
+                    "nested/Dockerfile",
+                    "registry:5000/sdk",
+                    "1",
+                    "sha256:abc",
+                ),
+                Declaration("dockerfile", "nested/Dockerfile", "postgres", "18"),
+                Declaration("docker-compose", "nested/compose.yml", "postgres", "19"),
+            },
+        )
+        action = Declaration(
+            "github-actions",
+            ".github/workflows/new.yml",
+            "actions/checkout",
+            "v7.0.1",
+            "a" * 40,
+        )
+        self.assertEqual(expected_actions(self.root, [action.path]), {action})
+        for broken in (
+            Declaration(
+                action.manager, action.path, action.name, action.version, "b" * 40
+            ),
+            Declaration(
+                action.manager,
+                ".github/workflows/other.yml",
+                action.name,
+                action.version,
+                action.digest,
+            ),
+        ):
+            with self.subTest(broken=broken), self.assertRaises(CoverageError):
+                _ = verify_expected({action}, {broken}, "actions")
+
+    def test_missing_detection_and_unknown_manager_do_not_claim_coverage(self) -> None:
+        with self.assertRaises(CoverageError):
+            _ = verify_extraction(self.root, extract_event())
+        with self.assertRaisesRegex(CoverageError, "Нет независимой сверки"):
+            _ = verify_extraction(
+                self.root, self.extraction("npm", {"new/package.json": []})
+            )
+
+    def test_expected_pip_rejects_unproved_formats(self) -> None:
+        _ = self.write("requirements.txt", "package>=1\n")
+        with self.assertRaises(CoverageError):
+            _ = expected_pip(self.root, ["requirements.txt"])
 
 
 class RelationTests(unittest.TestCase):
@@ -438,6 +592,25 @@ class FixtureRunnerTests(RepositoryCase):
         self.assertEqual(peak, 2)
         self.assertEqual(len(set(directories)), len(notes))
         self.assertTrue(all(not path.exists() for path in directories))
+
+
+class WorkerLimitTests(unittest.TestCase):
+    def test_cli_and_library_reject_more_than_two_workers(self) -> None:
+        for count in (0, 3, -1):
+            with self.subTest(count=count):
+                with self.assertRaises(SystemExit):
+                    _ = build_parser().parse_args(["fixtures", "--workers", str(count)])
+                with self.assertRaises(CoverageError):
+                    _ = run_fixtures("", Path("unused"), Path("unused"), workers=count)
+        for count in (1, 2):
+            self.assertEqual(
+                build_parser()
+                .parse_args(
+                    ["fixtures", "--workers", str(count)], namespace=Arguments()
+                )
+                .workers,
+                count,
+            )
 
 
 class RunnerTests(RepositoryCase):

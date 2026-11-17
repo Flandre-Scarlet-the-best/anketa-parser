@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Сверка охвата Dependency Review с фактическими изменениями зависимостей.
 
-Скрипт считает изменения зависимостей между base и head из самих manifests и
+Скрипт считает изменения зависимостей между base и head из самих манифестов и
 сравнивает их с тем, что опубликовал `actions/dependency-review-action`. Успех
-возможен только при согласованном нулевом изменении либо при подтверждённом
-покрытии каждого изменения; иначе проверка сообщает о пробеле охвата и падает.
+возможен при согласованном нулевом изменении либо подтверждении изменений
+пакетов. Ссылки Actions на SHA явно перечисляются отдельно как неподтверждённые;
+для остальных зависимостей пробел охвата блокирует проверку.
 """
 
 import argparse
@@ -51,9 +52,12 @@ class Change:
     ecosystem: str
     name: str
     version: str
+    manifest: str
 
     def describe(self) -> str:
-        return f"{self.kind} {self.ecosystem} {self.name} {self.version}"
+        return (
+            f"{self.kind} {self.ecosystem} {self.name} {self.version} ({self.manifest})"
+        )
 
 
 def git(root: Path, *args: str) -> str:
@@ -71,7 +75,7 @@ def git(root: Path, *args: str) -> str:
 
 
 def tree_files(root: Path, revision: str) -> list[str]:
-    """Отслеживаемые manifests в указанной ревизии."""
+    """Отслеживаемые манифесты в указанной ревизии."""
     names = git(root, "ls-tree", "-r", "--name-only", revision).split("\n")
     return [
         name
@@ -91,27 +95,27 @@ def file_text(root: Path, revision: str, name: str) -> str:
     return git(root, "show", f"{revision}:{name}")
 
 
-def dependencies(root: Path, revision: str) -> set[tuple[str, str, str]]:
-    """Множество зависимостей ревизии как (экосистема, имя, версия)."""
-    found: set[tuple[str, str, str]] = set()
+def dependencies(root: Path, revision: str) -> set[tuple[str, str, str, str]]:
+    """Зависимости ревизии как (экосистема, имя, версия, манифест)."""
+    found: set[tuple[str, str, str, str]] = set()
     for name in tree_files(root, revision):
         content = file_text(root, revision, name)
         if LOCKFILE.search(name):
-            found.update(lock_entries(content))
+            found.update((*entry, name) for entry in lock_entries(content))
         elif REQUIREMENTS.search(name):
             found.update(
-                (PIP, match.group("name"), match.group("version"))
+                (PIP, match.group("name"), match.group("version"), name)
                 for match in REQUIREMENT.finditer(content)
                 if REQUIREMENT.fullmatch(match.group().strip())
             )
         elif CENTRAL.search(name):
             found.update(
-                (NUGET, match.group("name"), match.group("version"))
+                (NUGET, match.group("name"), match.group("version"), name)
                 for match in PACKAGE_VERSION.finditer(content)
             )
         elif WORKFLOW.match(name):
             found.update(
-                (ACTIONS, match.group("action"), match.group("ref"))
+                (ACTIONS, match.group("action"), match.group("ref"), name)
                 for match in ACTION_USE.finditer(content)
             )
     return found
@@ -147,20 +151,13 @@ def lock_entries(content: str) -> set[tuple[str, str, str]]:
 
 
 def changes(
-    base: set[tuple[str, str, str]], head: set[tuple[str, str, str]]
+    base: set[tuple[str, str, str, str]], head: set[tuple[str, str, str, str]]
 ) -> list[Change]:
-    """Добавленные, удалённые и изменённые зависимости между ревизиями."""
-    base_index = {(ecosystem, name): version for ecosystem, name, version in base}
-    head_index = {(ecosystem, name): version for ecosystem, name, version in head}
-    found: list[Change] = []
-    for key in sorted(set(base_index) | set(head_index)):
-        ecosystem, name = key
-        before, after = base_index.get(key), head_index.get(key)
-        if before == after:
-            continue
-        kind = "added" if before is None else "removed" if after is None else "updated"
-        found.append(Change(kind, ecosystem, name, after or before or ""))
-    return found
+    """Замена версии представляется removed/added, как в GitHub API."""
+    return sorted(
+        [Change("removed", *entry) for entry in base - head]
+        + [Change("added", *entry) for entry in head - base]
+    )
 
 
 def reported(text: str) -> list[Change]:
@@ -178,21 +175,32 @@ def reported(text: str) -> list[Change]:
         if not isinstance(entry, dict):
             raise CoverageError("Изменение Dependency Review имеет неизвестный формат")
         item = cast(dict[str, object], entry)
+        fields = [
+            item.get(key)
+            for key in ("change_type", "ecosystem", "name", "version", "manifest")
+        ]
+        if any(not isinstance(value, str) or not value for value in fields):
+            raise CoverageError(
+                "Изменение Dependency Review не содержит обязательных строковых полей"
+            )
+        if item["change_type"] not in ("added", "removed"):
+            raise CoverageError("Неизвестный вид изменения Dependency Review")
         found.append(
             Change(
-                str(item.get("change-type") or item.get("change_type") or "unknown"),
-                str(item.get("ecosystem") or "unknown"),
-                str(item.get("name") or "unknown"),
-                str(item.get("version") or "unknown"),
+                str(item["change_type"]),
+                str(item["ecosystem"]),
+                str(item["name"]),
+                str(item["version"]),
+                str(item["manifest"]),
             )
         )
     return found
 
 
-# Экосистема ссылок GitHub Actions не подтверждается графом конкретного PR:
-# снимок зависимостей действия строится из workflow основной ветки, поэтому новая
-# ссылка в новом файле в отчёт не попадает. Такие изменения перечисляются, но не
-# выдаются за проверенные.
+# Граф может перечислять ссылки Actions на SHA, но это не доказывает анализ
+# уязвимостей закреплённого кода: GitHub поддерживает alerts для семантических
+# версий Actions. Кроме того, снимок PR может не содержать часть новых ссылок.
+# Эти изменения перечисляются отдельно даже при наличии записи в графе.
 UNCONFIRMED_ECOSYSTEMS = frozenset({"actions", "githubactions"})
 
 
@@ -201,16 +209,28 @@ def verify(expected: list[Change], reported_changes: list[Change]) -> list[str]:
     if not expected:
         return ["изменений зависимостей в PR нет; проверять нечего"]
     keys = {
-        (change.kind, change.ecosystem.lower(), change.name)
+        (
+            change.kind,
+            change.ecosystem.lower(),
+            change.name,
+            change.version,
+            change.manifest,
+        )
         for change in reported_changes
     }
     gaps: list[str] = []
     unconfirmed: list[str] = []
     for change in expected:
-        if (change.kind, change.ecosystem.lower(), change.name) in keys:
-            continue
         if change.ecosystem.lower() in UNCONFIRMED_ECOSYSTEMS:
             unconfirmed.append(change.describe())
+            continue
+        if (
+            change.kind,
+            change.ecosystem.lower(),
+            change.name,
+            change.version,
+            change.manifest,
+        ) in keys:
             continue
         gaps.append(change.describe())
     if gaps:

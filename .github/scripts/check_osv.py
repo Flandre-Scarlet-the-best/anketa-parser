@@ -2,7 +2,7 @@
 """Проверка известных уязвимостей закреплённым OSV-Scanner по lock-файлам.
 
 Охват доказывается для каждого источника отдельно: инвентарь пакетов считается
-из самого manifest, а код выхода сканера сверяется с ожидаемым числом пакетов.
+из самого манифеста и сверяется с JSON, полученным с --all-packages.
 Пустой набор, неразобранный формат, отказ сети и неизвестный код выхода
 блокируют проверку вместо ложного успеха.
 """
@@ -39,11 +39,12 @@ class CoverageError(Exception):
 
 @dataclass(frozen=True)
 class Source:
-    """Один manifest с посчитанным инвентарём пакетов."""
+    """Один манифест с посчитанным инвентарём пакетов."""
 
     path: str
     ecosystem: str
     packages: frozenset[tuple[str, str]]
+    projects: frozenset[str] = frozenset()
 
     def lockfile_argument(self) -> str:
         """Аргумент --lockfile с явным разбором формата для requirements."""
@@ -82,6 +83,7 @@ def parse_lockfile(path: Path, name: str) -> Source:
     if not isinstance(frameworks, dict):
         raise CoverageError(f"{name}: в lock-файле нет раздела dependencies")
     packages: set[tuple[str, str]] = set()
+    projects: set[str] = set()
     for framework, entries in cast(dict[str, object], frameworks).items():
         if not isinstance(entries, dict):
             raise CoverageError(f"{name}: некорректный раздел платформы {framework}")
@@ -90,6 +92,7 @@ def parse_lockfile(path: Path, name: str) -> Source:
                 raise CoverageError(f"{name}: некорректные данные пакета {package}")
             item = cast(dict[str, object], details)
             if item.get("type") == "Project":
+                projects.add(package.lower())
                 continue
             version = item.get("resolved")
             if not isinstance(version, str) or not version:
@@ -97,7 +100,7 @@ def parse_lockfile(path: Path, name: str) -> Source:
                     f"{name}: у пакета {package} нет разрешённой версии"
                 )
             packages.add((package, version))
-    return Source(name, NUGET, frozenset(packages))
+    return Source(name, NUGET, frozenset(packages), frozenset(projects))
 
 
 def parse_requirements(path: Path, name: str) -> Source:
@@ -123,7 +126,7 @@ def parse_requirements(path: Path, name: str) -> Source:
 
 
 def inventory(root: Path) -> list[Source]:
-    """Все отслеживаемые manifests с посчитанными пакетами."""
+    """Все отслеживаемые манифесты с посчитанными пакетами."""
     sources = [
         parse_lockfile(root / name, name)
         for name in tracked_files(root, "*packages.lock.json")
@@ -134,7 +137,7 @@ def inventory(root: Path) -> list[Source]:
     )
     if not sources:
         raise CoverageError(
-            "Не найдено ни одного manifest: охват проверки не определён"
+            "Не найдено ни одного манифеста: охват проверки не определён"
         )
     return sources
 
@@ -147,6 +150,7 @@ def scanner_command(binary: list[str], source: Source) -> list[str]:
         "source",
         "--format",
         "json",
+        "--all-packages",
         "--lockfile",
         source.lockfile_argument(),
     ]
@@ -168,8 +172,8 @@ def run_scanner(binary: list[str], source: Source, root: Path) -> tuple[int, str
     return result.returncode, result.stdout
 
 
-def vulnerabilities(report: str, source: Source) -> list[str]:
-    """Разобрать отчёт одного источника и вернуть безопасные строки находок."""
+def vulnerabilities(report: str, source: Source, root: Path | None = None) -> list[str]:
+    """Сверить инвентарь отчёта и вернуть безопасные строки находок."""
     try:
         data = cast(object, json.loads(report))
     except json.JSONDecodeError as error:
@@ -183,6 +187,7 @@ def vulnerabilities(report: str, source: Source) -> list[str]:
         raise CoverageError(f"{source.path}: в отчёте нет списка результатов")
     found: list[str] = []
     seen: set[str] = set()
+    scanned: set[tuple[str, str]] = set()
     for entry in cast(list[object], results):
         if not isinstance(entry, dict):
             raise CoverageError(f"{source.path}: результат неизвестного формата")
@@ -193,12 +198,75 @@ def vulnerabilities(report: str, source: Source) -> list[str]:
             if isinstance(origin, dict)
             else None
         )
-        if path is not None and not str(path).replace("\\", "/").endswith(source.path):
+        if not isinstance(path, str) or not same_source(
+            path, source.path, root or Path.cwd()
+        ):
             raise CoverageError(
                 f"{source.path}: отчёт описывает другой источник: {str(path)[:MAX_DIAGNOSTIC]}"
             )
+        packages = item.get("packages")
+        if not isinstance(packages, list):
+            raise CoverageError(f"{source.path}: в результате нет списка пакетов")
+        for entry in cast(list[object], packages):
+            package = (
+                cast(dict[str, object], entry).get("package")
+                if isinstance(entry, dict)
+                else None
+            )
+            if not isinstance(package, dict):
+                raise CoverageError(f"{source.path}: не определена идентичность пакета")
+            details = cast(dict[str, object], package)
+            name, version, ecosystem = (
+                details.get(key) for key in ("name", "version", "ecosystem")
+            )
+            if (
+                isinstance(name, str)
+                and name.lower() in source.projects
+                and version == ""
+                and ecosystem == "NuGet"
+            ):
+                continue
+            if (
+                not isinstance(name, str)
+                or not name
+                or not isinstance(version, str)
+                or not version
+                or not isinstance(ecosystem, str)
+            ):
+                raise CoverageError(f"{source.path}: неполная идентичность пакета")
+            if ecosystem.lower() != ("pypi" if source.ecosystem == PIP else NUGET):
+                raise CoverageError(
+                    f"{source.path}: неожиданная экосистема {ecosystem}"
+                )
+            scanned.add((canonical_name(name, source), version))
         found.extend(describe_packages(item, source, seen))
+    expected = {
+        (canonical_name(name, source), version) for name, version in source.packages
+    }
+    if scanned != expected:
+        raise CoverageError(
+            f"{source.path}: охват пакетов не подтверждён; "
+            + f"отсутствуют {sorted(expected - scanned)}, лишние {sorted(scanned - expected)}"
+        )
     return found
+
+
+def same_source(reported_path: str, expected_path: str, root: Path) -> bool:
+    """Абсолютный путь сканера должен соответствовать точному пути в его cwd."""
+    # Сканер запускается с cwd репозитория; относительные пути сравниваются целиком.
+    actual = Path(reported_path)
+    return actual.as_posix() == expected_path or (
+        actual.is_absolute() and actual.resolve() == (root / expected_path).resolve()
+    )
+
+
+def canonical_name(name: str, source: Source) -> str:
+    """Имена NuGet нечувствительны к регистру; PyPI также нормализует разделители."""
+    return (
+        re.sub(r"[-_.]+", "-", name).lower()
+        if source.ecosystem == PIP
+        else name.lower()
+    )
 
 
 def describe_packages(
@@ -219,8 +287,10 @@ def describe_packages(
         name = str(details.get("name", "?"))
         version = str(details.get("version", "?"))
         found = cast(dict[str, object], entry).get("vulnerabilities")
-        if not isinstance(found, list):
+        if found is None:
             continue
+        if not isinstance(found, list):
+            raise CoverageError(f"{source.path}: список уязвимостей повреждён")
         for advisory in cast(list[object], found):
             identifier = (
                 str(cast(dict[str, object], advisory).get("id", "?"))
@@ -256,7 +326,7 @@ def check_source(binary: list[str], source: Source, root: Path) -> list[str]:
         )
     if empty:
         return []
-    findings = vulnerabilities(output, source)
+    findings = vulnerabilities(output, source, root)
     if code == FINDINGS_EXIT_CODE and not findings:
         raise CoverageError(f"{source.path}: сканер сообщил о находках без записей")
     if code == CLEAN_EXIT_CODE and findings:
@@ -272,7 +342,7 @@ def audit(binary: list[str], root: Path) -> tuple[list[Source], list[str]]:
     ]
     total = sum(len(source.packages) for source in sources)
     if not total:
-        raise CoverageError("Ни один manifest не содержит пакетов: охват пуст")
+        raise CoverageError("Ни один манифест не содержит пакетов: охват пуст")
     return sources, findings
 
 

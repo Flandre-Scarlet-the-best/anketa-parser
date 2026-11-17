@@ -1,7 +1,7 @@
 name: Аудит уязвимостей
 
 # Существующее дерево зависимостей проверяется отдельно от изменений PR:
-# NuGet Audit по политике репозитория и OSV по всем отслеживаемым manifests.
+# NuGet Audit по политике репозитория и OSV по всем отслеживаемым манифестам.
 on:
   pull_request:
   push:
@@ -33,13 +33,13 @@ jobs:
 
       - name: Восстановить в locked mode с аудитом прямых и транзитивных зависимостей
         # Политика репозитория: NuGetAuditMode=all, NuGetAuditLevel=low и строгая
-        # сборка, поэтому найденный advisory или недоступный audit source
+        # сборка, поэтому найденный бюллетень уязвимости или недоступный источник аудита
         # останавливают шаг, а не остаются предупреждением.
         run: dotnet restore --locked-mode --force
 
-      - name: Перечислить advisories и доказать охват всех проектов
+      - name: Перечислить уязвимости и доказать охват всех проектов
         # Свежий аудит уже выполнен обязательным restore выше. Убирается только
-        # второй implicit restore; состав отчёта и проверка охвата сохраняются.
+        # второе неявное восстановление; состав отчёта и проверка охвата сохраняются.
         run: |
           dotnet package list --no-restore --vulnerable --include-transitive --format json > "$RUNNER_TEMP/nuget-audit.json"
           python .github/scripts/check_nuget_audit.py --report "$RUNNER_TEMP/nuget-audit.json" --root .
@@ -66,8 +66,13 @@ jobs:
           chmod +x "$tools/osv-scanner"
           "$tools/osv-scanner" --version
 
-      - name: Проверить все отслеживаемые manifests и доказать охват
+      - name: Проверить все отслеживаемые манифесты и доказать охват
         run: |
           python .github/scripts/check_osv.py \
             --root . \
             --binary "$RUNNER_TEMP/osv-scanner/osv-scanner"
+
+      - name: Проверить сверку охвата с настоящим сканером и неполным отчётом
+        env:
+          OSV_SCANNER_BINARY: ${{ runner.temp }}/osv-scanner/osv-scanner
+        run: python -m unittest discover -s .github/scripts -p 'test_check_osv.py' -v

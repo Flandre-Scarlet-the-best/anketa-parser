@@ -85,10 +85,16 @@ class DependencySetTests(RepositoryCase):
         self.write(".github/workflows/ci.yml", WORKFLOW % ("a" * 40))
         revision = self.commit("зависимости")
         found = dependencies(self.root, revision)
-        self.assertIn(("NuGet", "Npgsql", "10.0.3"), found)
-        self.assertIn(("NuGet", "Serilog", "4.0.0"), found)
-        self.assertIn(("pip", "ruff", "0.17.5"), found)
-        self.assertIn(("actions", "actions/checkout", "a" * 40), found)
+        self.assertIn(
+            ("NuGet", "Npgsql", "10.0.3", "src/Lib/packages.lock.json"), found
+        )
+        self.assertIn(("NuGet", "Serilog", "4.0.0", "Directory.Packages.props"), found)
+        self.assertIn(
+            ("pip", "ruff", "0.17.5", ".github/scripts/requirements.txt"), found
+        )
+        self.assertIn(
+            ("actions", "actions/checkout", "a" * 40, ".github/workflows/ci.yml"), found
+        )
 
     def test_unknown_revision_is_coverage_error(self) -> None:
         _ = self.write("Directory.Packages.props", CENTRAL % ("Serilog", "4.0.0"))
@@ -105,106 +111,125 @@ class DependencySetTests(RepositoryCase):
 
 
 class ChangeTests(RepositoryCase):
-    def test_changes_cover_added_removed_and_updated(self) -> None:
-        base = {("NuGet", "Npgsql", "10.0.3"), ("NuGet", "Serilog", "4.0.0")}
-        head = {("NuGet", "Npgsql", "10.0.4"), ("pip", "ruff", "0.17.5")}
-        found = changes(base, head)
+    def test_version_swap_between_manifests_preserves_both_removals_and_additions(
+        self,
+    ) -> None:
+        for name, version in (("first", "1.0"), ("second", "2.0")):
+            self.write(f"{name}/requirements.txt", f"package=={version}\n")
+        base = self.commit("исходные версии")
+        for name, version in (("first", "2.0"), ("second", "1.0")):
+            self.write(f"{name}/requirements.txt", f"package=={version}\n")
+        head = self.commit("обмен версиями")
+        found = changes(dependencies(self.root, base), dependencies(self.root, head))
         self.assertEqual(
-            [change.describe() for change in found],
-            [
-                "updated NuGet Npgsql 10.0.4",
-                "removed NuGet Serilog 4.0.0",
-                "added pip ruff 0.17.5",
-            ],
+            set(found),
+            {
+                Change("removed", "pip", "package", "1.0", "first/requirements.txt"),
+                Change("added", "pip", "package", "2.0", "first/requirements.txt"),
+                Change("removed", "pip", "package", "2.0", "second/requirements.txt"),
+                Change("added", "pip", "package", "1.0", "second/requirements.txt"),
+            },
         )
+        with self.assertRaises(CoverageError):
+            _ = verify(found, found[:2])
+        self.assertIn("4 изменений", verify(found, found)[0])
 
     def test_identical_sets_have_no_changes(self) -> None:
-        base = {("NuGet", "Npgsql", "10.0.3")}
+        base = {("NuGet", "Npgsql", "10.0.3", "packages.lock.json")}
         self.assertEqual(changes(base, set(base)), [])
+
+    def test_added_and_removed_manifests_preserve_identity(self) -> None:
+        entry = ("pip", "package", "1.0", "tools/requirements.txt")
+        self.assertEqual(changes(set(), {entry}), [Change("added", *entry)])
+        self.assertEqual(changes({entry}, set()), [Change("removed", *entry)])
 
 
 class ComparisonTests(unittest.TestCase):
-    def test_verified_coverage_passes(self) -> None:
-        expected = [Change("updated", "NuGet", "Npgsql", "10.0.4")]
-        reported_changes = [Change("updated", "nuget", "Npgsql", "10.0.4")]
-        self.assertEqual(
-            verify(expected, reported_changes),
-            ["покрытие подтверждено для 1 изменений"],
+    def test_real_api_update_requires_removed_and_added_with_exact_versions(
+        self,
+    ) -> None:
+        expected = changes(
+            {("NuGet", "Npgsql", "10.0.3", "src/packages.lock.json")},
+            {("NuGet", "Npgsql", "10.0.4", "src/packages.lock.json")},
         )
+        # Форма из ChangeSchema закреплённого действия; updated API не возвращает.
+        payload = [
+            {
+                "change_type": "removed",
+                "ecosystem": "nuget",
+                "name": "Npgsql",
+                "version": "10.0.3",
+                "manifest": "src/packages.lock.json",
+            },
+            {
+                "change_type": "added",
+                "ecosystem": "nuget",
+                "name": "Npgsql",
+                "version": "10.0.4",
+                "manifest": "src/packages.lock.json",
+            },
+        ]
+        self.assertEqual(
+            verify(expected, reported(json.dumps(payload))),
+            ["покрытие подтверждено для 2 изменений"],
+        )
+        for index in range(len(payload)):
+            with self.subTest(missing=index), self.assertRaises(CoverageError):
+                _ = verify(
+                    expected,
+                    reported(json.dumps(payload[:index] + payload[index + 1 :])),
+                )
+            for field, wrong in (
+                ("version", "9.9"),
+                ("manifest", "other/packages.lock.json"),
+                ("change_type", "added" if index == 0 else "removed"),
+            ):
+                broken = [dict(item) for item in payload]
+                broken[index][field] = wrong
+                with (
+                    self.subTest(index=index, field=field),
+                    self.assertRaises(CoverageError),
+                ):
+                    _ = verify(expected, reported(json.dumps(broken)))
+
+    def test_zero_changes_passes_without_claiming_audit(self) -> None:
         self.assertEqual(
             verify([], []), ["изменений зависимостей в PR нет; проверять нечего"]
         )
-
-    def test_missing_change_is_coverage_error(self) -> None:
-        expected = [
-            Change("updated", "NuGet", "Npgsql", "10.0.4"),
-            Change("added", "pip", "httpx", "0.28.0"),
-        ]
-        with self.assertRaises(CoverageError) as context:
-            _ = verify(expected, [Change("updated", "nuget", "Npgsql", "10.0.4")])
-        self.assertIn("httpx", str(context.exception))
-
-    def test_actions_ecosystem_is_reported_but_not_claimed_as_covered(self) -> None:
-        expected = [
-            Change("added", "actions", "actions/dependency-review-action", "a1d282b"),
-            Change("added", "pip", "httpx", "0.28.0"),
-        ]
-        notes = verify(expected, [Change("added", "pip", "httpx", "0.28.0")])
-        self.assertEqual(notes[0], "покрытие подтверждено для 1 изменений")
-        self.assertIn("githubactions не подтверждается графом PR", notes[1])
-        self.assertIn("actions/dependency-review-action", notes[1])
-
-    def test_unconfirmed_actions_change_alone_does_not_fail(self) -> None:
-        notes = verify([Change("added", "actions", "actions/checkout", "3d3c42e")], [])
-        self.assertEqual(notes[0], "покрытие подтверждено для 0 изменений")
-        self.assertIn("githubactions", notes[1])
-
-    def test_empty_report_with_expected_changes_is_error(self) -> None:
-        with self.assertRaises(CoverageError):
-            _ = verify([Change("added", "pip", "httpx", "0.28.0")], [])
-
-    def test_output_parsing_handles_action_and_api_shapes(self) -> None:
-        action_shape = json.dumps(
-            [
-                {
-                    "change-type": "added",
-                    "ecosystem": "pip",
-                    "name": "httpx",
-                    "version": "0.28.0",
-                }
-            ]
-        )
-        api_shape = json.dumps(
-            [
-                {
-                    "change_type": "added",
-                    "ecosystem": "pip",
-                    "name": "httpx",
-                    "version": "0.28.0",
-                }
-            ]
-        )
-        expected = [Change("added", "pip", "httpx", "0.28.0")]
-        self.assertEqual(len(reported(action_shape)), 1)
-        self.assertEqual(len(reported(api_shape)), 1)
-        _ = verify(expected, reported(action_shape))
-        _ = verify(expected, reported(api_shape))
         self.assertEqual(reported(""), [])
-        self.assertEqual(reported("   "), [])
+
+    def test_actions_ecosystem_is_never_claimed_as_covered(self) -> None:
+        expected = [
+            Change(
+                "added",
+                "actions",
+                "actions/checkout",
+                "a" * 40,
+                ".github/workflows/new.yml",
+            )
+        ]
+        for received in ([], expected):
+            notes = verify(expected, received)
+            self.assertIn("0 изменений", notes[0])
+            self.assertIn("не подтверждается", notes[1])
+            self.assertIn("new.yml", notes[1])
 
     def test_broken_output_is_coverage_error(self) -> None:
-        with self.assertRaises(CoverageError):
-            _ = reported("{")
-        with self.assertRaises(CoverageError):
-            _ = reported(json.dumps({"changes": []}))
-        with self.assertRaises(CoverageError):
-            _ = reported(json.dumps([1]))
+        for text in (
+            "{",
+            '{"changes": []}',
+            "[1]",
+            "[{}]",
+            '[{"change_type":"updated","ecosystem":"pip","name":"p","version":"1","manifest":"requirements.txt"}]',
+        ):
+            with self.subTest(text=text), self.assertRaises(CoverageError):
+                _ = reported(text)
 
     def test_imprecise_versions_are_reported(self) -> None:
         found = imprecise(
             [
-                Change("added", "NuGet", "Npgsql", ">= 0"),
-                Change("added", "pip", "httpx", "0.28.0"),
+                Change("added", "NuGet", "Npgsql", ">= 0", "packages.lock.json"),
+                Change("added", "pip", "httpx", "0.28.0", "requirements.txt"),
             ]
         )
         self.assertEqual(found, ["Npgsql >= 0"])
