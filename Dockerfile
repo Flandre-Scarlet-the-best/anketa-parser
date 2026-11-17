@@ -59,7 +59,7 @@ ENTRYPOINT ["dotnet", "/app/host/AnketaParser.Host.dll"]
 
 # Официальный PostgreSQL содержит gosu со старым Go. Собираем закреплённый исходник
 # исправленным компилятором; пересмотреть после обновления gosu в базовом образе.
-FROM golang:1.27.3-alpine3.24@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS gosu-build
+FROM golang:1.27.4-alpine3.24@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS gosu-build
 RUN CGO_ENABLED=0 GOTOOLCHAIN=local GOBIN=/out GOFLAGS=-trimpath \
     go install github.com/tianon/gosu@29b939aa5bd4dc588af765b8248f6e39150d2565
 
