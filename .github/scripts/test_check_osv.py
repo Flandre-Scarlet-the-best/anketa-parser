@@ -330,6 +330,59 @@ class ExitCodeTests(RepositoryCase):
         with self.assertRaisesRegex(CoverageError, "обращение к базе"):
             _ = check_source(self.binary(), source, self.root)
 
+    def test_project_only_lockfile_is_not_a_coverage_gap(self) -> None:
+        _ = self.write(
+            "src/Core/packages.lock.json",
+            json.dumps(
+                {
+                    "version": 2,
+                    "dependencies": {
+                        "net10.0": {"Project.Reference": {"type": "Project"}}
+                    },
+                }
+            ),
+        )
+        self.stage()
+        source = inventory(self.root)[0]
+        self.assertEqual(source.packages, frozenset())
+        results = [
+            {
+                "source": {"path": source.path},
+                "packages": [
+                    {
+                        "package": {
+                            "name": "Project.Reference",
+                            "version": "",
+                            "ecosystem": "NuGet",
+                        }
+                    }
+                ],
+            }
+        ]
+        self.run_plan({source.lockfile_argument(): {"code": 0, "results": results}})
+        self.assertEqual(check_source(self.binary(), source, self.root), [])
+        # Успех без записей и с чужим пакетом по-прежнему блокируется.
+        for broken in (
+            [],
+            [
+                dict(
+                    results[0],
+                    packages=[
+                        {
+                            "package": {
+                                "name": "Other",
+                                "version": "1.0",
+                                "ecosystem": "NuGet",
+                            }
+                        }
+                    ],
+                )
+            ],
+        ):
+            self.run_plan({source.lockfile_argument(): {"code": 0, "results": broken}})
+            with self.subTest(broken=broken), self.assertRaises(CoverageError):
+                _ = check_source(self.binary(), source, self.root)
+
     def test_empty_lock_requires_no_packages_code(self) -> None:
         _ = self.write("src/Core/packages.lock.json", EMPTY_LOCK)
         self.stage()

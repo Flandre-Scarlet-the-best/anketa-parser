@@ -143,7 +143,12 @@ def inventory(root: Path) -> list[Source]:
 
 
 def scanner_command(binary: list[str], source: Source) -> list[str]:
-    """Команда сканирования одного источника с явным разбором формата."""
+    """Команда сканирования одного источника с явным разбором формата.
+
+    `--no-resolve` обязателен: без него сканер разрешает транзитивные
+    зависимости манифеста и добавляет пакеты, которых нет в проверяемом
+    инвентаре, поэтому строгая сверка объявляла бы ложный пробел охвата.
+    """
     return [
         *binary,
         "scan",
@@ -151,6 +156,7 @@ def scanner_command(binary: list[str], source: Source) -> list[str]:
         "--format",
         "json",
         "--all-packages",
+        "--no-resolve",
         "--lockfile",
         source.lockfile_argument(),
     ]
@@ -176,8 +182,10 @@ def run_scanner(binary: list[str], source: Source, root: Path) -> tuple[int, str
     return result.returncode, result.stdout, result.stderr
 
 
-def vulnerabilities(report: str, source: Source, root: Path | None = None) -> list[str]:
-    """Сверить инвентарь отчёта и вернуть безопасные строки находок."""
+def audited_results(
+    report: str, source: Source, root: Path | None = None
+) -> tuple[set[tuple[str, str]], list[dict[str, object]]]:
+    """Пакеты отчёта без ссылок Project и записи результатов для находок."""
     try:
         data = cast(object, json.loads(report))
     except json.JSONDecodeError as error:
@@ -189,9 +197,8 @@ def vulnerabilities(report: str, source: Source, root: Path | None = None) -> li
     results = cast(dict[str, object], data).get("results")
     if not isinstance(results, list):
         raise CoverageError(f"{source.path}: в отчёте нет списка результатов")
-    found: list[str] = []
-    seen: set[str] = set()
     scanned: set[tuple[str, str]] = set()
+    audited: list[dict[str, object]] = []
     for entry in cast(list[object], results):
         if not isinstance(entry, dict):
             raise CoverageError(f"{source.path}: результат неизвестного формата")
@@ -243,15 +250,24 @@ def vulnerabilities(report: str, source: Source, root: Path | None = None) -> li
                     f"{source.path}: неожиданная экосистема {ecosystem}"
                 )
             scanned.add((canonical_name(name, source), version))
-        found.extend(describe_packages(item, source, seen))
+        audited.append(item)
+    return scanned, audited
+
+
+def vulnerabilities(report: str, source: Source, root: Path | None = None) -> list[str]:
+    """Сверить инвентарь отчёта и вернуть безопасные строки находок."""
+    scanned, audited = audited_results(report, source, root)
     expected = {
         (canonical_name(name, source), version) for name, version in source.packages
     }
     if scanned != expected:
         raise CoverageError(
-            f"{source.path}: охват пакетов не подтверждён; "
-            + f"отсутствуют {sorted(expected - scanned)}, лишние {sorted(scanned - expected)}"
+            f"{source.path}: охват пакетов не подтверждён; отсутствуют {sorted(expected - scanned)}, лишние {sorted(scanned - expected)}"
         )
+    found: list[str] = []
+    seen: set[str] = set()
+    for item in audited:
+        found.extend(describe_packages(item, source, seen))
     return found
 
 
@@ -329,11 +345,16 @@ def check_source(binary: list[str], source: Source, root: Path) -> list[str]:
         raise CoverageError(
             f"{source.path}: сканер не нашёл пакетов, а инвентарь содержит {expected}"
         )
-    if not empty and not expected:
-        raise CoverageError(
-            f"{source.path}: сканер нашёл пакеты, а инвентарь пуст: формат разобран неверно"
-        )
     if empty:
+        return []
+    if not expected:
+        # Инвентарь пуст, но сканер видит ссылки Project: они не являются
+        # пакетами и не доказывают разбор формата только при отсутствии записей.
+        scanned, audited = audited_results(output, source, root)
+        if scanned or not audited:
+            raise CoverageError(
+                f"{source.path}: сканер нашёл пакеты, а инвентарь пуст: формат разобран неверно"
+            )
         return []
     findings = vulnerabilities(output, source, root)
     if code == FINDINGS_EXIT_CODE and not findings:

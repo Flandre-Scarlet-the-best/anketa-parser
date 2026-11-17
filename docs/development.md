@@ -181,10 +181,16 @@ $env:GITLEAKS_BINARY = (Get-Command gitleaks).Source
 
 ```powershell
 dotnet restore --locked-mode --force
-dotnet package list --vulnerable --include-transitive --format json > "$env:TEMP/nuget-audit.json"
+if ($LASTEXITCODE -ne 0) { throw "Восстановление не удалось: отчёт не создаётся" }
+dotnet package list --no-restore --vulnerable --include-transitive --format json > "$env:TEMP/nuget-audit.json"
 .venv/Scripts/python .github/scripts/check_nuget_audit.py --report "$env:TEMP/nuget-audit.json" --root .
 .venv/Scripts/python .github/scripts/check_osv.py --root . --binary <путь>/osv-scanner
 ```
+
+Проверка кода выхода обязательна: PowerShell не прерывает сценарий после неудачной
+внешней команды, а `dotnet package list` без `--no-restore` выполнил бы собственное
+восстановление без `--locked-mode` и мог изменить lock-файлы. CI использует тот же
+порядок с явным `--no-restore`.
 
 [check_nuget_audit.py](../.github/scripts/check_nuget_audit.py) считает успехом
 только отчёт, в котором есть все проекты решения и запрошен транзитивный режим.

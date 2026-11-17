@@ -302,17 +302,18 @@ def scan_git(
         )
     except OSError as error:
         raise CoverageError(f"Gitleaks не запустился: {error}") from error
-    diagnostic = result.stderr.strip()[:MAX_DIAGNOSTIC]
     if any(
         "[git]" in line and re.search(r"\b(?:ERR|error)\b", line, re.IGNORECASE)
         for line in result.stderr.splitlines()
     ):
         raise CoverageError("Gitleaks сообщил об ошибке Git; охват не доказан")
     if result.returncode not in (LEAK_EXIT_CODE, CLEAN_EXIT_CODE):
-        # При сбое инструмента отчёт может отсутствовать, поэтому код выхода и
-        # диагностика проверяются до чтения файла: иначе причина отказа теряется.
+        # При сбое инструмента отчёт может отсутствовать, поэтому код выхода
+        # проверяется до чтения файла: иначе причина отказа теряется.
+        # Текст stderr не публикуется: ошибка конфигурации может содержать
+        # литерал секрета из правила без `id`, и редакция `--redact` его не скроет.
         raise CoverageError(
-            f"Gitleaks завершился с кодом {result.returncode}: {diagnostic or 'нет диагностики'}"
+            f"Gitleaks завершился с кодом {result.returncode}; охват не доказан"
         )
     findings = read_report(report)
     if result.returncode == LEAK_EXIT_CODE:

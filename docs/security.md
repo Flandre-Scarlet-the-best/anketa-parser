@@ -153,6 +153,11 @@ PR добавляет или обновляет. Action закреплён по�
 а форма `added`/`removed` и поля источника/версии — в
 [ChangeSchema закреплённого Dependency Review](https://github.com/actions/dependency-review-action/blob/a1d282b36b6f3519aa1f3fc636f609c47dddb294/src/schemas.ts).
 
+Аудит lock-файлов запускает OSV-Scanner с `--all-packages` и `--no-resolve`:
+разрешение транзитивных зависимостей манифеста выключено, поэтому отчёт
+доказывает ровно объявленный инвентарь, а лишний пакет в отчёте остаётся
+пробелом охвата. Ссылки `Project` в lock-файле пакетами не считаются.
+
 ## Контейнеры и данные
 
 Основной Compose не публикует порты, но сеть `backend` не помечена `internal`:

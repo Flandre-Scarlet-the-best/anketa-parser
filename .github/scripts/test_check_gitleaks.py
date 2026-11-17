@@ -183,14 +183,19 @@ class GitleaksDiagnosticTests(unittest.TestCase):
     ) -> None:
         scan = Scan(check_gitleaks.HISTORY_MODE, head="a" * 40)
         with tempfile.TemporaryDirectory() as directory:
-            result = subprocess.CompletedProcess([], 3, "", "boom: cannot scan")
+            result = subprocess.CompletedProcess(
+                [], 3, "", "regex: private-value без id"
+            )
             with (
                 patch("check_gitleaks.subprocess.run", return_value=result),
-                self.assertRaisesRegex(CoverageError, "кодом 3: boom"),
+                self.assertRaises(CoverageError) as error,
             ):
                 _ = check_gitleaks.scan_git(
                     Path(directory), Path("gitleaks"), scan, Path(directory)
                 )
+        self.assertIn("кодом 3", str(error.exception))
+        # Сырой stderr не публикуется: он может содержать литерал секрета.
+        self.assertNotIn("private-value", str(error.exception))
 
     def test_git_errors_block_clean_exit_without_exposing_stderr(self) -> None:
         scan = Scan(check_gitleaks.HISTORY_MODE, head="a" * 40)
