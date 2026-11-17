@@ -1,0 +1,188 @@
+name: Безопасность контейнеров
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  schedule:
+    - cron: '17 4 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TRIVY_DISABLE_TELEMETRY: 'true'
+  TRIVY_SKIP_VERSION_CHECK: 'true'
+
+jobs:
+  configuration:
+    name: Hadolint и конфигурации Trivy
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Установить проверенные версии анализаторов
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o hadolint https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-x86_64
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o trivy.tar.gz https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz
+          echo 'c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507  hadolint' | sha256sum --check
+          echo 'bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf  trivy.tar.gz' | sha256sum --check
+          chmod +x hadolint
+          tar -xzf trivy.tar.gz trivy
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Проверить Dockerfile и негативный контроль Hadolint
+        shell: bash
+        run: |
+          set -euo pipefail
+          hadolint --version
+          git ls-files -z > "$RUNNER_TEMP/tracked-files"
+          files=()
+          while IFS= read -r -d '' file; do
+            case "${file##*/}" in
+              Dockerfile|Dockerfile.*|*.Dockerfile|Containerfile|Containerfile.*|*.Containerfile) files+=("$file") ;;
+            esac
+          done < "$RUNNER_TEMP/tracked-files"
+          if (( ${#files[@]} == 0 )); then
+            echo 'Не найдены Dockerfile или Containerfile' >&2
+            exit 1
+          fi
+          printf 'Hadolint: %s\n' "${files[@]}"
+          hadolint "${files[@]}"
+          printf 'FROM ubuntu:latest\n' > "$RUNNER_TEMP/Dockerfile.invalid"
+          if hadolint "$RUNNER_TEMP/Dockerfile.invalid"; then
+            echo 'Негативный контроль Hadolint не обнаружил нарушение' >&2
+            exit 1
+          fi
+      - name: Проверить конфигурации и негативные контроли Trivy
+        shell: bash
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-config-cache
+        run: |
+          set -euo pipefail
+          trivy --version
+          git ls-files -z > "$RUNNER_TEMP/tracked-files"
+          files=()
+          while IFS= read -r -d '' file; do
+            case "${file##*/}" in
+              Dockerfile|Dockerfile.*|*.Dockerfile|Containerfile|Containerfile.*|*.Containerfile) files+=("$file") ;;
+            esac
+          done < "$RUNNER_TEMP/tracked-files"
+          (( ${#files[@]} > 0 )) || exit 1
+          scan_config() {
+            local file="$1" type="$2" report="$3" status=0
+            shift 3
+            trivy config --config '' --ignorefile '' --skip-check-update --include-non-failures --exit-code 42 --severity HIGH,CRITICAL --format json --output "$report" "$@" "$file" || status=$?
+            if [[ "$status" != 0 && "$status" != 42 ]]; then
+              echo "Ошибка сканирования $file: $status" >&2
+              return 1
+            fi
+            jq -e --arg file "$file" --arg target "${file##*/}" --arg type "$type" '
+              .SchemaVersion == 2 and .ArtifactName == $file and
+              ([.Results[]? | select(.Target == $target and .Type == $type) |
+                select((.Misconfigurations | type == "array" and length > 0))] | length == 1)
+            ' "$report" > /dev/null || return 1
+            jq -r '.Results[] | .Misconfigurations[]? | [.ID, .Severity, .Status, .Message] | @tsv' "$report"
+            return "$status"
+          }
+          for file in "${files[@]}"; do
+            scan_config "$file" dockerfile "$RUNNER_TEMP/config.json"
+          done
+          for file in compose.yaml compose.debug.yaml; do
+            scan_config "$file" yaml "$RUNNER_TEMP/config.json" --misconfig-scanners yaml --config-check .github/security/compose.rego --check-namespaces user
+            jq -e '[.Results[].Misconfigurations[] | select(.ID == "COMPOSE-001")] | length > 0' "$RUNNER_TEMP/config.json" > /dev/null
+          done
+          printf 'FROM alpine:3.20\nUSER root\n' > "$RUNNER_TEMP/Dockerfile.bad"
+          status=0
+          scan_config "$RUNNER_TEMP/Dockerfile.bad" dockerfile "$RUNNER_TEMP/bad.json" || status=$?
+          [[ "$status" == 42 ]] || { echo 'Trivy не обнаружил опасный Dockerfile' >&2; exit 1; }
+          printf 'services:\n  test:\n    image: alpine:3.20\n    privileged: true\n' > "$RUNNER_TEMP/compose.bad.yaml"
+          status=0
+          scan_config "$RUNNER_TEMP/compose.bad.yaml" yaml "$RUNNER_TEMP/bad.json" --misconfig-scanners yaml --config-check .github/security/compose.rego --check-namespaces user || status=$?
+          [[ "$status" == 42 ]] || { echo 'Trivy не обнаружил privileged в Compose' >&2; exit 1; }
+          jq -e '[.Results[].Misconfigurations[] | select(.ID == "COMPOSE-001" and .Status == "FAIL")] | length > 0' "$RUNNER_TEMP/bad.json" > /dev/null
+
+  images:
+    name: Trivy runtime-образы
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Установить проверенный Trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o trivy.tar.gz https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz
+          echo 'bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf  trivy.tar.gz' | sha256sum --check
+          tar -xzf trivy.tar.gz trivy
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Собрать и получить исполняемые образы
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose --project-name anketa-security-audit --profile '*' config --format json > "$RUNNER_TEMP/compose.json"
+          jq -e '.services.host.build.target == "runtime" and .services.maintenance.build.target == "maintenance" and .services.backup.build == .services.maintenance.build and .services.backup.image == .services.maintenance.image and ([.services.host.image, .services.maintenance.image, .services.postgres.image] | (all(type == "string" and length > 0) and (unique | length == 3)))' "$RUNNER_TEMP/compose.json" > /dev/null
+          docker compose --project-name anketa-security-audit --profile '*' build --pull host maintenance
+          postgres=$(jq -er '.services.postgres.image' "$RUNNER_TEMP/compose.json")
+          docker pull "$postgres"
+      - name: Проверить все образы и свежую базу CVE
+        shell: bash
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-image-cache
+        run: |
+          set -euo pipefail
+          postgres=$(jq -er '.services.postgres.image' "$RUNNER_TEMP/compose.json")
+          host=$(jq -er '.services.host.image' "$RUNNER_TEMP/compose.json")
+          maintenance=$(jq -er '.services.maintenance.image' "$RUNNER_TEMP/compose.json")
+          images=("$host" "$maintenance" "$postgres")
+          (( ${#images[@]} == 3 )) || exit 1
+          failed=0
+          for index in "${!images[@]}"; do
+            image="${images[$index]}"
+            report="$RUNNER_TEMP/image-$index.json"
+            id=$(docker image inspect --format '{{.Id}}' "$image") || { failed=1; continue; }
+            printf '\nОбраз: %s\nID: %s\n' "$image" "$id"
+            status=0
+            trivy image --config '' --ignorefile '' --no-progress --scanners vuln --image-src docker --severity HIGH,CRITICAL --exit-code 42 --format json --output "$report" "$image" || status=$?
+            if [[ "$status" != 0 && "$status" != 42 ]]; then
+              echo "Ошибка сканирования $image: $status" >&2
+              failed=1
+              continue
+            fi
+            if ! jq -e --arg image "$image" --arg id "$id" '
+              .SchemaVersion == 2 and .ArtifactType == "container_image" and
+              .ArtifactName == $image and .Metadata.ImageID == $id and
+              (.Metadata.OS.Family | type == "string" and length > 0) and
+              ([.Results[]? | select(.Class == "os-pkgs")] | length > 0)
+            ' "$report" > /dev/null; then
+              echo "Неполный или повреждённый отчёт $image" >&2
+              failed=1
+              continue
+            fi
+            jq -r '.Results[] | . as $r | .Vulnerabilities[]? | [$r.Class, $r.Type, .VulnerabilityID, .PkgName, .InstalledVersion, (.FixedVersion // "нет исправления"), (.Status // "неизвестно"), .Severity] | @tsv' "$report"
+            [[ "$status" == 0 ]] || failed=1
+          done
+          missing="anketa-security-missing:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if docker image inspect "$missing" > /dev/null 2>&1; then
+            echo 'Невозможно выполнить негативный контроль: образ существует' >&2
+            failed=1
+          else
+            status=0
+            trivy image --config '' --ignorefile '' --no-progress --scanners vuln --image-src docker --exit-code 42 "$missing" || status=$?
+            if [[ "$status" == 0 || "$status" == 42 ]]; then
+              echo 'Пропущенный образ не вызвал ошибку сканера' >&2
+              failed=1
+            fi
+          fi
+          trivy version --format json | tee "$RUNNER_TEMP/trivy-version.json"
+          jq -e '.VulnerabilityDB.Version > 0 and (.VulnerabilityDB.UpdatedAt | type == "string" and length > 0) and (.VulnerabilityDB.DownloadedAt | type == "string" and length > 0) and (.VulnerabilityDB.NextUpdate | type == "string" and length > 0)' "$RUNNER_TEMP/trivy-version.json" > /dev/null || failed=1
+          exit "$failed"
