@@ -12,9 +12,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from threading import Barrier, Lock
 from typing import cast, override
+from unittest.mock import patch
 
 from check_renovate import (
+    NEGATIVE,
+    SCENARIOS,
     CoverageError,
     Scenario,
     branches_by_dep,
@@ -25,6 +29,7 @@ from check_renovate import (
     extraction_index,
     grouped_config,
     iter_package_files,
+    run_fixtures,
     run_script,
     updates,
     verify_expected,
@@ -296,6 +301,143 @@ class ConfigTests(RepositoryCase):
         without_rules = self.write("rules.json", json.dumps({"ignorePresets": []}))
         with self.assertRaises(CoverageError):
             _ = grouped_config(without_rules, self.root / "out.json")
+
+
+class FixtureRunnerTests(RepositoryCase):
+    def config(self) -> Path:
+        return self.write("renovate.json", '{"packageRules": []}')
+
+    def fake_engine(self, failure: str = "", missing: str = "") -> Path:
+        """Подпроцесс выдаёт реальные формы lookup-лога для каждой фикстуры."""
+        scenarios = {scenario.name: scenario for scenario in (*SCENARIOS, NEGATIVE)}
+        packages = {
+            name: {
+                path: [dep for dep in scenario.deps if dep in content]
+                for path, content in scenario.files.items()
+            }
+            for name, scenario in scenarios.items()
+        }
+        return self.write(
+            "engine.py",
+            "import json, os, sys\nfrom pathlib import Path\n"
+            f"packages = {packages!r}\nfailure = {failure!r}\nmissing = {missing!r}\n"
+            "root = Path.cwd()\nname = root.name\n"
+            "assert os.environ['RENOVATE_BASE_DIR'] == str(root / '.renovate')\n"
+            "assert os.environ['RENOVATE_CACHE_DIR'] == str(root / '.renovate-cache')\n"
+            "if name == failure:\n    sys.exit(7)\n"
+            "files = []\n"
+            "for path, deps in packages[name].items():\n"
+            "    entries = [{'depName': dep, 'updates': [{'branchName': "
+            "'renovate/grouped' if name == 'grouping-control' else 'renovate/' + dep}]} "
+            "for dep in deps if dep != missing]\n"
+            "    files.append({'packageFile': path, 'deps': entries})\n"
+            "print(json.dumps({'msg': 'packageFiles with updates', 'config': {'nuget': files}}))\n",
+        )
+
+    def test_parallel_subprocesses_verify_all_scenarios_in_stable_order(self) -> None:
+        config = self.config()
+        engine = self.fake_engine()
+        serial = run_fixtures(sys.executable, engine, config, workers=1)
+        parallel = run_fixtures(sys.executable, engine, config, workers=2)
+        self.assertEqual(parallel, serial)
+        self.assertEqual(
+            [note.split(":", 1)[0] for note in parallel],
+            [scenario.name for scenario in (*SCENARIOS, NEGATIVE)],
+        )
+        self.assertIn("объединены", parallel[-1])
+
+    def test_failure_of_each_subprocess_rejects_entire_fixture_run(self) -> None:
+        config = self.config()
+        for scenario in (*SCENARIOS, NEGATIVE):
+            with self.subTest(scenario=scenario.name):
+                engine = self.fake_engine(failure=scenario.name)
+                with self.assertRaisesRegex(CoverageError, "кодом 7"):
+                    _ = run_fixtures(sys.executable, engine, config)
+
+    def test_cli_failure_does_not_print_partial_pass(self) -> None:
+        result = subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                str(Path(__file__).with_name("check_renovate.py")),
+                "fixtures",
+                "--root",
+                str(self.root),
+                "--node",
+                sys.executable,
+                "--renovate",
+                str(self.fake_engine(failure=NEGATIVE.name)),
+                "--config",
+                str(self.config()),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("кодом 7", result.stderr)
+        self.assertNotIn("Renovate fixtures:", result.stdout)
+
+    def test_missing_updates_reject_positive_and_negative_control(self) -> None:
+        config = self.config()
+        for dependency in ("Polly", "Autofac"):
+            with self.subTest(dependency=dependency):
+                engine = self.fake_engine(missing=dependency)
+                with self.assertRaises(CoverageError):
+                    _ = run_fixtures(sys.executable, engine, config)
+
+    def test_negative_control_without_grouping_rejects_run(self) -> None:
+        engine = self.fake_engine()
+        _ = engine.write_text(
+            engine.read_text(encoding="utf-8").replace(
+                "name == 'grouping-control'", "False"
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(CoverageError, "не дал группировки"):
+            _ = run_fixtures(sys.executable, engine, self.config())
+
+    def test_workers_overlap_without_exceeding_limit_or_sharing_directories(
+        self,
+    ) -> None:
+        barrier = Barrier(2, timeout=10)
+        lock = Lock()
+        active = 0
+        peak = 0
+        directories: list[Path] = []
+
+        def fake_lookup(
+            node: str, script: Path, directory: Path, config_file: Path
+        ) -> dict[tuple[str, str], tuple[str, ...]]:
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+                directories.append(directory)
+                number = len(directories)
+            if number <= 2:
+                _ = barrier.wait()
+            scenario = next(
+                item for item in (*SCENARIOS, NEGATIVE) if item.name == directory.name
+            )
+            result = {
+                (path, dep): (
+                    "renovate/grouped" if scenario == NEGATIVE else f"renovate/{dep}",
+                )
+                for path, content in scenario.files.items()
+                for dep in scenario.deps
+                if dep in content
+            }
+            with lock:
+                active -= 1
+            return result
+
+        with patch("check_renovate.lookup", side_effect=fake_lookup):
+            notes = run_fixtures("", Path("engine"), self.config(), workers=2)
+        self.assertEqual(len(notes), len(SCENARIOS) + 1)
+        self.assertEqual(peak, 2)
+        self.assertEqual(len(set(directories)), len(notes))
+        self.assertTrue(all(not path.exists() for path in directories))
 
 
 class RunnerTests(RepositoryCase):

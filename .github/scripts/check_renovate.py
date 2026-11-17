@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -486,6 +487,8 @@ def lookup(
             "LOG_FORMAT": "json",
             "RENOVATE_PLATFORM": "local",
             "RENOVATE_CONFIG_FILE": str(config_file),
+            "RENOVATE_BASE_DIR": str(directory / ".renovate"),
+            "RENOVATE_CACHE_DIR": str(directory / ".renovate-cache"),
         },
     )
     found = updates(output)
@@ -494,21 +497,35 @@ def lookup(
     return found
 
 
-def run_fixtures(node: str, script: Path, config_file: Path) -> list[str]:
-    """Все сценарии раздельных веток и одна зависимость в двух файлах."""
-    with tempfile.TemporaryDirectory(prefix="renovate-fixtures-") as directory:
-        root = Path(directory)
-        notes: list[str] = []
-        for scenario in SCENARIOS:
-            target = write_scenario(root, scenario)
-            found = lookup(node, script, target, config_file)
-            verify_relation(found, scenario)
-            pairs = ", ".join(
-                f"{name}→{sorted(branches)}"
-                for name, branches in sorted(branches_by_dep(found).items())
-            )
-            notes.append(f"{scenario.name}: {pairs}")
-        return notes
+def run_scenario(node: str, script: Path, config_file: Path, scenario: Scenario) -> str:
+    """Один lookup со своим рабочим каталогом и кэшем движка."""
+    with tempfile.TemporaryDirectory(prefix="renovate-fixture-") as directory:
+        target = write_scenario(Path(directory), scenario)
+        found = lookup(node, script, target, config_file)
+        verify_relation(found, scenario)
+        pairs = ", ".join(
+            f"{name}→{sorted(branches)}"
+            for name, branches in sorted(branches_by_dep(found).items())
+        )
+        return f"{scenario.name}: {pairs}"
+
+
+def run_fixtures(
+    node: str, script: Path, config_file: Path, workers: int = 2
+) -> list[str]:
+    """Ограничить число процессов; выдавать полный результат в порядке сценариев.
+
+    Будущие результаты читаются все до печати PASS. Исключение любого lookup,
+    включая отрицательный контроль, выходит в main; executor ждёт завершения
+    остальных процессов до удаления временных каталогов.
+    """
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [
+            executor.submit(run_scenario, node, script, config_file, scenario)
+            for scenario in SCENARIOS
+        ]
+        futures.append(executor.submit(negative_control, node, script, config_file))
+        return [future.result() for future in futures]
 
 
 def grouped_config(config_file: Path, target: Path) -> Path:
@@ -540,7 +557,7 @@ def negative_control(node: str, script: Path, config_file: Path) -> str:
         config = grouped_config(config_file, root / "grouped.json")
         found = lookup(node, script, target, config)
         by_dep = branches_by_dep(found)
-        shared = by_dep["Serilog"] & by_dep["Autofac"]
+        shared = by_dep.get("Serilog", set()) & by_dep.get("Autofac", set())
         if not shared:
             raise CoverageError(
                 "Отрицательный контроль не дал группировки: проверка не различает объединение"
@@ -557,6 +574,7 @@ class Arguments(argparse.Namespace):
         self.renovate: Path | None = None
         self.validator: Path | None = None
         self.config: Path | None = None
+        self.workers: int = 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -575,6 +593,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="dist/config-validator.js закреплённого выпуска",
     )
     _ = parser.add_argument("--config", type=Path)
+    _ = parser.add_argument(
+        "--workers",
+        type=int,
+        choices=(1, 2, 3),
+        default=2,
+        help="Число одновременных lookup-процессов; 1 для последовательного замера",
+    )
     return parser
 
 
@@ -622,9 +647,8 @@ def main() -> int:
             for note in verify_extraction(root, output):
                 print(f"Renovate extract: {note}")
             return 0
-        notes = run_fixtures(args.node, require(args.renovate, "renovate.js"), config)
-        notes.append(
-            negative_control(args.node, require(args.renovate, "renovate.js"), config)
+        notes = run_fixtures(
+            args.node, require(args.renovate, "renovate.js"), config, args.workers
         )
     except CoverageError as error:
         print(f"::error::Проверка Renovate не доказана: {error}", file=sys.stderr)
