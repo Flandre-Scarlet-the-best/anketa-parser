@@ -2,8 +2,6 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.Json;
 
-using Microsoft.EntityFrameworkCore;
-
 using Npgsql;
 
 namespace AnketaParser.Infrastructure.Persistence;
@@ -34,6 +32,31 @@ public sealed record BackupState(DateTimeOffset? LastSuccess, DateTimeOffset? La
 }
 
 internal sealed record RestoreVerification(string Archive, long Length, string Digest, DateTimeOffset VerifiedAt);
+
+/// <summary>Что удалось записать о выполненном восстановлении в служебный статус резервирования.</summary>
+public enum RestoreStatusRecord
+{
+    /// <summary>Статус текущей копии обновлён отметкой проверки восстановлением.</summary>
+    Updated,
+
+    /// <summary>Архив не является текущим: подтверждение сохранено только отметкой рядом с архивом.</summary>
+    NotCurrentArchive,
+
+    /// <summary>Повреждённый статус сохранён отдельно, вместо него записан корректный.</summary>
+    RepairedFromCorrupt,
+
+    /// <summary>Статус не прочитан или не записан; факт восстановления подтверждён только отметкой архива.</summary>
+    NotRecorded,
+}
+
+/// <summary>Раздельный результат восстановления: сам факт и запись служебного статуса.</summary>
+public sealed record RestoreOutcome(string Archive, DateTimeOffset VerifiedAt, RestoreStatusRecord StatusRecord);
+
+/// <summary>Данные восстановлены и подтверждены, но служебная отметка проверки не записана.</summary>
+public sealed class RestoreCompletionException : InvalidOperationException
+{
+    public RestoreCompletionException(string message, Exception innerException) : base(message, innerException) { }
+}
 
 public sealed class RestoreTargetException : InvalidOperationException
 {
@@ -99,19 +122,17 @@ public sealed class BackupService
             catch (JsonException)
             {
                 stateCanBeWritten = false;
-                var preserved = Path.Combine(_settings.Directory, "status-corrupt-" + Guid.NewGuid().ToString("N") + ".json");
-                File.Move(StatePath, preserved);
-                RestrictFile(preserved);
+                PreserveCorruptState();
                 state = new BackupState(null, null, "invalid_status", null, null);
                 stateCanBeWritten = true;
             }
 
-            await using (var db = new ProductDbContext(new DbContextOptionsBuilder<ProductDbContext>().UseNpgsql(_settings.ConnectionString).Options))
+            await using (var db = ProductDbContext.Create(_settings.ConnectionString))
             {
                 if (await SchemaMaintenance.StatusAsync(db, operation).ConfigureAwait(false) != "ready")
                     throw new InvalidOperationException("Резервирование требует совместимой прикладной схемы.");
             }
-            var dumpArguments = await DumpArgumentsAsync(operation).ConfigureAwait(false);
+            var dumpArguments = DumpArguments();
             dumpArguments.AddRange(["--file", partial]);
             await RunToolAsync(_settings.PgDump, dumpArguments, _settings.ConnectionString, operation).ConfigureAwait(false);
             RestrictFile(partial);
@@ -120,9 +141,11 @@ public sealed class BackupService
             await RunToolAsync(_settings.PgRestore, ["--file", OperatingSystem.IsWindows() ? "NUL" : "/dev/null", partial], null, operation).ConfigureAwait(false);
             var size = new FileInfo(partial).Length;
             if (size <= 0 || size > _settings.MaxBytes) throw new IOException("Архив превышает лимит хранилища.");
-            var protectedBytes = List().Select(x => new FileInfo(Path.Combine(_settings.Directory, x)))
-                .Where(x => File.Exists(x.FullName + ".verified")).Sum(x => x.Length);
-            if (protectedBytes + size > _settings.MaxBytes) throw new IOException("Проверенные копии и новый архив превышают лимит.");
+            // Ограниченная ротация защищает только опубликованную и последнюю подтверждённую копию,
+            // поэтому проверять лимит нужно по этому минимуму, а не по всем когда-либо проверенным архивам.
+            var protectedBytes = ProtectedArchives(state, ManagedArchives())
+                .Sum(archive => new FileInfo(Path.Combine(_settings.Directory, archive)).Length);
+            if (protectedBytes + size > _settings.MaxBytes) throw new IOException("Защищённые копии и новый архив превышают лимит.");
             var digest = await DigestAsync(partial, operation).ConfigureAwait(false);
             if (external is not null)
             {
@@ -177,25 +200,16 @@ public sealed class BackupService
         }
     }
 
-    private async Task<List<string>> DumpArgumentsAsync(CancellationToken ct)
+    private static List<string> DumpArguments()
     {
-        // История EF находится в public. Остальные отношения этой схемы не принадлежат продукту.
-        // Не включаем public через --schema: иначе pg_dump повторно создаёт стандартную схему при восстановлении.
+        // Положительная граница архива: схемы продукта целиком. История миграций принадлежит product,
+        // поэтому public остаётся вне дампа, и посторонние таблицы, функции и типы туда не попадают.
         var arguments = new List<string> { "-Fc", "--no-owner", "--no-acl", "--no-large-objects" };
-        await using var connection = new NpgsqlConnection(_settings.ConnectionString);
-        await connection.OpenAsync(ct).ConfigureAwait(false);
-        await using var command = new NpgsqlCommand("""
-            SELECT '--exclude-table="' || replace(n.nspname,'"','""') || '"."' || replace(c.relname,'"','""') || '"'
-            FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-            WHERE n.nspname='public' AND c.relname<>'__EFMigrationsHistory'
-              AND c.relkind IN ('r','p','v','m','S','f')
-            UNION ALL
-            SELECT '--exclude-schema="' || replace(nspname,'"','""') || '"' FROM pg_namespace
-            WHERE nspname NOT IN ('product','private','public','information_schema') AND nspname !~ '^pg_'
-            """, connection);
-        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        while (await reader.ReadAsync(ct).ConfigureAwait(false))
-            arguments.Add(reader.GetString(0));
+        foreach (var schema in new[] { ProductDbContext.Schema, ProductDbContext.PrivateSchema })
+        {
+            arguments.Add("--schema");
+            arguments.Add(schema);
+        }
         return arguments;
     }
 
@@ -225,7 +239,8 @@ public sealed class BackupService
 
     private void RotateCore(CancellationToken ct = default)
     {
-        var files = List().Select(name => new FileInfo(Path.Combine(_settings.Directory, name))).OrderByDescending(x => x.LastWriteTimeUtc).ThenByDescending(x => x.Name, StringComparer.Ordinal).ToArray();
+        var files = List().Select(name => new FileInfo(Path.Combine(_settings.Directory, name)))
+            .OrderByDescending(x => x.LastWriteTimeUtc).ThenByDescending(x => x.Name, StringComparer.Ordinal).ToArray();
         var managed = files.Where(x => IsManagedArchive(x.Name) && File.Exists(x.FullName + ".sha256")).ToArray();
         var keep = new HashSet<string>(StringComparer.Ordinal);
         foreach (var file in managed.GroupBy(x => x.LastWriteTimeUtc.Date).Take(_settings.Daily).Select(x => x.First())
@@ -233,29 +248,74 @@ public sealed class BackupService
             .Concat(managed.GroupBy(x => (x.LastWriteTimeUtc.Year, x.LastWriteTimeUtc.Month)).Take(_settings.Monthly).Select(x => x.First())))
             keep.Add(file.Name);
         var state = Status();
-        if (state.Archive is not null) keep.Add(state.Archive);
-        foreach (var file in files.Where(x => File.Exists(x.FullName + ".verified"))) keep.Add(file.Name);
+        // Бессрочная защита всех проверенных копий отменяла бы календарную ротацию и лимит ёмкости.
+        var protectedNames = ProtectedArchives(state, managed);
+        keep.UnionWith(protectedNames);
+        var removed = new HashSet<string>(StringComparer.Ordinal);
         foreach (var file in managed.Where(x => !keep.Contains(x.Name)))
         {
             ct.ThrowIfCancellationRequested();
             DeleteArchive(file);
+            removed.Add(file.Name);
         }
-        var remaining = files.Where(x => x.Exists).ToList();
+        var remaining = files.Where(x => !removed.Contains(x.Name)).ToList();
         long total = remaining.Sum(x => x.Length);
+        // Самые старые управляемые архивы, включая вышедшие за календарные категории, освобождают лимит
+        // до защищённого минимума; последняя пригодная подтверждённая копия не удаляется.
         foreach (var file in remaining.AsEnumerable().Reverse())
         {
             ct.ThrowIfCancellationRequested();
             if (total <= _settings.MaxBytes) break;
-            if (!managed.Contains(file) || file.Name == state.Archive || File.Exists(file.FullName + ".verified")) continue;
+            if (!managed.Contains(file) || protectedNames.Contains(file.Name)) continue;
             total -= file.Length; DeleteArchive(file);
         }
         if (total > _settings.MaxBytes) throw new IOException("Лимит занят защищёнными или сторонними копиями; требуется увеличение ёмкости или ручной перенос.");
+    }
+
+    /// <summary>Управляемые архивы в порядке от новых к старым: имя продукта и опубликованная сумма.</summary>
+    private FileInfo[] ManagedArchives() =>
+        List().Select(name => new FileInfo(Path.Combine(_settings.Directory, name)))
+            .Where(x => IsManagedArchive(x.Name) && File.Exists(x.FullName + ".sha256"))
+            .OrderByDescending(x => x.LastWriteTimeUtc).ThenByDescending(x => x.Name, StringComparer.Ordinal)
+            .ToArray();
+
+    /// <summary>Копии, которые нельзя удалять: опубликованная и последняя достоверно подтверждённая восстановлением.</summary>
+    private static HashSet<string> ProtectedArchives(BackupState state, IReadOnlyList<FileInfo> managed)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        if (state.Archive is not null && managed.Any(x => string.Equals(x.Name, state.Archive, StringComparison.Ordinal)))
+            names.Add(state.Archive);
+        foreach (var file in managed)
+        {
+            if (!IsVerifiedByRestore(file)) continue;
+            names.Add(file.Name);
+            break;
+        }
+        return names;
+    }
+
+    /// <summary>Отметка .verified защищает копию только когда она совпадает с самим архивом и его суммой.</summary>
+    private static bool IsVerifiedByRestore(FileInfo archive)
+    {
+        try
+        {
+            var digest = ReadMetadata(archive.FullName + ".sha256");
+            var verification = JsonSerializer.Deserialize<RestoreVerification>(ReadMetadata(archive.FullName + ".verified"));
+            return verification is not null && string.Equals(verification.Archive, archive.Name, StringComparison.Ordinal) &&
+                verification.Length == archive.Length && string.Equals(verification.Digest, digest, StringComparison.Ordinal);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or JsonException)
+        {
+            return false;
+        }
     }
 
     private static void DeleteArchive(FileInfo file)
     {
         file.Delete();
         File.Delete(file.FullName + ".sha256");
+        // Отметка восстановления относится только к удалённой копии: осиротевшая защищала бы несуществующий архив.
+        File.Delete(file.FullName + ".verified");
     }
 
     public async Task VerifyAsync(string name, CancellationToken ct)
@@ -267,7 +327,7 @@ public sealed class BackupService
     }
 
     /// <summary>Восстанавливает только в явно указанную другую пустую БД, без --clean и без удаления данных.</summary>
-    public async Task RestoreAsync(string name, string targetConnectionString, CancellationToken ct)
+    public async Task<RestoreOutcome> RestoreAsync(string name, string targetConnectionString, CancellationToken ct)
     {
         await using var gate = new FileStream(Path.Combine(_settings.Directory, ".lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         var source = new NpgsqlConnectionStringBuilder(_settings.ConnectionString);
@@ -289,17 +349,89 @@ public sealed class BackupService
         else { args.Add("--jobs"); args.Add(_settings.RestoreJobs.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
         args.Add("--dbname"); args.Add(PostgresToolConnection.FormatDatabaseArgument(target.Database ?? target.Username ?? Environment.UserName)); args.Add(ArchivePath(name));
         await RunToolAsync(_settings.PgRestore, args, targetConnectionString, ct).ConfigureAwait(false);
-        await using var db = new ProductDbContext(new DbContextOptionsBuilder<ProductDbContext>().UseNpgsql(targetConnectionString).Options);
+        await using var db = ProductDbContext.Create(targetConnectionString);
         if (await SchemaMaintenance.StatusAsync(db, ct).ConfigureAwait(false) != "ready") throw new InvalidOperationException("Восстановлена несовместимая схема.");
-        var state = Status();
+        // Архив применён и схема совместима. Подтверждение восстановления фиксируется независимо
+        // от служебного status.json: его повреждение не отменяет уже выполненное восстановление.
         var verifiedAt = DateTimeOffset.UtcNow;
+        var verification = await PublishRestoreVerificationAsync(name, verifiedAt, ct).ConfigureAwait(false);
+        return new RestoreOutcome(verification.Archive, verifiedAt, RecordRestoreVerification(verification));
+    }
+
+    /// <summary>Публикует отметку полного восстановления так же атомарно, как и сам архив.</summary>
+    private async Task<RestoreVerification> PublishRestoreVerificationAsync(string name, DateTimeOffset verifiedAt, CancellationToken ct)
+    {
         var path = ArchivePath(name);
-        var verification = new RestoreVerification(name, new FileInfo(path).Length, await File.ReadAllTextAsync(path + ".sha256", ct).ConfigureAwait(false), verifiedAt);
-        await File.WriteAllTextAsync(path + ".verified.partial", JsonSerializer.Serialize(verification), ct).ConfigureAwait(false);
-        RestrictFile(path + ".verified.partial");
-        File.Move(path + ".verified.partial", path + ".verified", overwrite: true);
-        RestrictFile(ArchivePath(name) + ".verified");
-        if (state.Archive == name) WriteState(state with { LastRestoreVerified = verifiedAt, ArchiveLength = verification.Length, ArchiveDigest = verification.Digest });
+        RestoreVerification verification;
+        try
+        {
+            verification = new RestoreVerification(name, new FileInfo(path).Length, ReadMetadata(path + ".sha256"), verifiedAt);
+            await File.WriteAllTextAsync(path + ".verified.partial", JsonSerializer.Serialize(verification), ct).ConfigureAwait(false);
+            RestrictFile(path + ".verified.partial");
+            File.Move(path + ".verified.partial", path + ".verified", overwrite: true);
+            RestrictFile(path + ".verified");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new RestoreCompletionException(
+                "Архив применён к целевой БД и схема совместима, но отметка проверки восстановления не записана; устраните причину и повторите восстановление в другую пустую БД.",
+                exception);
+        }
+        return verification;
+    }
+
+    /// <summary>Отдельно от факта восстановления обновляет служебный статус и сообщает, что именно удалось записать.</summary>
+    private RestoreStatusRecord RecordRestoreVerification(RestoreVerification verification)
+    {
+        BackupState state;
+        try
+        {
+            state = Status();
+        }
+        catch (JsonException)
+        {
+            try
+            {
+                PreserveCorruptState();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                return RestoreStatusRecord.NotRecorded;
+            }
+            // Прежний архив неизвестен: восстанавливаем корректный статус, не выдумывая LastSuccess.
+            return TryWriteState(new BackupState(null, DateTimeOffset.UtcNow, "invalid_status", null, null))
+                ? RestoreStatusRecord.RepairedFromCorrupt
+                : RestoreStatusRecord.NotRecorded;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Статус не читается: перезапись скрыла бы неизвестное состояние.
+            return RestoreStatusRecord.NotRecorded;
+        }
+        if (state.Archive != verification.Archive) return RestoreStatusRecord.NotCurrentArchive;
+        return TryWriteState(state with { LastRestoreVerified = verification.VerifiedAt, ArchiveLength = verification.Length, ArchiveDigest = verification.Digest })
+            ? RestoreStatusRecord.Updated
+            : RestoreStatusRecord.NotRecorded;
+    }
+
+    private bool TryWriteState(BackupState state)
+    {
+        try
+        {
+            WriteState(state);
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private void PreserveCorruptState()
+    {
+        var preserved = Path.Combine(_settings.Directory, "status-corrupt-" + Guid.NewGuid().ToString("N") + ".json");
+        File.Move(StatePath, preserved);
+        RestrictFile(preserved);
     }
 
     internal bool IsCurrentArchiveAvailable(BackupState state)

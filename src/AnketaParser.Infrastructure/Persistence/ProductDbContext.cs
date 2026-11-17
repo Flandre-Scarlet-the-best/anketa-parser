@@ -1,21 +1,46 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 
+using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure;
+
 namespace AnketaParser.Infrastructure.Persistence;
 
 public sealed class ProductDbContext(DbContextOptions<ProductDbContext> options) : DbContext(options)
 {
+    /// <summary>Прикладная схема продукта: таблицы, история миграций и их зависимости.</summary>
+    public const string Schema = "product";
+
+    /// <summary>Схема служебных идентичностей, закрытая от публичной выдачи.</summary>
+    public const string PrivateSchema = "private";
+
+    /// <summary>История миграций принадлежит схеме продукта, а не public: архив ограничен схемами продукта.</summary>
+    public const string MigrationsHistoryTable = "__EFMigrationsHistory";
+
+    /// <summary>Единственная точка настройки свойств Npgsql для контекста продукта.</summary>
+    public static void ConfigureProvider(NpgsqlDbContextOptionsBuilder provider)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        provider.MigrationsHistoryTable(MigrationsHistoryTable, Schema);
+    }
+
+    /// <summary>Собирает опции так, чтобы история миграций читалась и создавалась в схеме продукта.</summary>
+    public static DbContextOptions<ProductDbContext> BuildOptions(string? connectionString) =>
+        new DbContextOptionsBuilder<ProductDbContext>().UseNpgsql(connectionString, ConfigureProvider).Options;
+
+    /// <summary>Создаёт контекст с согласованным размещением истории миграций.</summary>
+    public static ProductDbContext Create(string connectionString) => new(BuildOptions(connectionString));
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
-        modelBuilder.HasDefaultSchema("product");
+        modelBuilder.HasDefaultSchema(Schema);
         modelBuilder.Entity<Source>().HasIndex(x => x.Key).IsUnique();
         modelBuilder.Entity<OriginalPost>().HasIndex(x => new { x.SourceId, x.ExternalId }).IsUnique();
         modelBuilder.Entity<PostRevision>().HasIndex(x => new { x.PostId, x.Hash }).IsUnique();
         modelBuilder.Entity<Contact>().HasIndex(x => new { x.Platform, x.NormalizedValue }).IsUnique();
-        modelBuilder.Entity<TelegramAccount>().ToTable("TelegramAccount", "private");
+        modelBuilder.Entity<TelegramAccount>().ToTable("TelegramAccount", PrivateSchema);
         modelBuilder.Entity<TelegramAccount>().HasIndex(x => x.TechnicalId).IsUnique();
-        modelBuilder.Entity<BotUser>().ToTable("BotUser", "private");
+        modelBuilder.Entity<BotUser>().ToTable("BotUser", PrivateSchema);
         modelBuilder.Entity<BotUser>().HasIndex(x => x.TechnicalId).IsUnique();
         modelBuilder.Entity<TelegramUsername>().HasIndex(x => x.Username).IsUnique().HasFilter("\"ValidTo\" IS NULL");
         modelBuilder.Entity<TelegramUsername>().HasIndex(x => x.AccountId).IsUnique().HasFilter("\"ValidTo\" IS NULL");
@@ -77,6 +102,5 @@ public sealed class ProductDbContext(DbContextOptions<ProductDbContext> options)
 /// <summary>Создание модели для инструментов EF Core не требует подключения или секрета.</summary>
 public sealed class ProductDesignTimeFactory : IDesignTimeDbContextFactory<ProductDbContext>
 {
-    public ProductDbContext CreateDbContext(string[] args) =>
-        new(new DbContextOptionsBuilder<ProductDbContext>().UseNpgsql().Options);
+    public ProductDbContext CreateDbContext(string[] args) => new(ProductDbContext.BuildOptions(connectionString: null));
 }

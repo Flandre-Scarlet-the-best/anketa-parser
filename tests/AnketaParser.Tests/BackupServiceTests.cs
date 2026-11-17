@@ -243,7 +243,57 @@ public sealed class BackupServiceTests : IDisposable
     }
 
     [Fact]
-    public void CapacityFailureDeletesOnlyUnverifiedManagedArchive()
+    public void RotationAgesOutObsoleteVerifiedCopiesWithoutOrphaningMetadata()
+    {
+        const string oldest = "20190101T0000000000000-00000000000000000000000000000001.dump";
+        const string old = "20200101T0000000000000-00000000000000000000000000000002.dump";
+        const string middle = "20210101T0000000000000-00000000000000000000000000000003.dump";
+        const string latest = "20220101T0000000000000-00000000000000000000000000000004.dump";
+        Directory.CreateDirectory(_directory);
+        WriteVerified(oldest, new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        WriteVerified(old, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        WriteVerified(middle, new DateTime(2021, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        WriteVerified(latest, new DateTime(2022, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        Write("manual.dump", DateTime.UtcNow.AddYears(-2));
+        var service = new BackupService(new BackupSettings { Directory = _directory, Daily = 1, Weekly = 0, Monthly = 0 });
+
+        service.Rotate();
+
+        // Проверенная отметка больше не защищает копию бессрочно: календарная политика сокращает набор.
+        Assert.Equal(["manual.dump", latest], service.List());
+        foreach (var obsolete in new[] { oldest, old, middle })
+        {
+            Assert.False(File.Exists(Path.Combine(_directory, obsolete)));
+            Assert.False(File.Exists(Path.Combine(_directory, obsolete + ".sha256")));
+            Assert.False(File.Exists(Path.Combine(_directory, obsolete + ".verified")));
+        }
+
+        Assert.True(File.Exists(Path.Combine(_directory, latest + ".verified")));
+        Assert.Equal("синтетический архив", File.ReadAllText(Path.Combine(_directory, "manual.dump")));
+        service.Rotate();
+        Assert.Equal(["manual.dump", latest], service.List());
+    }
+
+    [Fact]
+    public void RotationIgnoresVerificationMarkerThatDoesNotMatchItsArchive()
+    {
+        const string stale = "20200101T0000000000000-00000000000000000000000000000001.dump";
+        const string latest = "20220101T0000000000000-00000000000000000000000000000002.dump";
+        Directory.CreateDirectory(_directory);
+        var staleMetadata = WriteVerified(stale, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        WriteVerified(latest, new DateTime(2022, 1, 1, 0, 0, 0, DateTimeKind.Utc), verified: false);
+        File.WriteAllText(Path.Combine(_directory, stale + ".verified"), JsonSerializer.Serialize(
+            new RestoreVerification(stale, staleMetadata.Length, new string('0', 64), DateTimeOffset.UtcNow)));
+        var service = new BackupService(new BackupSettings { Directory = _directory, Daily = 1, Weekly = 0, Monthly = 0 });
+
+        service.Rotate();
+
+        Assert.Equal([latest], service.List());
+        Assert.False(File.Exists(Path.Combine(_directory, stale + ".verified")));
+    }
+
+    [Fact]
+    public void CapacityPressureKeepsProtectedMinimumAndRefusesAboveLimit()
     {
         Directory.CreateDirectory(_directory);
         const string verified = "20200101T0000000000000-00000000000000000000000000000001.dump";
@@ -259,13 +309,50 @@ public sealed class BackupServiceTests : IDisposable
             ArchiveDigest = latestMetadata.Digest,
         }));
         var service = new BackupService(new BackupSettings { Directory = _directory, Daily = 1, Weekly = 0, Monthly = 0, MaxBytes = 30 });
+
         Assert.Throws<IOException>(service.Rotate);
+
         Assert.Contains(verified, service.List());
         Assert.Contains(latest, service.List());
         Assert.DoesNotContain(excess, service.List());
         Assert.True(File.Exists(Path.Combine(_directory, verified + ".verified")));
         Assert.True(File.Exists(Path.Combine(_directory, latest + ".sha256")));
         Assert.False(File.Exists(Path.Combine(_directory, excess + ".sha256")));
+    }
+
+    [Fact]
+    public void CapacityPressureRemovesVerifiedCopyOutsideProtectedMinimum()
+    {
+        const string obsolete = "20200101T0000000000000-00000000000000000000000000000001.dump";
+        const string recent = "20210101T0000000000000-00000000000000000000000000000002.dump";
+        const string latest = "20220101T0000000000000-00000000000000000000000000000003.dump";
+        Directory.CreateDirectory(_directory);
+        var obsoleteMetadata = WriteVerified(obsolete, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        var recentMetadata = WriteVerified(recent, new DateTime(2021, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        var latestMetadata = WriteVerified(latest, new DateTime(2022, 1, 1, 0, 0, 0, DateTimeKind.Utc), verified: false);
+        Assert.Equal(obsoleteMetadata.Length, latestMetadata.Length);
+        File.WriteAllText(Path.Combine(_directory, "status.json"), JsonSerializer.Serialize(new BackupState(
+            DateTimeOffset.UtcNow, null, null, latest, null)
+        {
+            ArchiveLength = latestMetadata.Length,
+            ArchiveDigest = latestMetadata.Digest,
+        }));
+        // Ёмкость вмещает только защищённый минимум: опубликованную копию и последнюю подтверждённую.
+        var service = new BackupService(new BackupSettings
+        {
+            Directory = _directory,
+            Daily = 3,
+            Weekly = 0,
+            Monthly = 0,
+            MaxBytes = latestMetadata.Length + recentMetadata.Length,
+        });
+
+        service.Rotate();
+
+        Assert.Equal([latest, recent], service.List());
+        Assert.False(File.Exists(Path.Combine(_directory, obsolete)));
+        Assert.False(File.Exists(Path.Combine(_directory, obsolete + ".verified")));
+        Assert.True(File.Exists(Path.Combine(_directory, recent + ".verified")));
     }
 
     [Fact]

@@ -71,7 +71,9 @@ public static class InfrastructureServiceCollectionExtensions
 
         services.TryAddSingleton(TimeProvider.System);
         services.AddDbContext<ProductDbContext>((provider, options) =>
-            options.UseNpgsql(provider.GetRequiredService<IOptions<DatabaseSettings>>().Value.ConnectionString));
+            options.UseNpgsql(
+                provider.GetRequiredService<IOptions<DatabaseSettings>>().Value.ConnectionString,
+                ProductDbContext.ConfigureProvider));
         services.AddScoped<IProductStore, ProductStore>();
         services.AddSingleton(new EnvironmentDescriptor(environmentName));
         services.AddSingleton(new ConfigurationSourceSet(configurationSources));

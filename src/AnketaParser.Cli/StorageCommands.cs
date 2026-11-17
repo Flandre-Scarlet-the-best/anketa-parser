@@ -5,7 +5,6 @@ using AnketaParser.Infrastructure;
 using AnketaParser.Infrastructure.Configuration;
 using AnketaParser.Infrastructure.Persistence;
 
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -58,7 +57,7 @@ internal static partial class StorageCommands
                     break;
                 case ["storage", "migrate"]:
                 case ["storage", "schema"]:
-                    await using (var db = new ProductDbContext(new DbContextOptionsBuilder<ProductDbContext>().UseNpgsql(database.ConnectionString).Options))
+                    await using (var db = ProductDbContext.Create(database.ConnectionString))
                     {
                         if (args[1] == "migrate") await SchemaMaintenance.MigrateAsync(db, ct).ConfigureAwait(false);
                         var status = await SchemaMaintenance.StatusAsync(db, ct).ConfigureAwait(false);
@@ -81,8 +80,28 @@ internal static partial class StorageCommands
                     await new BackupService(settings).VerifyAsync(archive, ct).ConfigureAwait(false);
                     break;
                 case ["storage", "restore-empty", var archive]:
-                    await new BackupService(settings).RestoreAsync(archive, config["Restore:ConnectionString"]!, ct).ConfigureAwait(false);
-                    break;
+                    {
+                        // Факт восстановления и запись служебного статуса сообщаются раздельно.
+                        var outcome = await new BackupService(settings).RestoreAsync(archive, config["Restore:ConnectionString"]!, ct).ConfigureAwait(false);
+                        await stdout.WriteLineAsync(JsonSerializer.Serialize(new
+                        {
+                            status = "ok",
+                            archive = outcome.Archive,
+                            restore_verified = true,
+                            status_record = outcome.StatusRecord switch
+                            {
+                                RestoreStatusRecord.Updated => "updated",
+                                RestoreStatusRecord.NotCurrentArchive => "not_current_archive",
+                                RestoreStatusRecord.RepairedFromCorrupt => "repaired_corrupt_status",
+                                _ => "not_recorded",
+                            },
+                        })).ConfigureAwait(false);
+                        if (outcome.StatusRecord == RestoreStatusRecord.RepairedFromCorrupt)
+                            await stderr.WriteLineAsync("Служебный статус резервирования был повреждён и сохранён отдельно; восстановление подтверждено отметкой архива.").ConfigureAwait(false);
+                        else if (outcome.StatusRecord == RestoreStatusRecord.NotRecorded)
+                            await stderr.WriteLineAsync("Восстановление подтверждено отметкой архива, но служебный статус не обновлён; проверьте доступность каталога резервирования.").ConfigureAwait(false);
+                        return ExitCodes.Success;
+                    }
                 case ["storage", "backup-daemon"]:
                     {
                         var service = new BackupService(settings);
@@ -113,6 +132,12 @@ internal static partial class StorageCommands
         {
             await stderr.WriteLineAsync(exception.Message).ConfigureAwait(false);
             return ExitCodes.DependencyUnavailable;
+        }
+        catch (RestoreCompletionException exception)
+        {
+            // Данные уже восстановлены; сообщение объясняет, какая служебная запись не выполнена.
+            await stderr.WriteLineAsync(exception.Message).ConfigureAwait(false);
+            return ExitCodes.UnexpectedError;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

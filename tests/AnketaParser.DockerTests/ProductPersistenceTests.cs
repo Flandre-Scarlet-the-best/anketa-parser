@@ -386,21 +386,22 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
         await Assert.ThrowsAsync<PostgresException>(() => db.Database.ExecuteSqlRawAsync("ALTER ROLE product_runtime SUPERUSER", Ct));
         await Assert.ThrowsAsync<PostgresException>(() => db.Database.ExecuteSqlRawAsync("SELECT * FROM pg_authid", Ct));
         Assert.Equal(1, await db.Set<OriginalPost>().CountAsync(Ct));
-        await admin.Database.ExecuteSqlRawAsync("""INSERT INTO public."__EFMigrationsHistory" VALUES ('99999999999999_unknown','10.0.14')""", Ct);
+        await admin.Database.ExecuteSqlRawAsync("""INSERT INTO product."__EFMigrationsHistory" VALUES ('99999999999999_unknown','10.0.14')""", Ct);
         Assert.Equal("newer_or_unknown", await SchemaMaintenance.StatusAsync(db, Ct));
         await Assert.ThrowsAsync<InvalidOperationException>(() => SchemaMaintenance.MigrateAsync(admin, Ct));
     }
 
     [Fact]
-    public async Task ProvisioningRestoresHistoryAccessWithoutGrantingOtherPublicTables()
+    public async Task ProvisioningKeepsRestrictedRolesWorkingWithoutPublicSchemaUsage()
     {
         RequireDocker();
         await using var database = await cluster.CreateDatabaseAsync(Ct);
         await using (var admin = new NpgsqlConnection(database.ConnectionString))
         {
             await admin.OpenAsync(Ct);
+            // Существующая установка: USAGE на public мог быть отозван у PUBLIC, а прямой grant истории — тоже.
             await using var revoke = new NpgsqlCommand(
-                "REVOKE SELECT ON TABLE public.\"__EFMigrationsHistory\" FROM product_runtime, product_backup",
+                """REVOKE USAGE ON SCHEMA public FROM PUBLIC; REVOKE SELECT ON TABLE product."__EFMigrationsHistory" FROM product_runtime, product_backup""",
                 admin);
             await revoke.ExecuteNonQueryAsync(Ct);
         }
@@ -414,20 +415,83 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
 
         await using (var runtime = database.Open())
         {
+            // Проверка версии схемы выполняется фактическим запросом от ограниченной роли.
             Assert.Equal("ready", await SchemaMaintenance.StatusAsync(runtime, Ct));
+            var history = await runtime.Database
+                .SqlQueryRaw<int>("""SELECT count(*) AS "Value" FROM product."__EFMigrationsHistory" """)
+                .ToListAsync(Ct);
+            Assert.True(history.Single() > 0);
             await Assert.ThrowsAsync<PostgresException>(() => runtime.Database.ExecuteSqlRawAsync(
                 "SELECT * FROM public.existing_marker", Ct));
+            await Assert.ThrowsAsync<PostgresException>(() => runtime.Database.ExecuteSqlRawAsync(
+                "CREATE TABLE product.forbidden(id int)", Ct));
         }
 
         var backupBuilder = new NpgsqlConnectionStringBuilder(database.ConnectionString)
         {
             Username = "product_backup",
         };
-        await using var backup = new ProductDbContext(
-            new DbContextOptionsBuilder<ProductDbContext>().UseNpgsql(backupBuilder.ConnectionString).Options);
-        Assert.Equal("ready", await SchemaMaintenance.StatusAsync(backup, Ct));
-        await Assert.ThrowsAsync<PostgresException>(() => backup.Database.ExecuteSqlRawAsync(
-            "SELECT * FROM public.existing_marker", Ct));
+        await using (var backup = ProductDbContext.Create(backupBuilder.ConnectionString))
+        {
+            Assert.Equal("ready", await SchemaMaintenance.StatusAsync(backup, Ct));
+            await Assert.ThrowsAsync<PostgresException>(() => backup.Database.ExecuteSqlRawAsync(
+                "SELECT * FROM public.existing_marker", Ct));
+            await Assert.ThrowsAsync<PostgresException>(() => backup.Database.ExecuteSqlRawAsync(
+                """INSERT INTO product."Source" ("Id","Key","Url") VALUES (gen_random_uuid(),'forbidden','forbidden')""", Ct));
+        }
+
+        await using var verify = new NpgsqlConnection(database.ConnectionString);
+        await verify.OpenAsync(Ct);
+        await using var privileges = new NpgsqlCommand("""
+            SELECT has_schema_privilege('product_runtime','public','USAGE'),
+                   has_schema_privilege('product_backup','public','USAGE'),
+                   has_schema_privilege('product_runtime','public','CREATE'),
+                   to_regclass('public."__EFMigrationsHistory"') IS NULL
+            """, verify);
+        await using var row = await privileges.ExecuteReaderAsync(Ct);
+        Assert.True(await row.ReadAsync(Ct));
+        Assert.False(row.GetBoolean(0));
+        Assert.False(row.GetBoolean(1));
+        Assert.False(row.GetBoolean(2));
+        Assert.True(row.GetBoolean(3));
+    }
+
+    [Fact]
+    public async Task ProvisioningMovesLegacyMigrationHistoryIntoProductSchema()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using (var admin = new NpgsqlConnection(database.ConnectionString))
+        {
+            await admin.OpenAsync(Ct);
+            // Установка, где история миграций ещё находится в public.
+            await using var legacy = new NpgsqlCommand(
+                """ALTER TABLE product."__EFMigrationsHistory" SET SCHEMA public""",
+                admin);
+            await legacy.ExecuteNonQueryAsync(Ct);
+        }
+
+        await SchemaMaintenance.ProvisionAsync(
+            database.ConnectionString,
+            database.RolePassword,
+            database.RolePassword,
+            database.RolePassword,
+            Ct);
+
+        await using (var runtime = database.Open())
+        {
+            Assert.Equal("ready", await SchemaMaintenance.StatusAsync(runtime, Ct));
+        }
+
+        await using var verify = new NpgsqlConnection(database.ConnectionString);
+        await verify.OpenAsync(Ct);
+        await using var location = new NpgsqlCommand(
+            """SELECT to_regclass('public."__EFMigrationsHistory"') IS NULL, to_regclass('product."__EFMigrationsHistory"') IS NOT NULL""",
+            verify);
+        await using var row = await location.ExecuteReaderAsync(Ct);
+        Assert.True(await row.ReadAsync(Ct));
+        Assert.True(row.GetBoolean(0));
+        Assert.True(row.GetBoolean(1));
     }
 
     [Fact]
@@ -467,6 +531,68 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
         await verify.OpenAsync(Ct);
         await using var roleState = new NpgsqlCommand("SELECT rolcanlogin FROM pg_roles WHERE rolname='product_runtime'", verify);
         Assert.True((bool)(await roleState.ExecuteScalarAsync(Ct))!);
+    }
+
+    [Fact]
+    public async Task RepeatedTelegramConfirmationKeepsContinuousUsernameInterval()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var store = new ProductStore(db);
+        var revision = await Import(store, "1");
+        var contact = await Contact(store, revision, "telegram", "first");
+        var other = await Contact(store, revision, "telegram", "second");
+
+        var account = await store.ConfirmTelegramAsync(contact, 10001, "SharedName", "первое подтверждение", Ct);
+        var original = Assert.Single(await Intervals());
+        Assert.Null(original.ValidTo);
+        Assert.Equal("sharedname", original.Username);
+
+        // Повторное подтверждение того же имени не создаёт разрыв и новую запись.
+        await store.ConfirmTelegramAsync(contact, 10001, "@SharedName", "повторное подтверждение", Ct);
+        var continuous = Assert.Single(await Intervals());
+        Assert.Equal(original.Id, continuous.Id);
+        Assert.Equal(original.ValidFrom, continuous.ValidFrom);
+        Assert.Null(continuous.ValidTo);
+        Assert.Equal(2, await db.Set<ContactVerification>().CountAsync(Ct));
+
+        // Реальная передача имени другому аккаунту закрывает прежний интервал.
+        var otherAccount = await store.ConfirmTelegramAsync(other, 10002, "sharedname", "передача имени", Ct);
+        Assert.NotEqual(account, otherAccount);
+        var transferred = await Intervals();
+        Assert.Equal(2, transferred.Count);
+        Assert.Equal(account, Assert.Single(transferred, x => x.ValidTo is not null).AccountId);
+        Assert.Equal(otherAccount, Assert.Single(transferred, x => x.ValidTo is null).AccountId);
+
+        // Отсутствующее значение означает «имя не передано» и не меняет историю.
+        await store.ConfirmTelegramAsync(contact, 10001, null, "имя не передано", Ct);
+        await store.ConfirmTelegramAsync(contact, 10001, "   ", "пустое значение", Ct);
+        var unchanged = await Intervals();
+        Assert.Equal(2, unchanged.Count);
+        Assert.Single(unchanged, x => x.ValidTo is null);
+
+        // Смена имени аккаунта и возврат к имени другого аккаунта остаются связной историей.
+        await store.ConfirmTelegramAsync(contact, 10001, "renamed", "смена имени", Ct);
+        await store.ConfirmTelegramAsync(contact, 10001, "renamed", "повтор после смены", Ct);
+        Assert.Equal(3, (await Intervals()).Count);
+        Assert.Equal(2, (await Intervals()).Count(x => x.ValidTo is null));
+        await store.ConfirmTelegramAsync(contact, 10001, "sharedname", "возврат имени", Ct);
+        var final = await Intervals();
+        Assert.Equal(4, final.Count);
+        var active = Assert.Single(final, x => x.ValidTo is null);
+        Assert.Equal(account, active.AccountId);
+        Assert.Equal("sharedname", active.Username);
+        Assert.Equal(1, final.Count(x => x.Username == "sharedname" && x.ValidTo is null));
+        Assert.Null(active.ValidTo);
+        Assert.Equal(3, final.Count(x => x.AccountId == account));
+        Assert.Equal(8, await db.Set<ContactVerification>().CountAsync(Ct));
+
+        async Task<List<TelegramUsername>> Intervals()
+        {
+            db.ChangeTracker.Clear();
+            return await db.Set<TelegramUsername>().AsNoTracking().ToListAsync(Ct);
+        }
     }
 
     private static void RequireDocker()

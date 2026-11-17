@@ -204,7 +204,7 @@ public sealed class TestDatabase : IAsyncDisposable
         {
             Username = runtime ? "product_runtime" : "product_migrator",
         };
-        return new(new DbContextOptionsBuilder<ProductDbContext>().UseNpgsql(builder.ConnectionString).Options);
+        return ProductDbContext.Create(builder.ConnectionString);
     }
 
     public async Task<ProductDbContext> CreateConflictDatabaseAsync(CancellationToken cancellationToken)
@@ -225,7 +225,7 @@ public sealed class TestDatabase : IAsyncDisposable
             Database = name,
             Username = "product_migrator",
         };
-        var db = new ProductDbContext(new DbContextOptionsBuilder<ProductDbContext>().UseNpgsql(builder.ConnectionString).Options);
+        var db = ProductDbContext.Create(builder.ConnectionString);
         await db.Database.ExecuteSqlRawAsync(
             """CREATE SCHEMA product; CREATE TABLE product."Source"(marker int); INSERT INTO product."Source" VALUES(42)""",
             cancellationToken);

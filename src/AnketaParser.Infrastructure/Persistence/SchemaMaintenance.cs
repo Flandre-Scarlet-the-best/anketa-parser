@@ -68,21 +68,32 @@ public static class SchemaMaintenance
               THEN RAISE EXCEPTION 'unexpected_schema_owner'; END IF;
             END $$;
             GRANT USAGE, CREATE ON SCHEMA public TO product_migrator;
+            -- История миграций принадлежит схеме продукта: архив и права не зависят от public.
+            DO $ef_history$
+            BEGIN
+              IF to_regclass('public."__EFMigrationsHistory"') IS NOT NULL
+                AND to_regclass('product."__EFMigrationsHistory"') IS NULL THEN
+                EXECUTE 'ALTER TABLE public."__EFMigrationsHistory" SET SCHEMA product';
+              END IF;
+              IF to_regclass('public."__EFMigrationsHistory"') IS NOT NULL
+                AND to_regclass('product."__EFMigrationsHistory"') IS NOT NULL THEN
+                RAISE EXCEPTION 'ambiguous_migration_history';
+              END IF;
+            END
+            $ef_history$;
             GRANT USAGE ON SCHEMA product, private TO product_runtime, product_backup;
             GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA product, private TO product_runtime;
             GRANT SELECT ON ALL TABLES IN SCHEMA product, private TO product_backup;
+            GRANT USAGE ON ALL SEQUENCES IN SCHEMA product, private TO product_runtime;
+            GRANT SELECT ON ALL SEQUENCES IN SCHEMA product, private TO product_backup;
             ALTER DEFAULT PRIVILEGES FOR ROLE product_migrator IN SCHEMA product, private
                 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO product_runtime;
             ALTER DEFAULT PRIVILEGES FOR ROLE product_migrator IN SCHEMA product, private
                 GRANT SELECT ON TABLES TO product_backup;
-            ALTER DEFAULT PRIVILEGES FOR ROLE product_migrator IN SCHEMA public GRANT SELECT ON TABLES TO product_runtime, product_backup;
-            DO $migration_history$
-            BEGIN
-              IF to_regclass('public."__EFMigrationsHistory"') IS NOT NULL THEN
-                EXECUTE 'GRANT SELECT ON TABLE public."__EFMigrationsHistory" TO product_runtime, product_backup';
-              END IF;
-            END
-            $migration_history$;
+            ALTER DEFAULT PRIVILEGES FOR ROLE product_migrator IN SCHEMA product, private
+                GRANT USAGE ON SEQUENCES TO product_runtime;
+            ALTER DEFAULT PRIVILEGES FOR ROLE product_migrator IN SCHEMA product, private
+                GRANT SELECT ON SEQUENCES TO product_backup;
             """, connection, transaction);
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         // CONNECT нужен только к целевой БД; имя берём из серверного контекста.

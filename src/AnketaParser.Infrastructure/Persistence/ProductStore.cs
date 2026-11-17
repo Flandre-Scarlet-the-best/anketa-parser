@@ -106,10 +106,24 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         var account = await db.Set<TelegramAccount>().SingleOrDefaultAsync(x => x.TechnicalId == technicalId, cancellationToken).ConfigureAwait(false);
         if (account is null) { account = new TelegramAccount { TechnicalId = technicalId }; db.Add(account); }
         username = username?.TrimStart('@').ToLowerInvariant();
-        var active = await db.Set<TelegramUsername>().Where(x => x.ValidTo == null && (x.AccountId == account.Id || x.Username == username)).ToListAsync(cancellationToken).ConfigureAwait(false);
-        foreach (var old in active) old.ValidTo = Now;
-        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        if (!string.IsNullOrWhiteSpace(username)) db.Add(new TelegramUsername { AccountId = account.Id, Username = username, ValidFrom = Now, Provenance = provenance });
+        // Пустое значение означает «имя не передано»: отсутствие сведений не доказывает смену имени,
+        // поэтому история username не меняется, а новое доказательство сохраняется отдельной проверкой.
+        var requested = string.IsNullOrWhiteSpace(username) ? null : username;
+        var open = requested is null
+            ? await db.Set<TelegramUsername>().Where(x => x.ValidTo == null && x.AccountId == account.Id).ToListAsync(cancellationToken).ConfigureAwait(false)
+            : await db.Set<TelegramUsername>().Where(x => x.ValidTo == null && (x.AccountId == account.Id || x.Username == requested)).ToListAsync(cancellationToken).ConfigureAwait(false);
+        // Непрерывный интервал того же аккаунта с тем же именем не закрывается: подтверждение без смены.
+        var continuous = requested is null ? null : open.FirstOrDefault(x => x.AccountId == account.Id && x.Username == requested);
+        if (requested is not null)
+        {
+            var superseded = open.Where(x => !ReferenceEquals(x, continuous)).ToArray();
+            if (superseded.Length > 0)
+            {
+                foreach (var old in superseded) old.ValidTo = Now;
+                await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            }
+            if (continuous is null) db.Add(new TelegramUsername { AccountId = account.Id, Username = requested, ValidFrom = Now, Provenance = provenance });
+        }
         db.Add(new ContactVerification { ContactId = contactId, AccountId = account.Id, Provenance = provenance, VerifiedAt = Now });
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);

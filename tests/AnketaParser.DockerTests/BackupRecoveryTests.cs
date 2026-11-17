@@ -35,6 +35,9 @@ public sealed class BackupRecoveryTests(ComposeImageFixture images)
             await Sql("test_product", """
                 CREATE TABLE public.existing_marker(id int); INSERT INTO public.existing_marker VALUES(42);
                 CREATE TABLE public."existing$marker"(id int); INSERT INTO public."existing$marker" VALUES(43);
+                CREATE FUNCTION public.unrelated_func() RETURNS int LANGUAGE sql AS 'SELECT 7';
+                CREATE TYPE public.unrelated_type AS (a int);
+                CREATE DOMAIN public.unrelated_domain AS text;
                 CREATE SCHEMA "unrelated$schema"; CREATE TABLE "unrelated$schema".marker(id int);
                 INSERT INTO "unrelated$schema".marker VALUES(44)
                 """);
@@ -68,6 +71,18 @@ public sealed class BackupRecoveryTests(ComposeImageFixture images)
             using var document = JsonDocument.Parse(result);
             var name = document.RootElement.GetProperty("archive").GetString()!;
             await Cli("maintenance", "storage", "backup-verify", name);
+            // Граница архива проверяется по его фактическому составу, а не только по флагам pg_dump.
+            var toc = await Shell($"pg_restore --list /backups/{name}");
+            Assert.Contains("SCHEMA - product", toc, StringComparison.Ordinal);
+            Assert.Contains("SCHEMA - private", toc, StringComparison.Ordinal);
+            Assert.Contains("TABLE product __EFMigrationsHistory", toc, StringComparison.Ordinal);
+            Assert.Contains("TABLE product Source", toc, StringComparison.Ordinal);
+            Assert.DoesNotContain("existing_marker", toc, StringComparison.Ordinal);
+            Assert.DoesNotContain("existing$marker", toc, StringComparison.Ordinal);
+            Assert.DoesNotContain("unrelated_func", toc, StringComparison.Ordinal);
+            Assert.DoesNotContain("unrelated_type", toc, StringComparison.Ordinal);
+            Assert.DoesNotContain("unrelated_domain", toc, StringComparison.Ordinal);
+            Assert.DoesNotContain("unrelated$schema", toc, StringComparison.Ordinal);
             Assert.Equal("42", await Sql("test_product", "SELECT id FROM public.existing_marker"));
             Assert.Equal("43", await Sql("test_product", """SELECT id FROM public."existing$marker" """));
             Assert.Equal("44", await Sql("test_product", """SELECT id FROM "unrelated$schema".marker"""));
@@ -109,11 +124,14 @@ public sealed class BackupRecoveryTests(ComposeImageFixture images)
                   (SELECT json_agg(t ORDER BY "Id") FROM product."BlacklistEntry" t),
                   (SELECT json_agg(t ORDER BY "Id") FROM product."Complaint" t),
                   (SELECT json_agg(t ORDER BY "Id") FROM product."ModerationDecision" t),
-                  (SELECT json_agg(t ORDER BY "MigrationId") FROM public."__EFMigrationsHistory" t))::text
+                  (SELECT json_agg(t ORDER BY "MigrationId") FROM product."__EFMigrationsHistory" t))::text
                 """;
             Assert.Equal(await Sql("test_product", fingerprint), await Sql("dbname=test_restore", fingerprint));
             Assert.Equal("", await Sql("dbname=test_restore", "SELECT to_regclass('public.existing_marker')"));
             Assert.Equal("", await Sql("dbname=test_restore", """SELECT to_regclass('public."existing$marker"')"""));
+            Assert.Equal("", await Sql("dbname=test_restore", "SELECT to_regprocedure('public.unrelated_func()')"));
+            Assert.Equal("", await Sql("dbname=test_restore", "SELECT to_regtype('public.unrelated_type')"));
+            Assert.Equal("", await Sql("dbname=test_restore", "SELECT to_regtype('public.unrelated_domain')"));
             Assert.Equal("0", await Sql("dbname=test_restore", "SELECT count(*) FROM pg_namespace WHERE nspname='unrelated$schema'"));
             Assert.Equal("0", await Sql("test_restore", "SELECT count(*) FROM pg_namespace WHERE nspname IN ('product','private')"));
             await Assert.ThrowsAsync<InvalidOperationException>(() => Cli("-e",
@@ -188,6 +206,36 @@ public sealed class BackupRecoveryTests(ComposeImageFixture images)
             await docker.RunAsync([.. prefix, "run", "--rm", "--entrypoint", "/bin/sh", "maintenance", "-c",
                 "printf broken > /backups/corrupt.dump; printf bad > /backups/corrupt.dump.sha256"], timeout, ct);
             await Assert.ThrowsAsync<InvalidOperationException>(() => Cli("maintenance", "storage", "backup-verify", "corrupt.dump"));
+            // Повреждение служебного статуса не отменяет уже выполненное восстановление.
+            await Sql("postgres", "CREATE DATABASE test_corrupt_target OWNER product_migrator");
+            Assert.Equal("нет", await Shell($"test -e /backups/{recoveredName}.verified && printf 'есть' || printf 'нет'"));
+            await Shell("printf 'not-json' > /backups/status.json");
+            var corruptRestore = await Cli("-e", $"ANKETAPARSER_Restore__ConnectionString=Host=postgres;Database=test_corrupt_target;Username=product_migrator;Password={migrationPassword}",
+                "maintenance", "storage", "restore-empty", recoveredName);
+            using var corruptDocument = JsonDocument.Parse(corruptRestore);
+            Assert.Equal("ok", corruptDocument.RootElement.GetProperty("status").GetString());
+            Assert.True(corruptDocument.RootElement.GetProperty("restore_verified").GetBoolean());
+            Assert.Equal("repaired_corrupt_status", corruptDocument.RootElement.GetProperty("status_record").GetString());
+            Assert.Equal("есть", await Shell($"test -e /backups/{recoveredName}.verified && printf 'есть' || printf 'нет'"));
+            Assert.Equal("есть", await Shell("[ -n \"$(ls /backups/status-corrupt-*.json 2>/dev/null)\" ] && printf 'есть' || printf 'нет'"));
+            Assert.Equal(await Sql("test_product", """SELECT count(*) FROM product."ProfileLink" """),
+                await Sql("test_corrupt_target", """SELECT count(*) FROM product."ProfileLink" """));
+            using (var repaired = JsonDocument.Parse(await Cli("maintenance", "storage", "backup-status")))
+            {
+                Assert.Equal("invalid_status", repaired.RootElement.GetProperty("FailureCategory").GetString());
+                Assert.Equal(JsonValueKind.Null, repaired.RootElement.GetProperty("Archive").ValueKind);
+            }
+
+            // Конечная ротация снимает защиту с устаревшей проверенной копии, сохраняя последнюю подтверждённую
+            // и сторонние файлы; отметка восстановления удалённой копии не остаётся сиротой.
+            await Cli("-e", "ANKETAPARSER_Backup__Daily=1", "-e", "ANKETAPARSER_Backup__Weekly=0",
+                "-e", "ANKETAPARSER_Backup__Monthly=0", "maintenance", "storage", "backup-rotate");
+            var bounded = JsonSerializer.Deserialize<string[]>(await Cli("maintenance", "storage", "backup-list"))!;
+            Assert.Contains(recoveredName, bounded);
+            Assert.Contains("manual.dump", bounded);
+            Assert.DoesNotContain(name, bounded);
+            Assert.Equal("нет", await Shell($"test -e /backups/{name}.verified && printf 'есть' || printf 'нет'"));
+            Assert.Equal("", await Shell($"find /backups -name '*.verified' -not -path '/backups/{recoveredName}.verified' -print"));
         }
         finally
         {
