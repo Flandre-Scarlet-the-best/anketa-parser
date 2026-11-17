@@ -247,6 +247,23 @@ public sealed class CliApplicationTests
         Assert.Contains("Диагностика остановлена.", result.Stderr, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task DoctorCompletesJsonPublicationWhenCancellationArrivesAfterWriting()
+    {
+        using var root = new Support.TemporaryContentRoot("{}");
+        using var cancellation = new CancellationTokenSource();
+        using var stdout = new CancellingWriter(cancellation);
+        using var stderr = new StringWriter();
+
+        var exitCode = await CliApplication.RunAsync(
+            ["doctor", "--json"], stdout, stderr, cancellation.Token, root.Path);
+
+        Assert.Equal(ExitCodes.Success, exitCode);
+        using var document = JsonDocument.Parse(stdout.ToString());
+        Assert.Equal(ExitCodes.Success, document.RootElement.GetProperty("exitCode").GetInt32());
+        Assert.Equal("degraded", document.RootElement.GetProperty("status").GetString());
+    }
+
     [Theory]
     [InlineData("doctor", "version")]
     [InlineData("version", "doctor")]
@@ -320,5 +337,15 @@ public sealed class CliApplicationTests
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("Команды:", result.Stdout, StringComparison.Ordinal);
         Assert.Empty(result.Stderr);
+    }
+
+    private sealed class CancellingWriter(CancellationTokenSource cancellation) : StringWriter
+    {
+        public override Task WriteLineAsync(string? value)
+        {
+            var write = base.WriteLineAsync(value);
+            cancellation.Cancel();
+            return write;
+        }
     }
 }

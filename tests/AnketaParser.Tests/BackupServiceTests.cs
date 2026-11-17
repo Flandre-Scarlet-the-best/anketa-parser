@@ -154,10 +154,9 @@ public sealed class BackupServiceTests : IDisposable
         const string latest = "20220101T0000000000000-00000000000000000000000000000003.dump";
         Directory.CreateDirectory(_directory);
         var settings = new BackupSettings { Directory = _directory, Daily = 1, Weekly = 1, Monthly = 1 };
-        Write(old, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        File.WriteAllText(Path.Combine(_directory, old + ".verified"), "проверено");
-        Write(middle, new DateTime(2021, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        Write(latest, new DateTime(2022, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        WriteVerified(old, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        WriteVerified(middle, new DateTime(2021, 1, 1, 0, 0, 0, DateTimeKind.Utc), verified: false);
+        WriteVerified(latest, new DateTime(2022, 1, 1, 0, 0, 0, DateTimeKind.Utc), verified: false);
         var service = new BackupService(settings);
         service.Rotate();
         Assert.Equal([latest, old], service.List());

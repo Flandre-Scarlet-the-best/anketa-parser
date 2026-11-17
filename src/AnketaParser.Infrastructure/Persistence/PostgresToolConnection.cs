@@ -8,6 +8,16 @@ namespace AnketaParser.Infrastructure.Persistence;
 /// <summary>Согласует подключения Npgsql и отдельных процессов libpq без передачи секретов в аргументах.</summary>
 internal static class PostgresToolConnection
 {
+    private static readonly HashSet<string> SupportedTargetSessionAttributes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "any",
+        "read-write",
+        "read-only",
+        "primary",
+        "standby",
+        "prefer-standby",
+    };
+
     internal static bool IsSameDatabase(NpgsqlConnectionStringBuilder source, NpgsqlConnectionStringBuilder target) =>
         string.Equals(source.Host, target.Host, StringComparison.OrdinalIgnoreCase) && source.Port == target.Port &&
         string.Equals(source.Database ?? source.Username, target.Database ?? target.Username, StringComparison.Ordinal);
@@ -17,6 +27,9 @@ internal static class PostgresToolConnection
         // У libpq нет эквивалента системной проверки отзыва .NET и env-параметра sslpassword.
         if (cs.CheckCertificateRevocation || !string.IsNullOrEmpty(cs.SslPassword))
             throw new ArgumentException("Утилиты PostgreSQL не поддерживают заданную проверку отзыва или пароль TLS-ключа через окружение.", nameof(cs));
+        if (!string.IsNullOrEmpty(cs.TargetSessionAttributes) &&
+            !SupportedTargetSessionAttributes.Contains(cs.TargetSessionAttributes))
+            throw new ArgumentException("Утилиты PostgreSQL не поддерживают заданное значение целевого сервера.", nameof(cs));
     }
 
     internal static void Apply(ProcessStartInfo info, NpgsqlConnectionStringBuilder cs)
@@ -60,7 +73,7 @@ internal static class PostgresToolConnection
         SetIfConfigured(info, "PGOPTIONS", cs.Options);
         SetIfConfigured(info, "PGAPPNAME", cs.ApplicationName);
         SetIfConfigured(info, "PGCLIENTENCODING", cs.ClientEncoding);
-        SetIfConfigured(info, "PGTARGETSESSIONATTRS", cs.TargetSessionAttributes);
+        SetIfConfigured(info, "PGTARGETSESSIONATTRS", cs.TargetSessionAttributes?.ToLowerInvariant());
         info.Environment["PGLOADBALANCEHOSTS"] = cs.LoadBalanceHosts ? "random" : "disable";
     }
 

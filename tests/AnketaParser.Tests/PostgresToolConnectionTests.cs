@@ -124,6 +124,42 @@ public sealed class PostgresToolConnectionTests
         Assert.Equal("5441,5442,5432", info.Environment["PGPORT"]);
     }
 
+    [Theory]
+    [InlineData("any")]
+    [InlineData("read-write")]
+    [InlineData("read-only")]
+    [InlineData("primary")]
+    [InlineData("standby")]
+    [InlineData("prefer-standby")]
+    [InlineData("PREFER-STANDBY")]
+    public void ToolConnectionTransfersSupportedTargetSessionAttributes(string value)
+    {
+        var info = new ProcessStartInfo("pg_dump");
+        PostgresToolConnection.Apply(info, new NpgsqlConnectionStringBuilder
+        {
+            Host = "primary",
+            TargetSessionAttributes = value,
+        });
+
+        Assert.Equal(value.ToLowerInvariant(), info.Environment["PGTARGETSESSIONATTRS"]);
+    }
+
+    [Theory]
+    [InlineData("prefer-primary")]
+    public void UnsupportedTargetSessionAttributesAreRejectedBeforeEnvironmentChanges(string value)
+    {
+        var info = new ProcessStartInfo("pg_dump");
+        info.Environment["PGHOST"] = "inherited";
+        var connection = new NpgsqlConnectionStringBuilder
+        {
+            Host = "primary",
+            TargetSessionAttributes = value,
+        };
+
+        Assert.Throws<ArgumentException>(() => PostgresToolConnection.Apply(info, connection));
+        Assert.Equal("inherited", info.Environment["PGHOST"]);
+    }
+
     [Fact]
     public void UnsupportedSecurityRequirementsAreRejectedBeforeProcessStart()
     {

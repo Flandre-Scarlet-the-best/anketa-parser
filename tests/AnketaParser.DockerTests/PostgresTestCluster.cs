@@ -43,6 +43,9 @@ public sealed class PostgresTestCluster : IAsyncLifetime
         _docker = new DockerCli(root);
         _containerName = "anketa-persistence-test-" + Guid.NewGuid().ToString("N");
         _rolePassword = Guid.NewGuid().ToString("N");
+        var callerCancellation = TestContext.Current.CancellationToken;
+        using var startupDeadline = CancellationTokenSource.CreateLinkedTokenSource(callerCancellation);
+        startupDeadline.CancelAfter(StartupTimeout);
         try
         {
             await _docker.RunAsync(
@@ -54,12 +57,12 @@ public sealed class PostgresTestCluster : IAsyncLifetime
                     "postgres:18.6-alpine",
                 ],
                 StartupTimeout,
-                CancellationToken.None);
+                startupDeadline.Token);
 
             var port = await _docker.RunAsync(
                 ["port", _containerName, "5432"],
                 TimeSpan.FromSeconds(10),
-                CancellationToken.None);
+                startupDeadline.Token);
             _adminConnectionString = new NpgsqlConnectionStringBuilder
             {
                 Host = "127.0.0.1",
@@ -69,21 +72,21 @@ public sealed class PostgresTestCluster : IAsyncLifetime
                 Password = _rolePassword,
             }.ConnectionString;
 
-            for (var attempt = 0; ; attempt++)
+            while (true)
             {
                 try
                 {
                     await using var connection = new NpgsqlConnection(_adminConnectionString);
-                    await connection.OpenAsync(CancellationToken.None);
+                    await connection.OpenAsync(startupDeadline.Token);
                     break;
                 }
-                catch (NpgsqlException) when (attempt < 60)
+                catch (NpgsqlException)
                 {
-                    await Task.Delay(TimeSpan.FromMilliseconds(500), CancellationToken.None);
+                    await Task.Delay(TimeSpan.FromMilliseconds(500), startupDeadline.Token);
                 }
             }
         }
-        catch
+        catch (Exception exception)
         {
             // Неудачный запуск не должен оставлять контейнер и не должен подменять исходную ошибку.
             NpgsqlConnection.ClearAllPools();
@@ -97,6 +100,8 @@ public sealed class PostgresTestCluster : IAsyncLifetime
             }
 
             _docker = null;
+            if (startupDeadline.IsCancellationRequested && !callerCancellation.IsCancellationRequested && exception is OperationCanceledException)
+                throw new TimeoutException("PostgreSQL не стала доступна за отведённое время.", exception);
             throw;
         }
     }

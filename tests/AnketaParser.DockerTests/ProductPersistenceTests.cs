@@ -282,6 +282,39 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
     }
 
     [Fact]
+    public async Task ClaimSkipsExhaustedJobLockedByCompletionAndClaimsIndependentWork()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var setup = database.Open();
+        var store = new ProductStore(setup);
+        var expiredRevision = await Import(store, "expired-claim");
+        var expiredJob = await store.EnqueueAsync(expiredRevision, "synthetic-v1", 1, Ct);
+        var lease = await store.ClaimAsync(TimeSpan.FromMinutes(1), Ct);
+        Assert.NotNull(lease);
+        await setup.Database.ExecuteSqlInterpolatedAsync(
+            $"""UPDATE product."ProcessingJob" SET "LeaseUntil"={DateTimeOffset.UtcNow.AddSeconds(-1)} WHERE "Id"={expiredJob}""",
+            Ct);
+
+        var availableRevision = await Import(store, "independent-claim");
+        var availableJob = await store.EnqueueAsync(availableRevision, "synthetic-v1", 1, Ct);
+        await using var locker = database.Open();
+        await locker.Database.OpenConnectionAsync(Ct);
+        await using var transaction = await locker.Database.BeginTransactionAsync(Ct);
+        await locker.Database.ExecuteSqlInterpolatedAsync(
+            $"""UPDATE product."ProcessingJob" SET "FailureCategory"="FailureCategory" WHERE "Id"={expiredJob}""",
+            Ct);
+
+        await using var claimant = database.Open();
+        await claimant.Database.OpenConnectionAsync(Ct);
+        await claimant.Database.ExecuteSqlRawAsync("SET lock_timeout = '250ms'", Ct);
+        var claimed = await new ProductStore(claimant).ClaimAsync(TimeSpan.FromMinutes(1), Ct);
+
+        Assert.NotNull(claimed);
+        Assert.Equal(availableJob, claimed.JobId);
+    }
+
+    [Fact]
     public async Task FailedMigrationCannotAdvertiseReadyOrOverwriteExistingTable()
     {
         RequireDocker();

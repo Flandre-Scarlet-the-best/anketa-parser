@@ -216,42 +216,8 @@ public static class CliApplication
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                const int cancelledExitCode = ExitCodes.UnexpectedError;
-                const string message = "Диагностика остановлена.";
-                await stderr.WriteLineAsync(message).ConfigureAwait(false);
-                if (invocation.IsMachineReadable)
-                {
-                    var cancelled = new DiagnosticsDocument
-                    {
-                        Tool = info.ProductName,
-                        ToolVersion = info.Version,
-                        Command = "doctor",
-                        GeneratedAtUtc = DateTimeOffset.UtcNow,
-                        Status = "unhealthy",
-                        ExitCode = cancelledExitCode,
-                        Configuration = new ConfigurationDocument
-                        {
-                            Valid = true,
-                            Sources = sources.Select(static source => new ConfigurationSourceDocument
-                            {
-                                Name = source.Name,
-                                Kind = source.Kind,
-                            }).ToArray(),
-                            Database = new DatabaseDocument
-                            {
-                                Configured = databaseSettings.IsConfigured,
-                                Required = databaseSettings.Required,
-                                Target = ConnectionStringDescriptor.Describe(databaseSettings.ConnectionString),
-                                ConnectTimeoutSeconds = databaseSettings.ConnectTimeoutSeconds,
-                            },
-                        },
-                        Probes = [],
-                        Errors = [message],
-                    };
-                    await WriteDocumentAsync(cancelled, stdout, CancellationToken.None).ConfigureAwait(false);
-                }
-
-                return cancelledExitCode;
+                return await WriteCancelledDoctorAsync(
+                    info, sources, databaseSettings, invocation.IsMachineReadable, stdout, stderr).ConfigureAwait(false);
             }
 
             var exitCode = report.Status == HealthStatus.Unhealthy
@@ -260,9 +226,15 @@ public static class CliApplication
 
             var document = CreateDocument(info, report, databaseSettings, exitCode);
 
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return await WriteCancelledDoctorAsync(
+                    info, sources, databaseSettings, invocation.IsMachineReadable, stdout, stderr).ConfigureAwait(false);
+            }
+
             if (invocation.IsMachineReadable)
             {
-                await WriteDocumentAsync(document, stdout, cancellationToken).ConfigureAwait(false);
+                await WriteDocumentAsync(document, stdout, CancellationToken.None).ConfigureAwait(false);
             }
             else
             {
@@ -310,7 +282,7 @@ public static class CliApplication
                     Errors = [.. exception.Failures],
                 };
 
-                await WriteDocumentAsync(document, stdout, cancellationToken).ConfigureAwait(false);
+                await WriteDocumentAsync(document, stdout, CancellationToken.None).ConfigureAwait(false);
             }
 
             return exitCode;
@@ -322,6 +294,52 @@ public static class CliApplication
                 .ConfigureAwait(false);
             return ExitCodes.UnexpectedError;
         }
+    }
+
+    private static async Task<int> WriteCancelledDoctorAsync(
+        ApplicationInfo info,
+        IReadOnlyList<ConfigurationSourceInfo> sources,
+        DatabaseSettings databaseSettings,
+        bool machineReadable,
+        TextWriter stdout,
+        TextWriter stderr)
+    {
+        const int exitCode = ExitCodes.UnexpectedError;
+        const string message = "Диагностика остановлена.";
+        await stderr.WriteLineAsync(message).ConfigureAwait(false);
+        if (machineReadable)
+        {
+            var document = new DiagnosticsDocument
+            {
+                Tool = info.ProductName,
+                ToolVersion = info.Version,
+                Command = "doctor",
+                GeneratedAtUtc = DateTimeOffset.UtcNow,
+                Status = "unhealthy",
+                ExitCode = exitCode,
+                Configuration = new ConfigurationDocument
+                {
+                    Valid = true,
+                    Sources = sources.Select(static source => new ConfigurationSourceDocument
+                    {
+                        Name = source.Name,
+                        Kind = source.Kind,
+                    }).ToArray(),
+                    Database = new DatabaseDocument
+                    {
+                        Configured = databaseSettings.IsConfigured,
+                        Required = databaseSettings.Required,
+                        Target = ConnectionStringDescriptor.Describe(databaseSettings.ConnectionString),
+                        ConnectTimeoutSeconds = databaseSettings.ConnectTimeoutSeconds,
+                    },
+                },
+                Probes = [],
+                Errors = [message],
+            };
+            await WriteDocumentAsync(document, stdout, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        return exitCode;
     }
 
     private static DiagnosticsDocument CreateDocument(
