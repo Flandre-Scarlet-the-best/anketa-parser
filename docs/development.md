@@ -194,6 +194,38 @@ manifests, считает пакеты по ним и сверяет код вы
 Закреплённые версии, ограничения покрытия и негативные сценарии описаны в
 [безопасности](security.md).
 
+## Политика обновлений Renovate
+
+[renovate.json](../renovate.json) задаёт политику обновлений: одна логическая
+зависимость — один PR, `automerge` выключен, `lockFileMaintenance` выключен,
+включён Dependency Dashboard и умеренные лимиты PR. Группировка отключена через
+`ignorePresets` для `group:monorepos` и `group:recommended`: иначе наследуемые
+presets объединяют пакеты одной monorepo, включая `Microsoft.Extensions.*`.
+Правила совместимости удерживают .NET SDK в полосе `10.0.x`, `dotnet-ef` в линии
+EF 10 и Python в `3.15`, а локальные образы `*:local` исключены из обновлений.
+
+[Проверка политики](../.github/workflows/renovate-config.yml) ставит закреплённый
+Renovate `44.251.0` с проверкой integrity tarball и выполняет три независимые
+проверки через [check_renovate.py](../.github/scripts/check_renovate.py): строгий
+`renovate-config-validator`, реальное извлечение со сверкой объявленных версий по
+manifests и расчёт веток на изолированных фикстурах вместе с отрицательным
+контролем группировки.
+
+```powershell
+npm install --no-save --no-package-lock renovate@44.251.0
+.venv/Scripts/python .github/scripts/check_renovate.py validate --renovate node_modules/renovate/dist/renovate.js --validator node_modules/renovate/dist/config-validator.js
+.venv/Scripts/python .github/scripts/check_renovate.py extract --renovate node_modules/renovate/dist/renovate.js
+.venv/Scripts/python .github/scripts/check_renovate.py fixtures --renovate node_modules/renovate/dist/renovate.js
+```
+
+Локальный запуск использует `RENOVATE_CONFIG_FILE`: платформа `local` не отдаёт
+файлы репозитория, поэтому извлечение и lookup берут политику из указанного файла,
+а сама настройка проверяется строгим валидатором. Конфигурация и локальные
+проверки не доказывают, что Renovate App установлен в репозитории, а security-канал
+`vulnerabilityAlerts` требует hosted API и локально не проверяется. Версии
+`actionlint`, `zizmor` и ShellCheck остаются ручными: их обновление связано с
+пересчётом SHA256 официального архива.
+
 ## Какую проверку выбрать
 
 | Изменение | Что проверять | Что это доказывает |
