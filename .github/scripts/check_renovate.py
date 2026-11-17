@@ -307,7 +307,7 @@ def expected_nuget(root: Path, paths: list[str]) -> set[Declaration]:
             continue
         tree = ElementTree.fromstring(text)  # noqa: S314
         for item in tree.iter():
-            if item.tag not in (
+            if item.tag.rsplit("}", 1)[-1] not in (
                 "PackageVersion",
                 "PackageReference",
                 "GlobalPackageReference",
@@ -316,10 +316,14 @@ def expected_nuget(root: Path, paths: list[str]) -> set[Declaration]:
             name = item.get("Include") or item.get("Update")
             if not name:
                 raise CoverageError(f"{path}: не определено имя пакета")
+            child_versions = {
+                child.tag.rsplit("}", 1)[-1]: child.text or "" for child in item
+            }
             version = (
                 item.get("VersionOverride")
+                or child_versions.get("VersionOverride")
                 or item.get("Version")
-                or item.findtext("Version")
+                or child_versions.get("Version")
                 or ""
             )
             if "$(" in name or "$(" in version:
@@ -435,11 +439,24 @@ def expected_actions(root: Path, paths: list[str]) -> set[Declaration]:
                 )
             else:
                 found.add(Declaration("github-actions", path, name, ref))
+        runtimes = {
+            "python-version": "python",
+            "dotnet-version": "dotnet-sdk",
+            "node-version": "node",
+        }
         for match in re.finditer(
-            r"(?:python-version|dotnet-version):\s*['\"]?([^'\"\s]+)", content
+            r"\b([\w-]+-version(?:-file)?):\s*['\"]?([^'\"\s]+)", content
         ):
-            name = "python" if match[0].startswith("python") else "dotnet-sdk"
-            found.add(Declaration("github-actions", path, name, match[1]))
+            if match[1] not in runtimes:
+                raise CoverageError(
+                    f"{path}: параметр {match[1]} требует независимой сверки"
+                )
+            name = runtimes[match[1]]
+            if "$" in match[2] or match[2].startswith(("[", "|", ">")):
+                raise CoverageError(
+                    f"{path}: вычисляемая или составная версия требует независимой сверки"
+                )
+            found.add(Declaration("github-actions", path, name, match[2]))
         for match in re.finditer(
             r"runs-on:\s*['\"]?(ubuntu|windows|macos)-([^'\"\s]+)", content
         ):
@@ -484,7 +501,9 @@ def verify_expected(
     ]
 
 
-def verify_extraction(root: Path, output: str) -> list[str]:
+def verify_extraction(
+    root: Path, output: str, config_file: Path | None = None
+) -> list[str]:
     """Сверить все обнаруженные источники; неизвестный менеджер не получает подтверждения."""
     sources = matched_sources(output)
     inventory = source_inventory(root, output)
@@ -514,7 +533,7 @@ def verify_extraction(root: Path, output: str) -> list[str]:
         raise CoverageError(
             "Пользовательский jsonata-менеджер требует независимой сверки объявлений"
         )
-    config_path = root / "renovate.json"
+    config_path = (root / (config_file or Path("renovate.json"))).resolve()
     if config_path.is_file() and cast(
         dict[str, object], json.loads(read_text(config_path))
     ).get("customManagers"):
@@ -791,7 +810,7 @@ def require(path: Path | None, name: str) -> Path:
 def main() -> int:
     args = build_parser().parse_args(namespace=Arguments())
     root = args.root.resolve()
-    config = args.config or root / "renovate.json"
+    config = (root / (args.config or Path("renovate.json"))).resolve()
     try:
         if args.mode == "validate":
             output = run_script(
@@ -822,7 +841,7 @@ def main() -> int:
                     "RENOVATE_CONFIG_FILE": str(config),
                 },
             )
-            for note in verify_extraction(root, output):
+            for note in verify_extraction(root, output, config):
                 print(f"Renovate extract: {note}")
             return 0
         notes = run_fixtures(

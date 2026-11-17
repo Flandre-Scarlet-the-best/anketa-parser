@@ -312,6 +312,51 @@ class ManifestTests(RepositoryCase):
                 "nuget",
             )
 
+    def test_namespaced_nuget_and_node_runtime_keep_declared_versions(self) -> None:
+        _ = self.write(
+            "nested/legacy.csproj",
+            '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003"><ItemGroup><PackageReference Include="Package" Version="1"><VersionOverride>2</VersionOverride></PackageReference></ItemGroup></Project>',
+        )
+        expected = expected_nuget(self.root, ["nested/legacy.csproj"])
+        self.assertEqual(
+            expected, {Declaration("nuget", "nested/legacy.csproj", "Package", "2")}
+        )
+        _ = self.write(
+            ".github/workflows/node.yml",
+            "steps:\n  - uses: actions/setup-node@v6\n    with:\n      node-version: '24'\n",
+        )
+        expected = expected_actions(self.root, [".github/workflows/node.yml"])
+        runtime = Declaration(
+            "github-actions", ".github/workflows/node.yml", "node", "24"
+        )
+        self.assertIn(runtime, expected)
+        with self.assertRaises(CoverageError):
+            _ = verify_expected(expected, expected - {runtime}, "actions")
+        _ = self.write(
+            ".github/workflows/node.yml",
+            "steps:\n  - uses: actions/setup-node@v6\n    with:\n      node-version-file: .node-version\n",
+        )
+        with self.assertRaises(CoverageError):
+            _ = expected_actions(self.root, [".github/workflows/node.yml"])
+
+    def test_selected_config_is_used_for_custom_manager_coverage(self) -> None:
+        _ = self.write("requirements.txt", "package==1.0\n")
+        _ = self.write("renovate.json", '{"customManagers":[{}]}')
+        selected = self.write("alternative.json", "{}")
+        output = self.extraction(
+            "pip_requirements",
+            {"requirements.txt": [{"depName": "package", "currentValue": "==1.0"}]},
+        )
+        self.assertEqual(
+            len(verify_extraction(self.root, output, Path("alternative.json"))), 1
+        )
+        with self.assertRaises(CoverageError):
+            _ = verify_extraction(self.root, output)
+        _ = self.write("renovate.json", "{}")
+        _ = self.write("alternative.json", '{"customManagers":[{}]}')
+        with self.assertRaises(CoverageError):
+            _ = verify_extraction(self.root, output, selected)
+
     def test_each_dockerfile_compose_and_workflow_preserves_identity(self) -> None:
         _ = self.write(
             "nested/Dockerfile",
