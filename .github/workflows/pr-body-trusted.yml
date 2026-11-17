@@ -1,7 +1,7 @@
 name: Доверенный контракт описания PR
 # Код head не скачивается и не исполняется; данные события не становятся командами.
 on:
-  pull_request_target:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] Исполняется только точный base SHA; токен read-only, данные PR передаются через env.
     types: [opened, edited, synchronize, reopened, ready_for_review]
 permissions:
   contents: read

@@ -10,6 +10,52 @@ permissions:
   contents: read
 
 jobs:
+  actions-security:
+    name: Безопасность GitHub Actions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Установить закреплённые линтеры с проверкой SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/actions-security"
+          mkdir -p "$tools/bin"
+          cd "$tools"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o zizmor.tar.gz https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/zizmor-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o shellcheck.tar.gz https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.gz
+          sha256sum --check <<'CHECKSUMS'
+          8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz
+          bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b  zizmor.tar.gz
+          b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6  shellcheck.tar.gz
+          CHECKSUMS
+          tar -xzf actionlint.tar.gz -C bin actionlint
+          tar -xzf zizmor.tar.gz -C bin zizmor
+          tar -xzf shellcheck.tar.gz --strip-components=1 -C bin shellcheck-v0.11.0/shellcheck
+          echo "$tools/bin" >> "$GITHUB_PATH"
+      - name: Проверить версии и все workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          actionlint -version
+          zizmor --version
+          shellcheck --version
+          shopt -s nullglob
+          workflows=(.github/workflows/*.yml .github/workflows/*.yaml)
+          if (( ${#workflows[@]} == 0 )); then
+            echo 'Не найдены GitHub Actions workflow' >&2
+            exit 1
+          fi
+          printf 'Проверяется workflow: %s\n' "${workflows[@]}"
+          actionlint -no-color -verbose -shellcheck shellcheck "${workflows[@]}"
+          zizmor --offline --strict-collection --no-config --persona regular --format plain --color never --render-links never "${workflows[@]}"
+
   contracts:
     name: Контракты агента
     runs-on: ubuntu-latest
@@ -42,6 +88,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
