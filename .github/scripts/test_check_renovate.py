@@ -414,6 +414,108 @@ class ManifestTests(RepositoryCase):
             with self.subTest(broken=broken), self.assertRaises(CoverageError):
                 _ = verify_expected({action}, {broken}, "actions")
 
+    def test_copy_external_images_require_exact_extraction(self) -> None:
+        path = "Dockerfile"
+        _ = self.write(
+            path,
+            "FROM alpine:3.22 AS build\nCOPY --from=build /a /a\nCOPY --from=0 /b /b\nCOPY --from=busybox:1.37@sha256:abc /bin/busybox /bin/busybox\n",
+        )
+        deps = [
+            {"depName": "alpine", "currentValue": "3.22"},
+            {
+                "depName": "busybox",
+                "currentValue": "1.37",
+                "currentDigest": "sha256:abc",
+            },
+        ]
+        self.assertEqual(
+            len(
+                verify_extraction(
+                    self.root, self.extraction("dockerfile", {path: deps})
+                )
+            ),
+            2,
+        )
+        for broken in (
+            deps[:1],
+            [deps[0], {**deps[1], "currentDigest": "sha256:wrong"}],
+        ):
+            with self.subTest(broken=broken), self.assertRaises(CoverageError):
+                _ = verify_extraction(
+                    self.root, self.extraction("dockerfile", {path: broken})
+                )
+
+    def test_actions_subpaths_are_verified_using_replace_string(self) -> None:
+        path = ".github/workflows/test.yml"
+        _ = self.write(
+            path,
+            "jobs:\n  test:\n    steps:\n      - uses: github/codeql-action/init@v4\n      - uses: org/repo/.github/workflows/check.yml@v2\n",
+        )
+        deps = [
+            {
+                "depName": "github/codeql-action",
+                "currentValue": "v4",
+                "depType": "action",
+                "replaceString": "github/codeql-action/init@v4",
+            },
+            {
+                "depName": "org/repo",
+                "currentValue": "v2",
+                "depType": "workflow",
+                "replaceString": "org/repo/.github/workflows/check.yml@v2",
+            },
+        ]
+        self.assertEqual(
+            len(
+                verify_extraction(
+                    self.root, self.extraction("github-actions", {path: deps})
+                )
+            ),
+            2,
+        )
+        for wrong in ("github/codeql-action/analyze@v4", "github/codeql-action@v4"):
+            broken = [{**deps[0], "replaceString": wrong}, deps[1]]
+            with self.subTest(wrong=wrong), self.assertRaises(CoverageError):
+                _ = verify_extraction(
+                    self.root, self.extraction("github-actions", {path: broken})
+                )
+
+    def test_workflow_container_and_service_images_require_exact_extraction(
+        self,
+    ) -> None:
+        path = ".github/workflows/test.yml"
+        _ = self.write(
+            path,
+            "jobs:\n  test:\n    container: node:24\n    services:\n      db:\n        image: postgres:18@sha256:abc\n",
+        )
+        deps = [
+            {"depName": "node", "currentValue": "24"},
+            {
+                "depName": "postgres",
+                "currentValue": "18",
+                "currentDigest": "sha256:abc",
+            },
+        ]
+        self.assertEqual(
+            len(
+                verify_extraction(
+                    self.root, self.extraction("github-actions", {path: deps})
+                )
+            ),
+            2,
+        )
+        for broken in (
+            deps[:1],
+            [deps[0], {**deps[1], "currentDigest": "sha256:wrong"}],
+        ):
+            with self.subTest(broken=broken), self.assertRaises(CoverageError):
+                _ = verify_extraction(
+                    self.root, self.extraction("github-actions", {path: broken})
+                )
+        _ = self.write(path, "jobs:\n  test:\n    container: ${{ matrix.image }}\n")
+        with self.assertRaises(CoverageError):
+            _ = expected_actions(self.root, [path])
+
     def test_missing_detection_and_unknown_manager_do_not_claim_coverage(self) -> None:
         with self.assertRaises(CoverageError):
             _ = verify_extraction(self.root, extract_event())

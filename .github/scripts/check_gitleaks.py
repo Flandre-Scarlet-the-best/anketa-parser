@@ -304,6 +304,11 @@ def scan_git(
         raise CoverageError(f"Gitleaks не запустился: {error}") from error
     findings = read_report(report)
     diagnostic = result.stderr.strip()[:MAX_DIAGNOSTIC]
+    if any(
+        "[git]" in line and re.search(r"\b(?:ERR|error)\b", line, re.IGNORECASE)
+        for line in result.stderr.splitlines()
+    ):
+        raise CoverageError("Gitleaks сообщил об ошибке Git; охват не доказан")
     if result.returncode == LEAK_EXIT_CODE:
         if not findings:
             raise CoverageError("Gitleaks сообщил о находках без записей в отчёте")

@@ -17,6 +17,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
+from xml.etree import ElementTree
 
 CHECK_FINDINGS_CODE = 1
 CHECK_ERROR_CODE = 2
@@ -26,9 +27,6 @@ CENTRAL = re.compile(r"(?:^|/)Directory\.Packages\.props$")
 WORKFLOW = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$")
 REQUIREMENT = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*(?P<version>[^\s;]+)"
-)
-PACKAGE_VERSION = re.compile(
-    r'<PackageVersion\s+Include="(?P<name>[^"]+)"\s+Version="(?P<version>[^"]+)"'
 )
 ACTION_USE = re.compile(r"uses:\s*(?P<action>[^@\s]+)@(?P<ref>[0-9a-f]{40})")
 # GitHub Dependency Graph возвращает для части NuGet-зависимостей диапазон
@@ -103,16 +101,27 @@ def dependencies(root: Path, revision: str) -> set[tuple[str, str, str, str]]:
         if LOCKFILE.search(name):
             found.update((*entry, name) for entry in lock_entries(content))
         elif REQUIREMENTS.search(name):
-            found.update(
-                (PIP, match.group("name"), match.group("version"), name)
-                for match in REQUIREMENT.finditer(content)
-                if REQUIREMENT.fullmatch(match.group().strip())
-            )
+            for line in content.splitlines():
+                line = re.split(r"\s+#", line, maxsplit=1)[0].strip()
+                if not line or line.startswith("#"):
+                    continue
+                match = REQUIREMENT.fullmatch(line)
+                if not match:
+                    raise CoverageError(f"{name}: неподдерживаемое требование: {line}")
+                found.add((PIP, match.group("name"), match.group("version"), name))
         elif CENTRAL.search(name):
-            found.update(
-                (NUGET, match.group("name"), match.group("version"), name)
-                for match in PACKAGE_VERSION.finditer(content)
-            )
+            try:
+                tree = ElementTree.fromstring(content)  # noqa: S314
+            except ElementTree.ParseError as error:
+                raise CoverageError(f"{name}: повреждённый XML") from error
+            for item in tree.iter():
+                if item.tag.rsplit("}", 1)[-1] != "PackageVersion":
+                    continue
+                package = item.get("Include") or item.get("Update")
+                version = item.get("Version")
+                if not package or not version:
+                    raise CoverageError(f"{name}: неполное объявление PackageVersion")
+                found.add((NUGET, package, version, name))
         elif WORKFLOW.match(name):
             found.update(
                 (ACTIONS, match.group("action"), match.group("ref"), name)
@@ -288,11 +297,19 @@ def output_text(args: Arguments) -> str:
     return os.environ.get(args.changes_env, "")
 
 
+def expected_changes(root: Path, base: str, head: str) -> list[Change]:
+    """Сравнить head с общей точкой, как Dependency Graph API."""
+    merge_base = git(root, "merge-base", base, head).strip()
+    if not merge_base:
+        raise CoverageError("Git не определил общую точку ветвей")
+    return changes(dependencies(root, merge_base), dependencies(root, head))
+
+
 def main() -> int:
     args = build_parser().parse_args(namespace=Arguments())
     try:
         root = args.root.resolve()
-        expected = changes(dependencies(root, args.base), dependencies(root, args.head))
+        expected = expected_changes(root, args.base, args.head)
         reported_changes = reported(output_text(args))
         notes = verify(expected, reported_changes)
         gaps = imprecise(reported_changes)

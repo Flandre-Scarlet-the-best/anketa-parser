@@ -191,6 +191,7 @@ class Declaration:
     name: str
     version: str
     digest: str = ""
+    subpath: str = ""
 
 
 def matched_sources(output: str) -> dict[str, list[str]]:
@@ -404,11 +405,31 @@ def expected_docker(root: Path, sources: dict[str, list[str]]) -> set[Declaratio
             syntax = re.search(r"^#\s*syntax=(\S+)", content, re.MULTILINE)
             if syntax:
                 found.add(image_declaration(manager, path, syntax[1]))
-            for match in re.finditer(
-                r"^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?",
-                content,
-                re.MULTILINE | re.IGNORECASE,
+            for instruction in re.finditer(
+                r"^[ \t]*(FROM|COPY)\b([^\r\n]*)", content, re.MULTILINE | re.IGNORECASE
             ):
+                kind, body = instruction.groups()
+                if "\\" in body or "`" in body:
+                    raise CoverageError(
+                        f"{path}: многострочная инструкция {kind} требует отдельной сверки"
+                    )
+                if kind.upper() == "COPY":
+                    copy = re.search(r"(?:^|\s)--from=(\S+)", body)
+                    if not copy:
+                        continue
+                    image = copy[1]
+                    if "$" in image:
+                        raise CoverageError(f"{path}: не разрешён образ {image}")
+                    if image not in stages and not image.isdecimal():
+                        found.add(image_declaration(manager, path, image))
+                    continue
+                match = re.match(
+                    r"\s+(?:--platform=\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?",
+                    body,
+                    re.IGNORECASE,
+                )
+                if not match:
+                    raise CoverageError(f"{path}: неподдерживаемая инструкция FROM")
                 image, stage = match.groups()
                 image = re.sub(
                     r"\$\{(\w+)\}|\$(\w+)",
@@ -424,6 +445,52 @@ def expected_docker(root: Path, sources: dict[str, list[str]]) -> set[Declaratio
     return found
 
 
+def workflow_images(path: str, content: str) -> set[Declaration]:
+    """Образы job container, services и Docker action в YAML workflow."""
+    try:
+        data = cast(object, yaml.safe_load(content))
+    except yaml.YAMLError as error:
+        raise CoverageError(f"{path}: повреждённый YAML") from error
+    if not isinstance(data, dict):
+        raise CoverageError(f"{path}: workflow не является объектом")
+    document = cast(dict[str, object], data)
+    found: set[Declaration] = set()
+
+    def add_image(value: object) -> None:
+        if isinstance(value, dict):
+            value = cast(dict[str, object], value).get("image")
+        if (
+            not isinstance(value, str)
+            or not value
+            or "$" in value
+            or any(c.isspace() for c in value)
+        ):
+            raise CoverageError(f"{path}: неподдерживаемое объявление образа workflow")
+        found.add(image_declaration("github-actions", path, value))
+
+    jobs = document.get("jobs", {})
+    if not isinstance(jobs, dict):
+        raise CoverageError(f"{path}: неподдерживаемый раздел jobs")
+    for job in cast(dict[str, object], jobs).values():
+        if not isinstance(job, dict):
+            raise CoverageError(f"{path}: неподдерживаемое объявление job")
+        entry = cast(dict[str, object], job)
+        if "container" in entry:
+            add_image(entry["container"])
+        if "services" in entry:
+            services = entry["services"]
+            if not isinstance(services, dict):
+                raise CoverageError(f"{path}: неподдерживаемый раздел services")
+            for service in cast(dict[str, object], services).values():
+                add_image(service)
+    runs = document.get("runs")
+    if isinstance(runs, dict):
+        image = cast(dict[str, object], runs).get("image")
+        if isinstance(image, str) and image.lower().startswith("docker://"):
+            add_image(image[len("docker://") :])
+    return found
+
+
 def expected_actions(root: Path, paths: list[str]) -> set[Declaration]:
     """Ссылки действий, закрепления и версии среды в каждом workflow/action-файле."""
     found: set[Declaration] = set()
@@ -431,14 +498,26 @@ def expected_actions(root: Path, paths: list[str]) -> set[Declaration]:
         content = read_text(root / path)
         for match in ACTION_USE.finditer(content):
             name, ref = match.group("action"), match.group("ref")
+            parts = name.split("/")
+            subpath = ""
+            if len(parts) > 2 and not name.startswith("docker://"):
+                name, subpath = "/".join(parts[:2]), "/".join(parts[2:])
             if re.fullmatch(r"[0-9a-f]{40}", ref):
                 found.add(
                     Declaration(
-                        "github-actions", path, name, match.group("comment") or "", ref
+                        "github-actions",
+                        path,
+                        name,
+                        match.group("comment") or "",
+                        ref,
+                        subpath,
                     )
                 )
             else:
-                found.add(Declaration("github-actions", path, name, ref))
+                found.add(
+                    Declaration("github-actions", path, name, ref, subpath=subpath)
+                )
+        found.update(workflow_images(path, content))
         runtimes = {
             "python-version": "python",
             "dotnet-version": "dotnet-sdk",
@@ -474,6 +553,18 @@ def extraction_index(output: str) -> set[Declaration]:
             dep = cast(dict[str, object], entry)
             name = str(dep.get("depName") or dep.get("packageName") or "")
             if name:
+                subpath = ""
+                replacement = dep.get("replaceString")
+                if (
+                    manager == "github-actions"
+                    and dep.get("depType") in ("action", "workflow")
+                    and isinstance(replacement, str)
+                ):
+                    match = re.match(
+                        r"['\"]?" + re.escape(name) + r"/([^@\s]+)@", replacement
+                    )
+                    if match:
+                        subpath = match[1]
                 found.add(
                     Declaration(
                         manager,
@@ -481,6 +572,7 @@ def extraction_index(output: str) -> set[Declaration]:
                         name,
                         str(dep.get("currentValue") or ""),
                         str(dep.get("currentDigest") or ""),
+                        subpath,
                     )
                 )
     return found

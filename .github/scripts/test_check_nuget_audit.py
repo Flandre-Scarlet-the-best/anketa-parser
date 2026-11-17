@@ -115,6 +115,28 @@ class ParseTests(ReportCase):
             ],
         )
 
+    def test_vulnerabilities_must_be_a_list_when_present(self) -> None:
+        self.project("a.csproj")
+        self.git("add", "-A")
+        package: dict[str, object] = {"id": "Package", "resolvedVersion": "1"}
+        projects: list[dict[str, object]] = [
+            {
+                "path": self.absolute("a.csproj"),
+                "frameworks": [{"transitivePackages": [package]}],
+            }
+        ]
+        path = self.written(self.report(projects))
+        self.assertEqual(check(path, self.root)[1], [])
+        invalid_and_empty: list[object] = [{}, None, "invalid", []]
+        for value in invalid_and_empty:
+            package["vulnerabilities"] = value
+            path = self.written(self.report(projects))
+            if isinstance(value, list):
+                self.assertEqual(check(path, self.root)[1], [])
+            else:
+                with self.subTest(value=value), self.assertRaises(CoverageError):
+                    _ = check(path, self.root)
+
     def test_missing_transitive_mode_or_projects_is_coverage_error(self) -> None:
         without_transitive = json.dumps(
             {

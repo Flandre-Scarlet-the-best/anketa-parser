@@ -18,6 +18,7 @@ import unittest
 import uuid
 from pathlib import Path
 from typing import override
+from unittest.mock import patch
 
 import check_gitleaks
 from check_gitleaks import (
@@ -176,6 +177,39 @@ class GitleaksReportTests(unittest.TestCase):
             self.assertEqual(read_report(empty), [])
 
 
+class GitleaksDiagnosticTests(unittest.TestCase):
+    def test_git_errors_block_clean_exit_without_exposing_stderr(self) -> None:
+        scan = Scan(check_gitleaks.HISTORY_MODE, head="a" * 40)
+        with tempfile.TemporaryDirectory() as directory:
+            for diagnostic, fails in (
+                ("ERR [git] private-value", True),
+                ("WRN exhaustive rename detection was skipped", False),
+                (
+                    "WRN Auto packing the repository in background for optimum performance",
+                    False,
+                ),
+            ):
+                result = subprocess.CompletedProcess([], 0, "", diagnostic)
+                with (
+                    self.subTest(diagnostic=diagnostic),
+                    patch("check_gitleaks.subprocess.run", return_value=result),
+                    patch.object(check_gitleaks, "read_report", return_value=[]),
+                ):
+                    if fails:
+                        with self.assertRaises(CoverageError) as error:
+                            _ = check_gitleaks.scan_git(
+                                Path(directory), Path("gitleaks"), scan, Path(directory)
+                            )
+                        self.assertNotIn("private-value", str(error.exception))
+                    else:
+                        self.assertEqual(
+                            check_gitleaks.scan_git(
+                                Path(directory), Path("gitleaks"), scan, Path(directory)
+                            ),
+                            [],
+                        )
+
+
 @unittest.skipUnless(BINARY, "нужен закреплённый Gitleaks: задайте GITLEAKS_BINARY")
 class GitleaksRepositoryTests(unittest.TestCase):
     def __init__(self, methodName: str = "runTest") -> None:
@@ -265,6 +299,19 @@ class GitleaksRepositoryTests(unittest.TestCase):
         self.assertNotIn(secret, output)
         self.assertIn("slack-bot-token", output)
         self.assertIn("config/app.env", output)
+
+    def test_invalid_git_attribute_is_coverage_error(self) -> None:
+        self.write("README.md", "# Проект\n")
+        base = self.commit("начало")
+        self.write("config/app.env", f"token = {synthetic_secret()}\n")
+        _ = self.commit("значение")
+        self.write(".gitattributes", "* invalid[attr\n")
+        self.write("other.txt", "данные\n")
+        head = self.commit("ошибочный атрибут")
+        code, output = self.check(self.scan(base, head))
+        self.assertEqual(code, ERROR_CODE, output)
+        self.assertIn("ошибке Git", output)
+        self.assertNotIn("invalid[attr", output)
 
     def test_secret_added_and_removed_inside_range_is_found(self) -> None:
         self.write("README.md", "# Проект\n")

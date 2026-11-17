@@ -124,9 +124,11 @@ def describe_packages(packages: list[object], name: str, kind: str) -> list[str]
         if not isinstance(entry, dict):
             raise CoverageError(f"{name}: некорректная запись пакета")
         package = cast(dict[str, object], entry)
-        found = package.get("vulnerabilities")
-        if not isinstance(found, list):
+        if "vulnerabilities" not in package:
             continue
+        found = package["vulnerabilities"]
+        if not isinstance(found, list):
+            raise CoverageError(f"{name}: некорректный список vulnerabilities")
         identifier = str(package.get("id", "?"))
         version = str(package.get("resolvedVersion", "?"))
         for advisory in cast(list[object], found):

@@ -20,6 +20,7 @@ from check_dependency_review import (
     CoverageError,
     changes,
     dependencies,
+    expected_changes,
     imprecise,
     reported,
     verify,
@@ -96,6 +97,45 @@ class DependencySetTests(RepositoryCase):
             ("actions", "actions/checkout", "a" * 40, ".github/workflows/ci.yml"), found
         )
 
+    def test_requirements_ignore_comments_and_reject_unproved_lines(self) -> None:
+        name = "requirements.txt"
+        self.write(
+            name, "# Прежняя версия: ruff==0.17.4\nruff==0.17.5  # текущая версия\n"
+        )
+        first = self.commit("комментарии")
+        self.assertEqual(
+            dependencies(self.root, first), {("pip", "ruff", "0.17.5", name)}
+        )
+        self.write(name, "ruff>=0.17.5\n")
+        invalid = self.commit("неподдерживаемое требование")
+        with self.assertRaises(CoverageError):
+            _ = dependencies(self.root, invalid)
+
+    def test_package_version_attribute_order_and_version_change(self) -> None:
+        path = "Directory.Packages.props"
+        self.write(path, CENTRAL % ("Npgsql", "10.0.3"))
+        first = self.commit("исходная версия")
+        self.write(
+            path,
+            '<Project xmlns="urn:msbuild"><ItemGroup><PackageVersion Version="10.0.3" Include="Npgsql" /></ItemGroup></Project>',
+        )
+        reordered = self.commit("порядок атрибутов")
+        self.assertEqual(
+            dependencies(self.root, first), dependencies(self.root, reordered)
+        )
+        self.write(
+            path,
+            '<Project><PackageVersion Version="10.0.4" Include="Npgsql" /></Project>',
+        )
+        updated = self.commit("новая версия")
+        self.assertEqual(
+            set(expected_changes(self.root, reordered, updated)),
+            {
+                Change("removed", "NuGet", "Npgsql", "10.0.3", path),
+                Change("added", "NuGet", "Npgsql", "10.0.4", path),
+            },
+        )
+
     def test_unknown_revision_is_coverage_error(self) -> None:
         _ = self.write("Directory.Packages.props", CENTRAL % ("Serilog", "4.0.0"))
         revision = self.commit("зависимости")
@@ -111,6 +151,22 @@ class DependencySetTests(RepositoryCase):
 
 
 class ChangeTests(RepositoryCase):
+    def test_diverged_base_uses_merge_base(self) -> None:
+        self.write("requirements.txt", "ruff==0.17.4\n")
+        ancestor = self.commit("общая точка")
+        _ = self.git("checkout", "-q", "-b", "task")
+        self.write("code.txt", "изменение\n")
+        head = self.commit("код")
+        _ = self.git("checkout", "-q", "main")
+        self.write("requirements.txt", "ruff==0.17.5\n")
+        base = self.commit("обновление в основной ветке")
+        self.assertNotEqual(
+            changes(dependencies(self.root, base), dependencies(self.root, head)), []
+        )
+        self.assertEqual(expected_changes(self.root, base, head), [])
+        self.assertEqual(expected_changes(self.root, ancestor, head), [])
+        self.assertEqual(len(expected_changes(self.root, ancestor, base)), 2)
+
     def test_version_swap_between_manifests_preserves_both_removals_and_additions(
         self,
     ) -> None:
