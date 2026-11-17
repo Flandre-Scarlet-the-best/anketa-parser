@@ -1,0 +1,51 @@
+name: Review зависимостей
+
+# Анализируются только вновь добавляемые или обновляемые зависимости PR.
+# Существующее дерево проверяют задания аудита уязвимостей.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Изменения зависимостей в PR
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Получить историю без сохранения учётных данных
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Dependency Review
+        id: review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # Блокируются уязвимости любой опубликованной severity во всех
+          # областях зависимости; лицензионная политика не вводится.
+          fail-on-severity: low
+          fail-on-scopes: runtime, development, unknown
+          vulnerability-check: true
+          license-check: false
+          comment-summary-in-pr: never
+          warn-only: false
+          show-openssf-scorecard: false
+
+      - name: Сверить охват анализа с фактическими изменениями зависимостей
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHANGES: ${{ steps.review.outputs.dependency-changes }}
+        run: |
+          python .github/scripts/check_dependency_review.py \
+            --root . \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA"
+
+      - name: Самопроверка сверки на синтетических данных
+        run: python -m unittest discover -s .github/scripts -p 'test_check_dependency_review.py' -v
