@@ -4,7 +4,7 @@
 # Образ обязан содержать SDK, который допускает global.json: восстановление внутри
 # контейнера завершается ошибкой, если запрошенная версия SDK в образе отсутствует.
 ARG DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:10.0.404-noble
-ARG DOTNET_RUNTIME_IMAGE=mcr.microsoft.com/dotnet/runtime:10.0.14-noble
+ARG DOTNET_RUNTIME_IMAGE=mcr.microsoft.com/dotnet/runtime:10.0.15-noble
 
 FROM ${DOTNET_SDK_IMAGE} AS build
 WORKDIR /src
@@ -75,7 +75,7 @@ RUN apk upgrade --no-cache \
  && gosu nobody true
 
 # Обслуживание использует штатные утилиты PostgreSQL 18 и тот же собранный CLI.
-FROM mcr.microsoft.com/dotnet/runtime:10.0.14-alpine3.24 AS maintenance-runtime
+FROM mcr.microsoft.com/dotnet/runtime:10.0.15-alpine3.24 AS maintenance-runtime
 FROM postgres AS maintenance
 # Версии APK определяет репозиторий Alpine базового образа; пересмотреть при
 # появлении поддерживаемого снимка пакетов с обновлениями безопасности.
