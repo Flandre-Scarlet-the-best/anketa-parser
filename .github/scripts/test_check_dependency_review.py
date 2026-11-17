@@ -16,12 +16,14 @@ from typing import override
 from check_dependency_review import (
     CHECK_ERROR_CODE,
     CHECK_FINDINGS_CODE,
+    NUGET_AUDIT_WORKFLOW,
     Change,
     CoverageError,
     changes,
     dependencies,
     expected_changes,
     imprecise,
+    nuget_audit_proof,
     reported,
     verify,
 )
@@ -226,24 +228,24 @@ class ComparisonTests(unittest.TestCase):
         self,
     ) -> None:
         expected = changes(
-            {("NuGet", "Npgsql", "10.0.3", "src/packages.lock.json")},
-            {("NuGet", "Npgsql", "10.0.4", "src/packages.lock.json")},
+            {("pip", "ruff", "0.17.5", "requirements.txt")},
+            {("pip", "ruff", "0.17.6", "requirements.txt")},
         )
         # Форма из ChangeSchema закреплённого действия; updated API не возвращает.
         payload = [
             {
                 "change_type": "removed",
-                "ecosystem": "nuget",
-                "name": "Npgsql",
-                "version": "10.0.3",
-                "manifest": "src/packages.lock.json",
+                "ecosystem": "pip",
+                "name": "ruff",
+                "version": "0.17.5",
+                "manifest": "requirements.txt",
             },
             {
                 "change_type": "added",
-                "ecosystem": "nuget",
-                "name": "Npgsql",
-                "version": "10.0.4",
-                "manifest": "src/packages.lock.json",
+                "ecosystem": "pip",
+                "name": "ruff",
+                "version": "0.17.6",
+                "manifest": "requirements.txt",
             },
         ]
         self.assertEqual(
@@ -258,7 +260,7 @@ class ComparisonTests(unittest.TestCase):
                 )
             for field, wrong in (
                 ("version", "9.9"),
-                ("manifest", "other/packages.lock.json"),
+                ("manifest", "other/requirements.txt"),
                 ("change_type", "added" if index == 0 else "removed"),
             ):
                 broken = [dict(item) for item in payload]
@@ -308,6 +310,39 @@ class ComparisonTests(unittest.TestCase):
             self.assertIn("не подтверждается", notes[1])
             self.assertIn("new.yml", notes[1])
 
+    def test_nuget_versions_are_not_claimed_as_confirmed_by_graph(self) -> None:
+        # Граф PR этого репозитория не разрешает версии NuGet: их отсутствие в
+        # отчёте не является пробелом разбора манифестов и не блокирует проверку.
+        expected = [
+            Change("added", "NuGet", "Npgsql", "10.0.4", "packages.lock.json"),
+            Change("removed", "NuGet", "Npgsql", "10.0.3", "packages.lock.json"),
+        ]
+        notes = verify(expected, [])
+        self.assertEqual(notes[0], "покрытие подтверждено для 0 изменений")
+        self.assertIn(
+            "экосистема NuGet не подтверждается графом PR: граф не публикует "
+            "разрешённые версии из packages.lock.json и Directory.Packages.props (2)",
+            notes[1],
+        )
+        # Совместно с подтверждённой экосистемой неподтверждённые не скрывают её.
+        pip = Change("added", "pip", "ruff", "0.17.5", "requirements.txt")
+        mixed = verify([*expected, pip], [pip])
+        self.assertEqual(mixed[0], "покрытие подтверждено для 1 изменений")
+        self.assertIn("экосистема NuGet не подтверждается графом PR", mixed[1])
+        self.assertIn("(2)", mixed[1])
+
+    def test_unconfirmed_report_entry_is_not_a_gap(self) -> None:
+        expected = [Change("added", "NuGet", "Npgsql", "10.0.4", "packages.lock.json")]
+        imprecise_entry = Change(
+            "added",
+            "NuGet",
+            "Npgsql",
+            ">= 0",
+            "src/AnketaParser.Cli/AnketaParser.Cli.csproj",
+        )
+        notes = verify(expected, [imprecise_entry])
+        self.assertIn("0 изменений", notes[0])
+
     def test_broken_output_is_coverage_error(self) -> None:
         for text in (
             "{",
@@ -331,3 +366,43 @@ class ComparisonTests(unittest.TestCase):
     def test_report_codes_are_distinct(self) -> None:
         self.assertNotEqual(CHECK_FINDINGS_CODE, CHECK_ERROR_CODE)
         self.assertNotEqual(CHECK_ERROR_CODE, 0)
+
+
+class NugetAuditTests(RepositoryCase):
+    def test_absent_workflow_blocks_unconfirmed_nuget(self) -> None:
+        with self.assertRaisesRegex(CoverageError, "не удалось прочитать"):
+            _ = nuget_audit_proof(self.root)
+
+    def test_missing_pull_request_trigger_blocks_unconfirmed_nuget(self) -> None:
+        self.write(
+            NUGET_AUDIT_WORKFLOW.as_posix(),
+            "on:\n  push:\n    branches: [main]\n"
+            "steps:\n"
+            "  - run: python .github/scripts/check_nuget_audit.py --root .\n"
+            "  - run: python .github/scripts/check_osv.py --root .\n",
+        )
+        with self.assertRaisesRegex(CoverageError, "не запускается на pull_request"):
+            _ = nuget_audit_proof(self.root)
+
+    def test_missing_script_blocks_unconfirmed_nuget(self) -> None:
+        self.write(
+            NUGET_AUDIT_WORKFLOW.as_posix(),
+            "on:\n  pull_request:\n"
+            "steps:\n  - run: python .github/scripts/check_osv.py --root .\n",
+        )
+        with self.assertRaisesRegex(CoverageError, "check_nuget_audit.py"):
+            _ = nuget_audit_proof(self.root)
+
+    def test_both_scripts_prove_nuget_audit(self) -> None:
+        self.write(
+            NUGET_AUDIT_WORKFLOW.as_posix(),
+            "on:\n  pull_request:\n"
+            "steps:\n"
+            "  - run: python .github/scripts/check_nuget_audit.py --root .\n"
+            "  - run: python .github/scripts/check_osv.py --root .\n",
+        )
+        self.assertEqual(
+            nuget_audit_proof(self.root),
+            "точные версии NuGet проверяет задание аудита зависимостей "
+            "на pull_request: check_nuget_audit.py, check_osv.py",
+        )
