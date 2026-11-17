@@ -4,8 +4,11 @@
 Скрипт считает изменения зависимостей между base и head из самих манифестов и
 сравнивает их с тем, что опубликовал `actions/dependency-review-action`. Успех
 возможен при согласованном нулевом изменении либо подтверждении изменений
-пакетов. Ссылки Actions на SHA явно перечисляются отдельно как неподтверждённые;
-для остальных зависимостей пробел охвата блокирует проверку.
+пакетов. Ссылки Actions на SHA и версии NuGet перечисляются отдельно как
+неподтверждённые: граф зависимостей PR этого репозитория не разрешает ни
+закреплённые ссылки Actions, ни версии NuGet, а уязвимости версий NuGet
+проверяет собственное задание аудита зависимостей. Для остальных зависимостей
+пробел охвата блокирует проверку.
 """
 
 import argparse
@@ -217,7 +220,37 @@ def reported(text: str) -> list[Change]:
 # уязвимостей закреплённого кода: GitHub поддерживает alerts для семантических
 # версий Actions. Кроме того, снимок PR может не содержать часть новых ссылок.
 # Эти изменения перечисляются отдельно даже при наличии записи в графе.
-UNCONFIRMED_ECOSYSTEMS = frozenset({"actions", "githubactions"})
+#
+# NuGet-версии граф PR этого репозитория не разрешает: при централизованном
+# управлении версиями он видит только .csproj без версий, а packages.lock.json и
+# Directory.Packages.props в перечень манифестов графа не попадают. Поэтому
+# изменение версии NuGet физически не может быть подтверждено Dependency Review,
+# и его отсутствие в отчёте не является пробелом разбора манифестов. Ответственность
+# распределена без ослабления: граф подтверждает только экосистемы, которые он
+# действительно разрешает, а точные версии NuGet обязано проверять задание аудита
+# зависимостей, наличие которого доказывается структурно (см. nuget_audit_proof).
+UNCONFIRMED_REASONS = {
+    "actions": (
+        "GitHub ведёт предупреждения Actions для семантических версий, "
+        "а не для закреплённых SHA"
+    ),
+    "githubactions": (
+        "GitHub ведёт предупреждения Actions для семантических версий, "
+        "а не для закреплённых SHA"
+    ),
+    "nuget": (
+        "граф не публикует разрешённые версии из packages.lock.json "
+        "и Directory.Packages.props"
+    ),
+}
+UNCONFIRMED_ECOSYSTEMS = frozenset(UNCONFIRMED_REASONS)
+
+# Задание аудита обязано проверять уязвимости NuGet вместо графа PR. Отсутствие
+# триггера или любой из проверок делает неподтверждённые версии непроверенными,
+# поэтому сверка падает, а не сообщает об успехе.
+NUGET_AUDIT_WORKFLOW = Path(".github/workflows/dependency-audit.yml")
+NUGET_AUDIT_SCRIPTS = ("check_nuget_audit.py", "check_osv.py")
+PULL_REQUEST_TRIGGER = "pull_request:"
 
 
 def verify(expected: list[Change], reported_changes: list[Change]) -> list[str]:
@@ -254,10 +287,10 @@ def verify(expected: list[Change], reported_changes: list[Change]) -> list[str]:
         for change in expected
     }
     gaps: list[str] = []
-    unconfirmed: list[str] = []
+    unconfirmed: list[Change] = []
     for change in expected:
         if change.ecosystem.lower() in UNCONFIRMED_ECOSYSTEMS:
-            unconfirmed.append(change.describe())
+            unconfirmed.append(change)
             continue
         if (
             change.kind,
@@ -294,12 +327,47 @@ def verify(expected: list[Change], reported_changes: list[Change]) -> list[str]:
             + "; ".join(change.describe() for change in extras[:MAX_DIAGNOSTIC])
         )
     notes = [f"покрытие подтверждено для {len(expected) - len(unconfirmed)} изменений"]
-    if unconfirmed:
+    for ecosystem in sorted({change.ecosystem for change in unconfirmed}):
+        entries = [
+            change.describe() for change in unconfirmed if change.ecosystem == ecosystem
+        ]
+        reason = UNCONFIRMED_REASONS.get(ecosystem.lower(), "граф не публикует версию")
         notes.append(
-            "экосистема githubactions не подтверждается графом PR "
-            f"({len(unconfirmed)}): " + "; ".join(unconfirmed[:50])
+            f"экосистема {ecosystem} не подтверждается графом PR: {reason} "
+            f"({len(entries)}): " + "; ".join(entries[:50])
         )
     return notes
+
+
+def nuget_audit_proof(root: Path) -> str:
+    """Доказать, что точные версии NuGet проверяет задание аудита зависимостей.
+
+    Проверка структурная: она подтверждает триггер `pull_request` и состав команд
+    задания, но не заменяет результат самих проверок. Задание аудита сканирует все
+    lock-файлы дерева PR, поэтому его отказ означает непройденный аудит, а не
+    пробел охвата этой сверки.
+    """
+    path = root / NUGET_AUDIT_WORKFLOW
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise CoverageError(
+            f"{NUGET_AUDIT_WORKFLOW}: не удалось прочитать задание аудита: {error}"
+        ) from error
+    if PULL_REQUEST_TRIGGER not in text:
+        raise CoverageError(
+            f"{NUGET_AUDIT_WORKFLOW}: аудит зависимостей не запускается на pull_request"
+        )
+    missing = [script for script in NUGET_AUDIT_SCRIPTS if script not in text]
+    if missing:
+        raise CoverageError(
+            f"{NUGET_AUDIT_WORKFLOW}: точные версии NuGet не проверяются, отсутствует: "
+            + ", ".join(missing)
+        )
+    return (
+        "точные версии NuGet проверяет задание аудита зависимостей на pull_request: "
+        + ", ".join(NUGET_AUDIT_SCRIPTS)
+    )
 
 
 def imprecise(reported_changes: list[Change]) -> list[str]:
@@ -358,6 +426,13 @@ def main() -> int:
         expected = expected_changes(root, args.base, args.head)
         reported_changes = reported(output_text(args))
         notes = verify(expected, reported_changes)
+        # Неподтверждённые графом версии NuGet обязаны быть покрыты аудитом —
+        # и когда они пришли из манифестов, и когда их обнаружило само действие.
+        if any(
+            change.ecosystem.lower() == "nuget"
+            for change in [*expected, *reported_changes]
+        ):
+            notes.append(nuget_audit_proof(root))
         gaps = imprecise(reported_changes)
     except CoverageError as error:
         print(f"::error::Охват Dependency Review не доказан: {error}", file=sys.stderr)
