@@ -36,23 +36,16 @@ jobs:
           warn-only: false
           show-openssf-scorecard: false
 
-      # Вывод действия передаётся файлом: одна строка окружения ограничена
-      # MAX_ARG_STRLEN, и большой набор изменений зависимостей не помещается.
-      # JSON формируется одной строкой без переводов строки, поэтому разделитель
-      # here-document не может встретиться в данных.
       - name: Сверить охват анализа с фактическими изменениями зависимостей
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHANGES: ${{ steps.review.outputs.dependency-changes }}
         run: |
-          cat > "$RUNNER_TEMP/dependency-changes.json" <<'DEPENDENCY_CHANGES_JSON'
-          ${{ steps.review.outputs.dependency-changes }}
-          DEPENDENCY_CHANGES_JSON
           python .github/scripts/check_dependency_review.py \
             --root . \
             --base "$BASE_SHA" \
-            --head "$HEAD_SHA" \
-            --changes-file "$RUNNER_TEMP/dependency-changes.json"
+            --head "$HEAD_SHA"
 
       - name: Самопроверка сверки на синтетических данных
         run: python -m unittest discover -s .github/scripts -p 'test_check_dependency_review.py' -v
