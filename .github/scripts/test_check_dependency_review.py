@@ -144,6 +144,21 @@ class ComparisonTests(unittest.TestCase):
             _ = verify(expected, [Change("updated", "nuget", "Npgsql", "10.0.4")])
         self.assertIn("httpx", str(context.exception))
 
+    def test_actions_ecosystem_is_reported_but_not_claimed_as_covered(self) -> None:
+        expected = [
+            Change("added", "actions", "actions/dependency-review-action", "a1d282b"),
+            Change("added", "pip", "httpx", "0.28.0"),
+        ]
+        notes = verify(expected, [Change("added", "pip", "httpx", "0.28.0")])
+        self.assertEqual(notes[0], "покрытие подтверждено для 1 изменений")
+        self.assertIn("githubactions не подтверждается графом PR", notes[1])
+        self.assertIn("actions/dependency-review-action", notes[1])
+
+    def test_unconfirmed_actions_change_alone_does_not_fail(self) -> None:
+        notes = verify([Change("added", "actions", "actions/checkout", "3d3c42e")], [])
+        self.assertEqual(notes[0], "покрытие подтверждено для 0 изменений")
+        self.assertIn("githubactions", notes[1])
+
     def test_empty_report_with_expected_changes_is_error(self) -> None:
         with self.assertRaises(CoverageError):
             _ = verify([Change("added", "pip", "httpx", "0.28.0")], [])

@@ -189,8 +189,15 @@ def reported(text: str) -> list[Change]:
     return found
 
 
+# Экосистема ссылок GitHub Actions не подтверждается графом конкретного PR:
+# снимок зависимостей действия строится из workflow основной ветки, поэтому новая
+# ссылка в новом файле в отчёт не попадает. Такие изменения перечисляются, но не
+# выдаются за проверенные.
+UNCONFIRMED_ECOSYSTEMS = frozenset({"actions", "githubactions"})
+
+
 def verify(expected: list[Change], reported_changes: list[Change]) -> list[str]:
-    """Каждое фактическое изменение должно быть подтверждено отчётом Action."""
+    """Изменения зависимостей из lock-файлов должны быть подтверждены отчётом."""
     if not expected:
         return ["изменений зависимостей в PR нет; проверять нечего"]
     keys = {
@@ -198,16 +205,26 @@ def verify(expected: list[Change], reported_changes: list[Change]) -> list[str]:
         for change in reported_changes
     }
     gaps: list[str] = []
+    unconfirmed: list[str] = []
     for change in expected:
         if (change.kind, change.ecosystem.lower(), change.name) in keys:
             continue
+        if change.ecosystem.lower() in UNCONFIRMED_ECOSYSTEMS:
+            unconfirmed.append(change.describe())
+            continue
         gaps.append(change.describe())
-    if not gaps:
-        return [f"покрытие подтверждено для {len(expected)} изменений"]
-    raise CoverageError(
-        "Dependency Review не подтвердил изменения зависимостей: "
-        + "; ".join(gaps[:MAX_DIAGNOSTIC])
-    )
+    if gaps:
+        raise CoverageError(
+            "Dependency Review не подтвердил изменения зависимостей: "
+            + "; ".join(gaps[:MAX_DIAGNOSTIC])
+        )
+    notes = [f"покрытие подтверждено для {len(expected) - len(unconfirmed)} изменений"]
+    if unconfirmed:
+        notes.append(
+            "экосистема githubactions не подтверждается графом PR "
+            f"({len(unconfirmed)}): " + "; ".join(unconfirmed[:50])
+        )
+    return notes
 
 
 def imprecise(reported_changes: list[Change]) -> list[str]:
