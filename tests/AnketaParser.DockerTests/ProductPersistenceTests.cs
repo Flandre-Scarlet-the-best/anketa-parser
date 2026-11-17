@@ -313,6 +313,45 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
         await Assert.ThrowsAsync<InvalidOperationException>(() => SchemaMaintenance.MigrateAsync(admin, Ct));
     }
 
+    [Fact]
+    public async Task ProvisioningRestoresHistoryAccessWithoutGrantingOtherPublicTables()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using (var admin = new NpgsqlConnection(database.ConnectionString))
+        {
+            await admin.OpenAsync(Ct);
+            await using var revoke = new NpgsqlCommand(
+                "REVOKE SELECT ON TABLE public.\"__EFMigrationsHistory\" FROM product_runtime, product_backup",
+                admin);
+            await revoke.ExecuteNonQueryAsync(Ct);
+        }
+
+        await SchemaMaintenance.ProvisionAsync(
+            database.ConnectionString,
+            database.RolePassword,
+            database.RolePassword,
+            database.RolePassword,
+            Ct);
+
+        await using (var runtime = database.Open())
+        {
+            Assert.Equal("ready", await SchemaMaintenance.StatusAsync(runtime, Ct));
+            await Assert.ThrowsAsync<PostgresException>(() => runtime.Database.ExecuteSqlRawAsync(
+                "SELECT * FROM public.existing_marker", Ct));
+        }
+
+        var backupBuilder = new NpgsqlConnectionStringBuilder(database.ConnectionString)
+        {
+            Username = "product_backup",
+        };
+        await using var backup = new ProductDbContext(
+            new DbContextOptionsBuilder<ProductDbContext>().UseNpgsql(backupBuilder.ConnectionString).Options);
+        Assert.Equal("ready", await SchemaMaintenance.StatusAsync(backup, Ct));
+        await Assert.ThrowsAsync<PostgresException>(() => backup.Database.ExecuteSqlRawAsync(
+            "SELECT * FROM public.existing_marker", Ct));
+    }
+
     private static void RequireDocker()
     {
         if (!PostgresTestCluster.Enabled)

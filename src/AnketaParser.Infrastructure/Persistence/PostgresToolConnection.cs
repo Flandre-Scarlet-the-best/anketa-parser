@@ -32,8 +32,13 @@ internal static class PostgresToolConnection
             "PGGSSDELEGATION", "PGCLIENTENCODING", "PGTARGETSESSIONATTRS", "PGLOADBALANCEHOSTS",
             "PGMINPROTOCOLVERSION", "PGMAXPROTOCOLVERSION",
         }) info.Environment.Remove(name);
-        info.Environment["PGHOST"] = cs.Host;
-        info.Environment["PGPORT"] = cs.Port.ToString(CultureInfo.InvariantCulture);
+        var configuredHosts = cs.Host;
+        ArgumentException.ThrowIfNullOrWhiteSpace(configuredHosts);
+        var hostPorts = configuredHosts.Split(',', StringSplitOptions.TrimEntries)
+            .Select(host => ParseHostPort(host, cs.Port))
+            .ToArray();
+        info.Environment["PGHOST"] = string.Join(',', hostPorts.Select(static item => item.Host));
+        info.Environment["PGPORT"] = string.Join(',', hostPorts.Select(static item => item.Port.ToString(CultureInfo.InvariantCulture)));
         info.Environment["PGDATABASE"] = cs.Database;
         info.Environment["PGUSER"] = cs.Username;
         info.Environment["PGPASSWORD"] = cs.Password;
@@ -64,4 +69,43 @@ internal static class PostgresToolConnection
         if (!string.IsNullOrEmpty(value)) info.Environment[name] = value;
         else info.Environment.Remove(name);
     }
+
+    private static (string Host, int Port) ParseHostPort(string host, int defaultPort)
+    {
+        if (string.IsNullOrWhiteSpace(host))
+            throw new ArgumentException("Строка подключения содержит пустой узел PostgreSQL.", nameof(host));
+
+        var address = host;
+        var port = defaultPort;
+        if (host[0] == '[')
+        {
+            var closingBracket = host.IndexOf(']');
+            if (closingBracket <= 1)
+                throw new ArgumentException("Строка подключения содержит некорректный IPv6-узел PostgreSQL.", nameof(host));
+
+            address = host[1..closingBracket];
+            var suffix = host[(closingBracket + 1)..];
+            if (suffix.Length > 0)
+            {
+                if (suffix[0] != ':' || !TryParsePort(suffix.AsSpan(1), out port))
+                    throw new ArgumentException("Строка подключения содержит некорректный порт PostgreSQL.", nameof(host));
+            }
+        }
+        else if (host.Count(static character => character == ':') == 1)
+        {
+            var separator = host.LastIndexOf(':');
+            if (TryParsePort(host.AsSpan(separator + 1), out var explicitPort))
+            {
+                if (separator == 0)
+                    throw new ArgumentException("Строка подключения содержит пустой узел PostgreSQL.", nameof(host));
+                address = host[..separator];
+                port = explicitPort;
+            }
+        }
+
+        return (address, port);
+    }
+
+    private static bool TryParsePort(ReadOnlySpan<char> value, out int port) =>
+        int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out port) && port is > 0 and <= 65535;
 }

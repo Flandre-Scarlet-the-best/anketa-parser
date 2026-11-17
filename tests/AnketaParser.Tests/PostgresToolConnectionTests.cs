@@ -109,6 +109,22 @@ public sealed class PostgresToolConnectionTests
     }
 
     [Fact]
+    public void ToolConnectionTransfersPerHostPortsIncludingBracketedIpv6()
+    {
+        var info = new ProcessStartInfo("pg_dump");
+        var connection = new NpgsqlConnectionStringBuilder
+        {
+            Host = "primary:5441,[2001:db8::2]:5442,backup",
+            Port = 5432,
+        };
+
+        PostgresToolConnection.Apply(info, connection);
+
+        Assert.Equal("primary,2001:db8::2,backup", info.Environment["PGHOST"]);
+        Assert.Equal("5441,5442,5432", info.Environment["PGPORT"]);
+    }
+
+    [Fact]
     public void UnsupportedSecurityRequirementsAreRejectedBeforeProcessStart()
     {
         var info = new ProcessStartInfo("pg_dump");

@@ -68,6 +68,13 @@ public static class SchemaMaintenance
             ALTER DEFAULT PRIVILEGES FOR ROLE product_migrator IN SCHEMA product, private
                 GRANT SELECT ON TABLES TO product_backup;
             ALTER DEFAULT PRIVILEGES FOR ROLE product_migrator IN SCHEMA public GRANT SELECT ON TABLES TO product_runtime, product_backup;
+            DO $migration_history$
+            BEGIN
+              IF to_regclass('public."__EFMigrationsHistory"') IS NOT NULL THEN
+                EXECUTE 'GRANT SELECT ON TABLE public."__EFMigrationsHistory" TO product_runtime, product_backup';
+              END IF;
+            END
+            $migration_history$;
             """, connection, transaction);
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         // CONNECT нужен только к целевой БД; имя берём из серверного контекста.

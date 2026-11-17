@@ -72,7 +72,8 @@ public sealed class BackupService
         System.IO.Directory.CreateDirectory(_settings.Directory);
         RestrictDirectory(_settings.Directory);
         await using var gate = new FileStream(Path.Combine(_settings.Directory, ".lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-        var state = Status();
+        var state = new BackupState(null, null, null, null, null);
+        var stateCanBeWritten = true;
         var name = DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffffff", System.Globalization.CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N") + ".dump";
         var partial = Path.Combine(_settings.Directory, name + ".partial");
         var destination = Path.Combine(_settings.Directory, name);
@@ -80,6 +81,20 @@ public sealed class BackupService
         var published = false;
         try
         {
+            try
+            {
+                state = Status();
+            }
+            catch (JsonException)
+            {
+                stateCanBeWritten = false;
+                var preserved = Path.Combine(_settings.Directory, "status-corrupt-" + Guid.NewGuid().ToString("N") + ".json");
+                File.Move(StatePath, preserved);
+                stateCanBeWritten = true;
+                RestrictFile(preserved);
+                state = new BackupState(null, null, "invalid_status", null, null);
+            }
+
             await using (var db = new ProductDbContext(new DbContextOptionsBuilder<ProductDbContext>().UseNpgsql(_settings.ConnectionString).Options))
             {
                 if (await SchemaMaintenance.StatusAsync(db, operation).ConfigureAwait(false) != "ready")
@@ -122,7 +137,8 @@ public sealed class BackupService
         catch (Exception exception)
         {
             var category = ct.IsCancellationRequested ? "cancelled" : exception is TimeoutException || deadline.IsCancellationRequested ? "timeout" : published ? "rotation_failed" : "backup_failed";
-            WriteState(state with { LastFailure = DateTimeOffset.UtcNow, FailureCategory = category });
+            if (stateCanBeWritten)
+                WriteState(state with { LastFailure = DateTimeOffset.UtcNow, FailureCategory = category });
             ct.ThrowIfCancellationRequested();
             throw new InvalidOperationException(published
                 ? "Копия опубликована, но обслуживание хранилища завершилось отказом; проверьте backup-status."

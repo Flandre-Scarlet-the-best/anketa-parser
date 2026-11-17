@@ -107,7 +107,7 @@ internal static partial class StorageCommands
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             await stderr.WriteLineAsync("Операция хранения остановлена.").ConfigureAwait(false);
-            return ExitCodes.Success;
+            return args is ["storage", "backup-daemon"] ? ExitCodes.Success : ExitCodes.UnexpectedError;
         }
         catch (RestoreTargetException exception)
         {

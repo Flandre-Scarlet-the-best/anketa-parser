@@ -37,6 +37,25 @@ public sealed class CliApplicationTests
         Assert.Empty(result.Stdout);
     }
 
+    [Fact]
+    public async Task StorageCancellationIsFailureExceptForBackupDaemonShutdown()
+    {
+        using var root = new Support.TemporaryContentRoot("""
+            { "Backup": { "Directory": "unused" } }
+            """);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var operation = await RunAsync(["storage", "backup"], root.Path, cancellation.Token);
+        Assert.Equal(ExitCodes.UnexpectedError, operation.ExitCode);
+        Assert.Empty(operation.Stdout);
+        Assert.Contains("остановлена", operation.Stderr, StringComparison.Ordinal);
+
+        var daemon = await RunAsync(["storage", "backup-daemon"], root.Path, cancellation.Token);
+        Assert.Equal(ExitCodes.Success, daemon.ExitCode);
+        Assert.Empty(daemon.Stdout);
+    }
+
     [Theory]
     [InlineData("backup-verify", "../outside.dump")]
     [InlineData("restore-empty", "../outside.dump")]
@@ -53,7 +72,8 @@ public sealed class CliApplicationTests
 
     private static async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(
         string[] args,
-        string? contentRootPath = null)
+        string? contentRootPath = null,
+        CancellationToken? cancellationToken = null)
     {
         using var stdout = new StringWriter();
         using var stderr = new StringWriter();
@@ -62,7 +82,7 @@ public sealed class CliApplicationTests
             args,
             stdout,
             stderr,
-            TestContext.Current.CancellationToken,
+            cancellationToken ?? TestContext.Current.CancellationToken,
             contentRootPath);
 
         return (exitCode, stdout.ToString(), stderr.ToString());
@@ -207,6 +227,24 @@ public sealed class CliApplicationTests
         Assert.Equal(ExitCodes.Success, result.ExitCode);
         Assert.Contains("статус      : degraded", result.Stdout, StringComparison.Ordinal);
         Assert.Contains("проверка postgres", result.Stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CancelledDoctorReturnsFailureAndOneJsonDocument()
+    {
+        using var root = new Support.TemporaryContentRoot("{}");
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        var result = await RunAsync(["doctor", "--json"], root.Path, cancellation.Token);
+
+        Assert.Equal(ExitCodes.UnexpectedError, result.ExitCode);
+        using var document = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("doctor", document.RootElement.GetProperty("command").GetString());
+        Assert.Equal("unhealthy", document.RootElement.GetProperty("status").GetString());
+        Assert.Equal(ExitCodes.UnexpectedError, document.RootElement.GetProperty("exitCode").GetInt32());
+        Assert.Equal("Диагностика остановлена.", Assert.Single(document.RootElement.GetProperty("errors").EnumerateArray()).GetString());
+        Assert.Contains("Диагностика остановлена.", result.Stderr, StringComparison.Ordinal);
     }
 
     [Theory]

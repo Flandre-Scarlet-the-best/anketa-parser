@@ -1,3 +1,7 @@
+using System.Text.Json;
+
+using Npgsql;
+
 namespace AnketaParser.DockerTests;
 
 public sealed class DockerCliTests
@@ -20,6 +24,41 @@ public sealed class DockerCliTests
         var result = await docker.RunAsync(arguments, TimeSpan.FromSeconds(10), CancellationToken.None);
 
         Assert.Equal(expectedValue, result);
+    }
+
+    [Fact]
+    public async Task ComposeConnectionStringsPreservePasswordsWithSemicolons()
+    {
+        if (!ComposeImageFixture.Enabled)
+        {
+            Assert.Skip($"Задайте {ComposeImageFixture.EnableVariable}=1 для проверки конфигурации Compose.");
+        }
+
+        var root = ComposeStackSmokeTests.FindRepositoryRoot();
+        var expected = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["PRODUCT_RUNTIME_PASSWORD"] = "runtime;synthetic",
+            ["PRODUCT_MIGRATION_PASSWORD"] = "migration;synthetic",
+            ["PRODUCT_BACKUP_PASSWORD"] = "backup;synthetic",
+        };
+        var docker = new DockerCli(root, expected);
+        var output = await docker.RunAsync(
+            ["compose", "--profile", "maintenance", "-f", Path.Combine(root, "compose.yaml"), "config", "--format", "json"],
+            TimeSpan.FromMinutes(2),
+            TestContext.Current.CancellationToken);
+        using var document = JsonDocument.Parse(output);
+        var services = document.RootElement.GetProperty("services");
+
+        AssertPassword(services.GetProperty("host"), "ANKETAPARSER_Database__ConnectionString", expected["PRODUCT_RUNTIME_PASSWORD"]);
+        AssertPassword(services.GetProperty("maintenance"), "ANKETAPARSER_Database__ConnectionString", expected["PRODUCT_MIGRATION_PASSWORD"]);
+        AssertPassword(services.GetProperty("maintenance"), "ANKETAPARSER_Backup__ConnectionString", expected["PRODUCT_BACKUP_PASSWORD"]);
+        AssertPassword(services.GetProperty("backup"), "ANKETAPARSER_Backup__ConnectionString", expected["PRODUCT_BACKUP_PASSWORD"]);
+    }
+
+    private static void AssertPassword(JsonElement service, string setting, string expected)
+    {
+        var connectionString = service.GetProperty("environment").GetProperty(setting).GetString();
+        Assert.Equal(expected, new NpgsqlConnectionStringBuilder(connectionString).Password);
     }
 
     [Theory]

@@ -69,8 +69,16 @@ public static class CliApplication
                 return ExitCodes.Success;
 
             case CliCommand.Doctor:
-                return await RunDoctorAsync(invocation, info, stdout, stderr, contentRootPath, cancellationToken)
-                    .ConfigureAwait(false);
+                try
+                {
+                    return await RunDoctorAsync(invocation, info, stdout, stderr, contentRootPath, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    await stderr.WriteLineAsync("Диагностика остановлена.").ConfigureAwait(false);
+                    return ExitCodes.UnexpectedError;
+                }
 
             default:
                 await stderr.WriteLineAsync($"Неподдерживаемая команда '{invocation.Command}'.").ConfigureAwait(false);
@@ -199,9 +207,52 @@ public static class CliApplication
             var diagnosticsSettings = provider.GetRequiredService<IOptions<DiagnosticsSettings>>().Value;
 
             var runner = provider.GetRequiredService<DiagnosticsRunner>();
-            var report = await runner
-                .RunAsync(sources, TimeSpan.FromSeconds(diagnosticsSettings.ProbeTimeoutSeconds), cancellationToken)
-                .ConfigureAwait(false);
+            DiagnosticReport report;
+            try
+            {
+                report = await runner
+                    .RunAsync(sources, TimeSpan.FromSeconds(diagnosticsSettings.ProbeTimeoutSeconds), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                const int cancelledExitCode = ExitCodes.UnexpectedError;
+                const string message = "Диагностика остановлена.";
+                await stderr.WriteLineAsync(message).ConfigureAwait(false);
+                if (invocation.IsMachineReadable)
+                {
+                    var cancelled = new DiagnosticsDocument
+                    {
+                        Tool = info.ProductName,
+                        ToolVersion = info.Version,
+                        Command = "doctor",
+                        GeneratedAtUtc = DateTimeOffset.UtcNow,
+                        Status = "unhealthy",
+                        ExitCode = cancelledExitCode,
+                        Configuration = new ConfigurationDocument
+                        {
+                            Valid = true,
+                            Sources = sources.Select(static source => new ConfigurationSourceDocument
+                            {
+                                Name = source.Name,
+                                Kind = source.Kind,
+                            }).ToArray(),
+                            Database = new DatabaseDocument
+                            {
+                                Configured = databaseSettings.IsConfigured,
+                                Required = databaseSettings.Required,
+                                Target = ConnectionStringDescriptor.Describe(databaseSettings.ConnectionString),
+                                ConnectTimeoutSeconds = databaseSettings.ConnectTimeoutSeconds,
+                            },
+                        },
+                        Probes = [],
+                        Errors = [message],
+                    };
+                    await WriteDocumentAsync(cancelled, stdout, CancellationToken.None).ConfigureAwait(false);
+                }
+
+                return cancelledExitCode;
+            }
 
             var exitCode = report.Status == HealthStatus.Unhealthy
                 ? ExitCodes.DependencyUnavailable
