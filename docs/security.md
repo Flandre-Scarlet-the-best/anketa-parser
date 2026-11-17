@@ -236,7 +236,7 @@ lock-файлы дерева PR. Чтобы неподтверждённые в�
 Флаг полного инвентаря OSV закреплён в
 [контракте OSV-Scanner 2.7.1](https://github.com/google/osv-scanner/blob/v2.7.1/cmd/osv-scanner/internal/helper/flags.go),
 а форма `added`/`removed` и поля источника/версии — в
-[ChangeSchema закреплённого Dependency Review](https://github.com/actions/dependency-review-action/blob/a1d282b36b6f3519aa1f3fc636f609c47dddb294/src/schemas.ts).
+[ChangeSchema закреплённого Dependency Review](https://github.com/actions/dependency-review-action/blob/bbc44d14a204704ccc493733616cd1e93a0321ec/src/schemas.ts).
 
 Аудит lock-файлов запускает OSV-Scanner с `--all-packages` и `--no-resolve`:
 разрешение транзитивных зависимостей манифеста выключено, поэтому отчёт
