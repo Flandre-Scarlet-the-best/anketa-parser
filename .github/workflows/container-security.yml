@@ -1,0 +1,364 @@
+name: Безопасность контейнеров
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  schedule:
+    - cron: '17 4 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TRIVY_DISABLE_TELEMETRY: 'true'
+  TRIVY_SKIP_VERSION_CHECK: 'true'
+
+jobs:
+  configuration:
+    name: Hadolint и конфигурации Trivy
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Установить проверенные версии анализаторов
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o hadolint https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-linux-x86_64
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o trivy.tar.gz https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz
+          echo 'c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507  hadolint' | sha256sum --check
+          echo 'bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf  trivy.tar.gz' | sha256sum --check
+          chmod +x hadolint
+          tar -xzf trivy.tar.gz trivy
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Проверить Dockerfile и негативный контроль Hadolint
+        shell: bash
+        run: |
+          set -euo pipefail
+          hadolint --version
+          git ls-files -z > "$RUNNER_TEMP/tracked-files"
+          files=()
+          while IFS= read -r -d '' file; do
+            case "${file##*/}" in
+              Dockerfile|Dockerfile.*|*.Dockerfile|Containerfile|Containerfile.*|*.Containerfile) files+=("$file") ;;
+            esac
+          done < "$RUNNER_TEMP/tracked-files"
+          if (( ${#files[@]} == 0 )); then
+            echo 'Не найдены Dockerfile или Containerfile' >&2
+            exit 1
+          fi
+          printf 'Hadolint: %s\n' "${files[@]}"
+          hadolint "${files[@]}"
+          printf 'FROM ubuntu:latest\n' > "$RUNNER_TEMP/Dockerfile.invalid"
+          if hadolint "$RUNNER_TEMP/Dockerfile.invalid"; then
+            echo 'Негативный контроль Hadolint не обнаружил нарушение' >&2
+            exit 1
+          fi
+      - name: Проверить конфигурации и негативные контроли Trivy
+        shell: bash
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-config-cache
+        run: |
+          set -euo pipefail
+          trivy --version
+          git ls-files -z > "$RUNNER_TEMP/tracked-files"
+          files=()
+          while IFS= read -r -d '' file; do
+            case "${file##*/}" in
+              Dockerfile|Dockerfile.*|*.Dockerfile|Containerfile|Containerfile.*|*.Containerfile) files+=("$file") ;;
+            esac
+          done < "$RUNNER_TEMP/tracked-files"
+          (( ${#files[@]} > 0 )) || exit 1
+          scan_config() {
+            local file="$1" type="$2" report="$3" status=0
+            shift 3
+            trivy config --config '' --ignorefile '' --skip-check-update --include-non-failures --exit-code 42 --severity HIGH,CRITICAL --format json --output "$report" "$@" "$file" || status=$?
+            if [[ "$status" != 0 && "$status" != 42 ]]; then
+              echo "Ошибка сканирования $file: $status" >&2
+              return 1
+            fi
+            jq -e --arg file "$file" --arg target "${file##*/}" --arg type "$type" '
+              .SchemaVersion == 2 and .ArtifactName == $file and
+              ([.Results[]? | select(.Target == $target and .Type == $type) |
+                select((.Misconfigurations | type == "array" and length > 0))] | length == 1)
+            ' "$report" > /dev/null || return 1
+            jq -r '.Results[] | .Misconfigurations[]? | [.ID, .Severity, .Status, .Message] | @tsv' "$report"
+            return "$status"
+          }
+          for file in "${files[@]}"; do
+            scan_config "$file" dockerfile "$RUNNER_TEMP/config.json"
+          done
+          for file in compose.yaml compose.debug.yaml; do
+            scan_config "$file" yaml "$RUNNER_TEMP/config.json" --misconfig-scanners yaml --config-check .github/security/compose.rego --check-namespaces user
+            jq -e '[.Results[].Misconfigurations[] | select(.ID == "COMPOSE-001")] | length > 0' "$RUNNER_TEMP/config.json" > /dev/null
+          done
+          printf 'FROM alpine:3.20\nUSER root\n' > "$RUNNER_TEMP/Dockerfile.bad"
+          status=0
+          scan_config "$RUNNER_TEMP/Dockerfile.bad" dockerfile "$RUNNER_TEMP/bad.json" || status=$?
+          [[ "$status" == 42 ]] || { echo 'Trivy не обнаружил опасный Dockerfile' >&2; exit 1; }
+          scan_compose() {
+            scan_config "$1" yaml "$2" --misconfig-scanners yaml --config-check .github/security/compose.rego --check-namespaces user
+          }
+          assert_compose() {
+            local file="$1" expected="$2" message="$3" status=0
+            scan_compose "$file" "$RUNNER_TEMP/compose-report.json" || status=$?
+            if [[ "$expected" == FAIL ]]; then
+              [[ "$status" == 42 ]] || { echo "Контроль $message: ожидался код 42, получен $status" >&2; return 1; }
+            else
+              [[ "$status" == 0 ]] || { echo "Контроль $message: ожидался код 0, получен $status" >&2; return 1; }
+            fi
+            jq -e --arg expected "$expected" --arg message "$message" '
+              [.Results[].Misconfigurations[] | select(.ID == "COMPOSE-001" and .Status == $expected and (.Message | contains($message)))] | length > 0
+            ' "$RUNNER_TEMP/compose-report.json" > /dev/null
+          }
+          # Каждый запрет проверяется отдельно: чужое нарушение не заменяет ожидаемое.
+          for key in privileged network_mode pid ipc userns_mode uts cgroup; do
+            value=host
+            [[ "$key" != privileged ]] || value=true
+            printf 'services:\n  test:\n    image: alpine:3.20\n    %s: %s\n' "$key" "$value" > "$RUNNER_TEMP/compose-control.yaml"
+            if [[ "$key" == privileged ]]; then
+              assert_compose "$RUNNER_TEMP/compose-control.yaml" FAIL 'Сервис test использует privileged'
+            else
+              assert_compose "$RUNNER_TEMP/compose-control.yaml" FAIL "Сервис test использует $key хоста"
+            fi
+          done
+          printf 'services:\n  test:\n    image: alpine:3.20\n    volumes:\n      - /var/run/docker.sock:/socket\n' > "$RUNNER_TEMP/compose-control.yaml"
+          assert_compose "$RUNNER_TEMP/compose-control.yaml" FAIL 'Сервис test монтирует сокет Docker'
+          printf 'services:\n  test:\n    image: alpine:3.20\n    volumes:\n      - type: bind\n        source: /var/run/docker.sock\n        target: /socket\n' > "$RUNNER_TEMP/compose-control.yaml"
+          assert_compose "$RUNNER_TEMP/compose-control.yaml" FAIL 'Сервис test монтирует сокет Docker'
+          printf 'services:\n  test:\n    image: alpine:3.20\n    network_mode: bridge\n    pid: private\n    volumes:\n      - data:/data\n      - /var/run/docker.sock.backup:/other\n' > "$RUNNER_TEMP/compose-control.yaml"
+          assert_compose "$RUNNER_TEMP/compose-control.yaml" PASS ''
+          printf 'services: {}\n' > "$RUNNER_TEMP/compose-control.yaml"
+          assert_compose "$RUNNER_TEMP/compose-control.yaml" FAIL 'отсутствуют сервисы'
+          printf 'unrecognized: true\n' > "$RUNNER_TEMP/compose-control.yaml"
+          assert_compose "$RUNNER_TEMP/compose-control.yaml" FAIL 'объект services'
+          printf 'services:\n  test: invalid\n' > "$RUNNER_TEMP/compose-control.yaml"
+          assert_compose "$RUNNER_TEMP/compose-control.yaml" FAIL 'Сервис test должен быть объектом'
+          for content in '' 'services: ['; do
+            printf '%s\n' "$content" > "$RUNNER_TEMP/compose-control.yaml"
+            # Для пустого и синтаксически неверного YAML Trivy возвращает 0 без цели;
+            # отдельно проверяем результат инструмента и отказ нашего валидатора.
+            trivy config --config '' --ignorefile '' --skip-check-update --include-non-failures --exit-code 42 --severity HIGH,CRITICAL --format json --output "$RUNNER_TEMP/invalid-report.json" --misconfig-scanners yaml --config-check .github/security/compose.rego --check-namespaces user "$RUNNER_TEMP/compose-control.yaml"
+            jq -e --arg file "$RUNNER_TEMP/compose-control.yaml" '.SchemaVersion == 2 and .ArtifactName == $file and ([.Results[]?] | length == 0)' "$RUNNER_TEMP/invalid-report.json" > /dev/null
+            status=0
+            scan_compose "$RUNNER_TEMP/compose-control.yaml" "$RUNNER_TEMP/compose-report.json" || status=$?
+            [[ "$status" == 1 ]] || { echo 'Пустой или некорректный Compose не отклонён валидатором' >&2; exit 1; }
+          done
+          # Анализируются интерполированные модели со всеми профилями, без вывода секретов.
+          docker compose --project-name anketa-security-audit --profile '*' -f compose.yaml config > "$RUNNER_TEMP/compose-resolved.yaml"
+          assert_compose "$RUNNER_TEMP/compose-resolved.yaml" PASS ''
+          docker compose --project-name anketa-security-audit --profile '*' -f compose.yaml -f compose.debug.yaml config > "$RUNNER_TEMP/compose-resolved.yaml"
+          assert_compose "$RUNNER_TEMP/compose-resolved.yaml" PASS ''
+          printf 'services:\n  test:\n    image: alpine:3.20\n    privileged: $%s\n' '{WORKER_PRIVILEGED:-false}' > "$RUNNER_TEMP/compose-interpolation.yaml"
+          WORKER_PRIVILEGED=true docker compose --project-name anketa-security-control -f "$RUNNER_TEMP/compose-interpolation.yaml" config > "$RUNNER_TEMP/compose-resolved.yaml"
+          assert_compose "$RUNNER_TEMP/compose-resolved.yaml" FAIL privileged
+          printf 'services:\n  test:\n    privileged: true\n' > "$RUNNER_TEMP/compose-override.yaml"
+          WORKER_PRIVILEGED=false docker compose --project-name anketa-security-control -f "$RUNNER_TEMP/compose-interpolation.yaml" -f "$RUNNER_TEMP/compose-override.yaml" config > "$RUNNER_TEMP/compose-resolved.yaml"
+          assert_compose "$RUNNER_TEMP/compose-resolved.yaml" FAIL privileged
+
+  images:
+    name: 'Trivy: исполняемые образы'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Установить проверенный Trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o trivy.tar.gz https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_Linux-64bit.tar.gz
+          echo 'bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf  trivy.tar.gz' | sha256sum --check
+          tar -xzf trivy.tar.gz trivy
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Собрать и получить исполняемые образы
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose --project-name anketa-security-audit --profile '*' config --format json > "$RUNNER_TEMP/compose.json"
+          check_images() {
+            jq -e '
+              .services as $s |
+              [$s.host, $s.maintenance, $s.postgres] as $required |
+              [$required[].image] as $images |
+              ($s | type == "object") and
+              ($s.host.build.target == "runtime") and
+              ($s.maintenance.build.target == "maintenance") and
+              ($s.postgres.build.target == "postgres") and
+              ($s.backup.image == $s.maintenance.image and $s.backup.build == $s.maintenance.build) and
+              ($images | all(type == "string" and length > 0) and (unique | length == 3)) and
+              ([$s[] | .image] | unique | sort) == ($images | unique | sort) and
+              all($s[]; . as $service |
+                any($required[]; .image == $service.image and
+                  ($service.build == null or $service.build == .build)))
+            ' "$1" > /dev/null
+          }
+          check_images "$RUNNER_TEMP/compose.json" || { echo 'Неполный или неоднозначный набор образов Compose' >&2; exit 1; }
+          docker compose --project-name anketa-security-audit --profile '*' -f compose.yaml -f compose.debug.yaml config --format json > "$RUNNER_TEMP/compose-debug.json"
+          check_debug_images() {
+            check_images "$1" && jq -e --slurpfile base "$RUNNER_TEMP/compose.json" '
+              [.services.host, .services.maintenance, .services.postgres] | map({image, build}) ==
+              ([$base[0].services.host, $base[0].services.maintenance, $base[0].services.postgres] | map({image, build}))
+            ' "$1" > /dev/null
+          }
+          check_debug_images "$RUNNER_TEMP/compose-debug.json" || { echo 'Отладочная модель содержит непроверенные образы или сборки' >&2; exit 1; }
+          jq '.services.host.image = "unknown.invalid/unscanned:control"' "$RUNNER_TEMP/compose-debug.json" > "$RUNNER_TEMP/compose-debug-extra.json"
+          if check_debug_images "$RUNNER_TEMP/compose-debug-extra.json"; then
+            echo 'Замена образа в отладочной модели не обнаружена' >&2
+            exit 1
+          fi
+          jq '.services.synthetic = {image: "unknown.invalid/unscanned:control"}' "$RUNNER_TEMP/compose.json" > "$RUNNER_TEMP/compose-extra.json"
+          if check_images "$RUNNER_TEMP/compose-extra.json"; then
+            echo 'Новый образ не обнаружен контролем состава' >&2
+            exit 1
+          fi
+          jq 'del(.services.host)' "$RUNNER_TEMP/compose.json" > "$RUNNER_TEMP/compose-missing.json"
+          if check_images "$RUNNER_TEMP/compose-missing.json"; then
+            echo 'Отсутствующая обязательная цель не обнаружена' >&2
+            exit 1
+          fi
+          docker compose --project-name anketa-security-audit --profile '*' build --pull --no-cache host maintenance postgres
+      - name: Проверить все образы и свежую базу CVE
+        shell: bash
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-image-cache
+        run: |
+          set -euo pipefail
+          postgres=$(jq -er '.services.postgres.image' "$RUNNER_TEMP/compose.json")
+          host=$(jq -er '.services.host.image' "$RUNNER_TEMP/compose.json")
+          maintenance=$(jq -er '.services.maintenance.image' "$RUNNER_TEMP/compose.json")
+          images=("$host" "$maintenance" "$postgres")
+          infrastructure_failed=0
+          vulnerabilities_found=0
+          validate_report() {
+            local report="$1" image="$2" id="$3"
+            jq -e --arg image "$image" --arg id "$id" --arg host "$host" --arg maintenance "$maintenance" --arg postgres "$postgres" '
+              def component($kind; $path):
+                any(.Results[]?; .Class == "lang-pkgs" and .Type == $kind and .Target == $path and (.Packages | type == "array" and length > 0));
+              .SchemaVersion == 2 and .ArtifactType == "container_image" and
+              .ArtifactName == $image and .Metadata.ImageID == $id and
+              (.Metadata.OS.Family | type == "string" and length > 0) and
+              any(.Results[]?; .Class == "os-pkgs" and (.Packages | type == "array" and length > 0)) and
+              (if $image == $host then
+                component("dotnet-core"; "app/host/AnketaParser.Host.deps.json") and component("dotnet-core"; "app/cli/AnketaParser.Cli.deps.json")
+              elif $image == $maintenance then
+                component("dotnet-core"; "app/cli/AnketaParser.Cli.deps.json") and component("gobinary"; "usr/local/bin/gosu")
+              elif $image == $postgres then
+                component("gobinary"; "usr/local/bin/gosu")
+              else false end)
+            ' "$report" > /dev/null
+          }
+          for index in "${!images[@]}"; do
+            image="${images[$index]}"
+            report="$RUNNER_TEMP/image-$index.json"
+            id=$(docker image inspect --format '{{.Id}}' "$image") || { infrastructure_failed=1; continue; }
+            printf '\nОбраз: %s\nID: %s\n' "$image" "$id"
+            status=0
+            trivy image --config '' --ignorefile '' --no-progress --scanners vuln --image-src docker --list-all-pkgs --severity HIGH,CRITICAL --exit-code 42 --format json --output "$report" "$image" || status=$?
+            if [[ "$status" != 0 && "$status" != 42 ]]; then
+              echo "Ошибка сканирования $image: $status" >&2
+              infrastructure_failed=1
+              continue
+            fi
+            if ! validate_report "$report" "$image" "$id"; then
+              echo "Неполный или повреждённый отчёт, отсутствует обязательный анализ пакетов: $image" >&2
+              infrastructure_failed=1
+              continue
+            fi
+            required_components=()
+            if [[ "$image" == "$host" ]]; then
+              required_components+=(app/host/AnketaParser.Host.deps.json app/cli/AnketaParser.Cli.deps.json)
+            elif [[ "$image" == "$maintenance" ]]; then
+              required_components+=(app/cli/AnketaParser.Cli.deps.json usr/local/bin/gosu)
+            else
+              required_components+=(usr/local/bin/gosu)
+            fi
+            for component in "${required_components[@]}"; do
+              jq --arg target "$component" '.Results |= map(select(.Target != $target))' "$report" > "$RUNNER_TEMP/report-without-component.json"
+              if validate_report "$RUNNER_TEMP/report-without-component.json" "$image" "$id"; then
+                echo "Потеря анализа компонента $component не обнаружена: $image" >&2
+                infrastructure_failed=1
+              fi
+            done
+            jq -r '.Results[] | . as $r | .Vulnerabilities[]? | [$r.Class, $r.Type, $r.Target, .VulnerabilityID, .PkgName, .InstalledVersion, (.FixedVersion // "нет исправления"), (.Status // "неизвестно"), .Severity, (.DataSource.Name // "источник не указан")] | @tsv' "$report"
+            if [[ "$status" == 42 ]]; then
+              if jq -e '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length > 0' "$report" > /dev/null; then
+                vulnerabilities_found=1
+                echo "Обнаружены HIGH/CRITICAL в образе $image" >&2
+              else
+                echo "Код обнаружения CVE не подтверждён отчётом: $image" >&2
+                infrastructure_failed=1
+              fi
+            elif jq -e '[.Results[]?.Vulnerabilities[]?] | length > 0' "$report" > /dev/null; then
+              echo "Отчёт содержит CVE при успешном коде сканера: $image" >&2
+              infrastructure_failed=1
+            fi
+          done
+          missing="anketa-security-missing:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if docker image inspect "$missing" > /dev/null 2>&1; then
+            echo 'Невозможно выполнить негативный контроль: образ существует' >&2
+            infrastructure_failed=1
+          else
+            status=0
+            trivy image --config '' --ignorefile '' --no-progress --scanners vuln --image-src docker --exit-code 42 "$missing" || status=$?
+            if [[ "$status" == 0 || "$status" == 42 ]]; then
+              echo 'Пропущенный образ не вызвал ошибку сканера' >&2
+              infrastructure_failed=1
+            fi
+          fi
+          trivy version --format json | tee "$RUNNER_TEMP/trivy-version.json"
+          # trivy-db собирается каждые 6 часов, NextUpdate обычно через 24 часа.
+          # Допускается задержка публикации до суток после NextUpdate и 5 минут расхождения часов.
+          check_db() {
+            jq -e '
+              def utc:
+                select(type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$")) |
+                sub("\\.[0-9]+Z$"; "Z") as $text |
+                ($text | fromdateiso8601) as $timestamp |
+                select(($timestamp | todateiso8601) == $text) | $timestamp;
+              try (
+                .VulnerabilityDB as $db |
+                ($db.UpdatedAt | utc) as $updated |
+                ($db.DownloadedAt | utc) as $downloaded |
+                ($db.NextUpdate | utc) as $next |
+                $db.Version == 2 and $updated <= now + 300 and $downloaded <= now + 300 and
+                $updated <= $downloaded + 300 and $next > $updated and
+                $next <= $updated + 172800 and now <= $next + 86400
+              ) catch false
+            ' "$1" > /dev/null
+          }
+          if ! check_db "$RUNNER_TEMP/trivy-version.json"; then
+            echo 'База CVE устарела, недоступна или её метаданные противоречивы' >&2
+            infrastructure_failed=1
+          fi
+          jq -n '{VulnerabilityDB: {Version: 2, UpdatedAt: (now - 3600 | todateiso8601), DownloadedAt: (now | todateiso8601), NextUpdate: (now + 82800 | todateiso8601)}}' > "$RUNNER_TEMP/db-control.json"
+          check_db "$RUNNER_TEMP/db-control.json" || { echo 'Актуальная контрольная база отклонена' >&2; infrastructure_failed=1; }
+          for mutation in \
+            '.VulnerabilityDB.UpdatedAt = "повреждено"' \
+            '.VulnerabilityDB.UpdatedAt = "2026-02-31T00:00:00Z"' \
+            'del(.VulnerabilityDB.DownloadedAt)' \
+            '.VulnerabilityDB.UpdatedAt = (now - 604800 | todateiso8601) | .VulnerabilityDB.NextUpdate = (now - 518400 | todateiso8601)' \
+            '.VulnerabilityDB.NextUpdate = .VulnerabilityDB.UpdatedAt' \
+            '.VulnerabilityDB.DownloadedAt = (now + 86400 | todateiso8601)' \
+            '.VulnerabilityDB.NextUpdate = (now + 604800 | todateiso8601)'; do
+            jq "$mutation" "$RUNNER_TEMP/db-control.json" > "$RUNNER_TEMP/db-invalid.json"
+            if check_db "$RUNNER_TEMP/db-invalid.json"; then
+              echo 'Повреждённая или устаревшая контрольная база принята' >&2
+              infrastructure_failed=1
+            fi
+          done
+          if (( infrastructure_failed )); then
+            echo 'Ошибка инфраструктуры проверки контейнеров' >&2
+          fi
+          if (( vulnerabilities_found )); then
+            echo 'Обнаружены уязвимости HIGH/CRITICAL' >&2
+          fi
+          (( infrastructure_failed == 0 && vulnerabilities_found == 0 ))

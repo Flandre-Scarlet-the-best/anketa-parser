@@ -1,0 +1,116 @@
+name: CodeQL Advanced
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  schedule:
+    - cron: '41 5 * * 3'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  csharp:
+    name: CodeQL C#
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - name: Инициализировать C#
+        id: init
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: csharp
+          build-mode: manual
+          queries: security-extended
+          tools: linked
+      - name: Восстановить и собрать всё решение
+        run: |
+          dotnet restore --locked-mode
+          dotnet build --no-restore -c Release
+      - name: Выполнить запросы и опубликовать C#
+        id: analyze
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: /language:csharp
+          wait-for-processing: true
+      - name: Показать состав базы C#
+        shell: bash
+        env:
+          DB_LOCATIONS: ${{ steps.analyze.outputs.db-locations }}
+        run: |
+          set -euo pipefail
+          db=$(jq -er '.csharp' <<< "$DB_LOCATIONS")
+          test -s "$db/src.zip"
+          unzip -Z1 "$db/src.zip" | tee "$RUNNER_TEMP/codeql-csharp-sources.txt"
+          awk 'BEGIN { src=0; tests=0 } /(^|\/)src\/.*\.cs$/ { src++ } /(^|\/)tests\/.*\.cs$/ { tests++ } END { printf "C#: исходники=%d тесты=%d\n", src, tests; exit !(src > 0 && tests > 0) }' "$RUNNER_TEMP/codeql-csharp-sources.txt"
+          git ls-files 'src/**/*.cs' 'tests/**/*.cs' | LC_ALL=C sort > "$RUNNER_TEMP/expected-sources.txt"
+          test -s "$RUNNER_TEMP/expected-sources.txt"
+          awk -v root="${GITHUB_WORKSPACE#/}/" 'index($0, root) == 1 { print substr($0, length(root) + 1) }' "$RUNNER_TEMP/codeql-csharp-sources.txt" | LC_ALL=C sort > "$RUNNER_TEMP/extracted-sources.txt"
+          comm -23 "$RUNNER_TEMP/expected-sources.txt" "$RUNNER_TEMP/extracted-sources.txt" > "$RUNNER_TEMP/missing-sources.txt"
+          if [[ -s "$RUNNER_TEMP/missing-sources.txt" ]]; then
+            echo 'В базе C# отсутствуют отслеживаемые исходники:' >&2
+            sed -n '1,200p' "$RUNNER_TEMP/missing-sources.txt" >&2
+            exit 1
+          fi
+
+  python:
+    name: CodeQL Python
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+      - name: Инициализировать Python
+        id: init
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: python
+          build-mode: none
+          queries: security-extended
+          tools: linked
+          config: |
+            paths:
+              - .github/scripts
+      - name: Выполнить запросы и опубликовать Python
+        id: analyze
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: /language:python
+          wait-for-processing: true
+      - name: Показать состав базы Python
+        shell: bash
+        env:
+          DB_LOCATIONS: ${{ steps.analyze.outputs.db-locations }}
+        run: |
+          set -euo pipefail
+          db=$(jq -er '.python' <<< "$DB_LOCATIONS")
+          test -s "$db/src.zip"
+          unzip -Z1 "$db/src.zip" | tee "$RUNNER_TEMP/codeql-python-sources.txt"
+          awk 'BEGIN { scripts=0 } /(^|\/)\.github\/scripts\/.*\.py$/ { scripts++ } END { printf "Python: сценарии=%d\n", scripts; exit !(scripts > 0) }' "$RUNNER_TEMP/codeql-python-sources.txt"
+          git ls-files '.github/scripts/*.py' | LC_ALL=C sort > "$RUNNER_TEMP/expected-sources.txt"
+          test -s "$RUNNER_TEMP/expected-sources.txt"
+          awk -v root="${GITHUB_WORKSPACE#/}/" 'index($0, root) == 1 { print substr($0, length(root) + 1) }' "$RUNNER_TEMP/codeql-python-sources.txt" | LC_ALL=C sort > "$RUNNER_TEMP/extracted-sources.txt"
+          comm -23 "$RUNNER_TEMP/expected-sources.txt" "$RUNNER_TEMP/extracted-sources.txt" > "$RUNNER_TEMP/missing-sources.txt"
+          if [[ -s "$RUNNER_TEMP/missing-sources.txt" ]]; then
+            echo 'В базе Python отсутствуют отслеживаемые исходники:' >&2
+            sed -n '1,200p' "$RUNNER_TEMP/missing-sources.txt" >&2
+            exit 1
+          fi
