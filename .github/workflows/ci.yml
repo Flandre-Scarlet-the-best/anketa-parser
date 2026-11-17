@@ -66,6 +66,8 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.15.2'
+          cache: pip
+          cache-dependency-path: .github/scripts/requirements.txt
       - name: Установить зависимости проверки контрактов
         run: python -m pip install -r .github/scripts/requirements.txt
       - name: Проверить валидаторы и их регрессионные сценарии
@@ -75,9 +77,10 @@ jobs:
           ruff check .github/scripts
           ruff format --check .github/scripts
       - name: Проверить типы Python и охват файлов
+        shell: bash
         run: |
-          basedpyright --project .github/pyrightconfig.json
-          basedpyright --project .github/pyrightconfig.json --outputjson > "$RUNNER_TEMP/basedpyright-report.json"
+          set -euo pipefail
+          basedpyright --project .github/pyrightconfig.json --outputjson | tee "$RUNNER_TEMP/basedpyright-report.json"
           python .github/scripts/check_python_coverage.py "$RUNNER_TEMP/basedpyright-report.json" .github/pyrightconfig.json
       - name: Проверить метаданные skills и локальные ссылки
         run: python .github/scripts/check_skill_contracts.py

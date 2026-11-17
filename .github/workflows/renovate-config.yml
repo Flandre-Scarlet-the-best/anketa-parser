@@ -1,0 +1,104 @@
+name: Политика Renovate
+
+# Renovate обнаруживает манифесты по всему дереву, включая новые менеджеры.
+# Поэтому фильтра paths нет: новый файл не должен обходить проверку.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Официальный образ закреплён digest манифеста: версия и содержимое
+  # инструмента не зависят от изменяемого тега.
+  RENOVATE_IMAGE: renovate/renovate:44.251.0@sha256:64adaabe8ee3e34820c2b044b5f87e281aa278bf53e5d76df2ce800f9cc9407a
+
+jobs:
+  renovate-config:
+    name: Конфигурация и ветки Renovate
+    runs-on: ubuntu-26.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Полное дерево Git учитывает пути, удаления, новые манифесты, настройки
+      # извлечения и сам рабочий процесс; SHA коммита не мешает повторному попаданию в кэш.
+      # Реестры и внешние наборы настроек меняются: подтверждение годится только в тот же
+      # UTC-день. Это проверка политики, а не свежий аудит уязвимостей.
+      - name: Определить входы и срок действия подтверждения
+        id: inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+          echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      # Только точное совпадение и lookup-only: содержимое кэша не исполняется.
+      # actions/cache сохраняет отметку завершающим обработчиком только при успехе задания.
+      - name: Найти подтверждение полного успешного запуска
+        id: proof
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/renovate-proof/verified
+          key: renovate-proof-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.inputs.outputs.day }}-${{ steps.inputs.outputs.tree }}
+          lookup-only: true
+
+      - name: Использовать подтверждение идентичного дерева за текущий UTC-день
+        if: steps.proof.outputs.cache-hit == 'true' && github.event_name != 'workflow_dispatch'
+        run: echo 'Полная проверка политики уже прошла; для свежего поиска обновлений запустите workflow_dispatch'
+
+      - name: Проверить версию закреплённого образа
+        if: steps.proof.outputs.cache-hit != 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          docker run --rm --entrypoint /usr/local/sbin/renovate "$RENOVATE_IMAGE" --version | grep -Fx '44.251.0'
+
+      - name: Строгая проверка конфигурации официальным валидатором
+        if: steps.proof.outputs.cache-hit != 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" -w /repo \
+            --entrypoint sh "$RENOVATE_IMAGE" \
+            -c "python3 .github/scripts/check_renovate.py validate --node '' --renovate /usr/local/sbin/renovate --validator /usr/local/sbin/renovate-config-validator"
+
+      - name: Реальное извлечение по всем поддерживаемым менеджерам
+        if: steps.proof.outputs.cache-hit != 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" -w /repo \
+            --entrypoint sh "$RENOVATE_IMAGE" \
+            -c "python3 .github/scripts/check_renovate.py extract --node '' --root . --renovate /usr/local/sbin/renovate"
+
+      - name: Расчёт веток на изолированных фикстурах и отрицательный контроль
+        if: steps.proof.outputs.cache-hit != 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" -w /repo \
+            --entrypoint sh "$RENOVATE_IMAGE" \
+            -c "python3 .github/scripts/check_renovate.py fixtures --node '' --root . --renovate /usr/local/sbin/renovate"
+
+      - name: Самопроверка проверки на синтетических данных
+        if: steps.proof.outputs.cache-hit != 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" -w /repo \
+            --entrypoint sh "$RENOVATE_IMAGE" \
+            -c "python3 -m unittest discover -s .github/scripts -p 'test_check_renovate.py' -v"
+
+      - name: Создать отметку только после успеха всех обязательных проверок
+        id: verified
+        if: steps.proof.outputs.cache-hit != 'true' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/renovate-proof"
+          printf 'Все обязательные проверки пройдены\n' > "$RUNNER_TEMP/renovate-proof/verified"

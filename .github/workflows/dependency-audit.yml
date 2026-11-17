@@ -1,0 +1,78 @@
+name: Аудит уязвимостей
+
+# Существующее дерево зависимостей проверяется отдельно от изменений PR:
+# NuGet Audit по политике репозитория и OSV по всем отслеживаемым манифестам.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  nuget-audit:
+    name: Известные уязвимости NuGet
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: |
+            src/**/packages.lock.json
+            tests/**/packages.lock.json
+
+      - name: Восстановить в locked mode с аудитом прямых и транзитивных зависимостей
+        # Политика репозитория: NuGetAuditMode=all, NuGetAuditLevel=low и строгая
+        # сборка, поэтому найденный бюллетень уязвимости или недоступный источник аудита
+        # останавливают шаг, а не остаются предупреждением.
+        run: dotnet restore --locked-mode --force
+
+      - name: Перечислить уязвимости и доказать охват всех проектов
+        # Свежий аудит уже выполнен обязательным restore выше. Убирается только
+        # второе неявное восстановление; состав отчёта и проверка охвата сохраняются.
+        run: |
+          dotnet package list --no-restore --vulnerable --include-transitive --format json > "$RUNNER_TEMP/nuget-audit.json"
+          python .github/scripts/check_nuget_audit.py --report "$RUNNER_TEMP/nuget-audit.json" --root .
+
+  osv:
+    name: Известные уязвимости lock-файлов
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Установить закреплённый OSV-Scanner с проверкой SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/osv-scanner"
+          mkdir -p "$tools"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o "$tools/osv-scanner" https://github.com/google/osv-scanner/releases/download/v2.7.1/osv-scanner_linux_amd64
+          echo "fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8  $tools/osv-scanner" | sha256sum --check
+          chmod +x "$tools/osv-scanner"
+          "$tools/osv-scanner" --version
+
+      - name: Проверить все отслеживаемые манифесты и доказать охват
+        run: |
+          python .github/scripts/check_osv.py \
+            --root . \
+            --binary "$RUNNER_TEMP/osv-scanner/osv-scanner"
+
+      - name: Проверить сверку охвата с настоящим сканером и неполным отчётом
+        env:
+          OSV_SCANNER_BINARY: ${{ runner.temp }}/osv-scanner/osv-scanner
+        run: python -m unittest discover -s .github/scripts -p 'test_check_osv.py' -v
