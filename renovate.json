@@ -1,0 +1,58 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "Обновления зависимостей: одна логическая зависимость — один PR, автоматический merge выключен.",
+    "Группировка отключена явно, включая monorepo-пакеты из config:recommended: обновления разных логических зависимостей не объединяются.",
+    "lockFileMaintenance выключен: он может собрать множество транзитивных обновлений в один PR.",
+    "Security-обновления идут отдельным каналом без ожидания расписания и подтверждения в dashboard."
+  ],
+  "extends": ["config:recommended"],
+  "ignorePresets": ["group:monorepos", "group:recommended"],
+  "dependencyDashboard": {
+    "enabled": true
+  },
+  "dependencyDashboardApproval": false,
+  "automerge": false,
+  "prConcurrentLimit": 4,
+  "prHourlyLimit": 2,
+  "rebaseWhen": "behind-base-branch",
+  "lockFileMaintenance": {
+    "enabled": false
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "dependencyDashboardApproval": false,
+    "prCreation": "immediate",
+    "schedule": [],
+    "rangeStrategy": "update-lockfile"
+  },
+  "packageRules": [
+    {
+      "description": "Версия .NET SDK в global.json и SDK-образ в Dockerfile — одна toolchain-зависимость, но обновляются отдельными ветками с проверкой совместимости полосы",
+      "matchManagers": ["nuget"],
+      "matchDepTypes": ["dotnet-sdk"],
+      "matchDepNames": ["dotnet-sdk"],
+      "allowedVersions": "/^10\\.0\\.\\d+$/"
+    },
+    {
+      "description": "dotnet-ef обновляется в пределах совместимой линии EF 10; переход на следующую major версию — отдельное решение",
+      "matchManagers": ["nuget"],
+      "matchFileNames": [".config/dotnet-tools.json"],
+      "matchDepNames": ["dotnet-ef"],
+      "allowedVersions": "/^10\\.0\\.\\d+$/"
+    },
+    {
+      "description": "Python runtime в setup-python остаётся в линии 3.15: смена ветки требует согласованного обновления ruff и pyrightconfig",
+      "matchManagers": ["github-actions"],
+      "matchDatasources": ["python-version"],
+      "matchDepNames": ["python"],
+      "allowedVersions": "/^3\\.15\\.\\d+$/"
+    },
+    {
+      "description": "Локальные образы Compose собираются из репозитория и не обновляются внешним реестром",
+      "matchManagers": ["docker-compose"],
+      "matchPackageNames": ["/^anketa-parser-/"],
+      "enabled": false
+    }
+  ]
+}

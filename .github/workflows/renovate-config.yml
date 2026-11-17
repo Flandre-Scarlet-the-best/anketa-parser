@@ -1,0 +1,87 @@
+name: Политика Renovate
+
+# Проверяется только изменение политики обновлений и manifests, которые она
+# покрывает: строгий валидатор, реальное извлечение и расчёт веток.
+on:
+  pull_request:
+    paths:
+      - renovate.json
+      - .github/workflows/renovate-config.yml
+      - .github/scripts/check_renovate.py
+      - .github/scripts/test_check_renovate.py
+      - Directory.Packages.props
+      - global.json
+      - .config/dotnet-tools.json
+      - .github/scripts/requirements.txt
+      - Dockerfile
+      - compose.yaml
+      - .github/workflows/*.yml
+      - .github/workflows/*.yaml
+  push:
+    branches: [main]
+    paths:
+      - renovate.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  renovate-config:
+    name: Конфигурация и ветки Renovate
+    runs-on: ubuntu-26.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      - name: Установить закреплённый Renovate с проверкой integrity tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/renovate-tool"
+          mkdir -p "$tools"
+          cd "$tools"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o renovate.tgz https://registry.npmjs.org/renovate/-/renovate-44.251.0.tgz
+          actual=$(node -e "const c=require('crypto'),f=require('fs');process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync('renovate.tgz')).digest('base64'))")
+          expected='sha512-CnWmqR3FVPx2u8BPXLGEvK2kUhVSFUPH7tiq9iFVTa+/QAkknE6EiVulUKkzW1ZaddXAJjH2FpQ1+YO95Pb4wA=='
+          if [ "$actual" != "$expected" ]; then
+            echo "integrity tarball Renovate не совпала с закреплённой" >&2
+            exit 1
+          fi
+          npm install --no-save --no-package-lock --no-audit --no-fund ./renovate.tgz
+          installed=$(node -e "process.stdout.write(require('./node_modules/renovate/package.json').version)")
+          if [ "$installed" != "44.251.0" ]; then
+            echo "установлена другая версия Renovate: $installed" >&2
+            exit 1
+          fi
+          echo "$tools/node_modules/renovate/dist" >> "$GITHUB_PATH"
+
+      - name: Строгая проверка конфигурации официальным валидатором
+        run: |
+          python .github/scripts/check_renovate.py validate \
+            --root . \
+            --renovate "$RUNNER_TEMP/renovate-tool/node_modules/renovate/dist/renovate.js" \
+            --validator "$RUNNER_TEMP/renovate-tool/node_modules/renovate/dist/config-validator.js"
+
+      - name: Реальное извлечение по всем поддерживаемым менеджерам
+        run: |
+          python .github/scripts/check_renovate.py extract \
+            --root . \
+            --renovate "$RUNNER_TEMP/renovate-tool/node_modules/renovate/dist/renovate.js"
+
+      - name: Расчёт веток на изолированных фикстурах и отрицательный контроль
+        run: |
+          python .github/scripts/check_renovate.py fixtures \
+            --root . \
+            --renovate "$RUNNER_TEMP/renovate-tool/node_modules/renovate/dist/renovate.js"
+
+      - name: Самопроверка проверки на синтетических данных
+        run: python -m unittest discover -s .github/scripts -p 'test_check_renovate.py' -v
