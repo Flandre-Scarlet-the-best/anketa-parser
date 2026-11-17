@@ -38,8 +38,10 @@ jobs:
         run: dotnet restore --locked-mode --force
 
       - name: Перечислить advisories и доказать охват всех проектов
+        # Свежий аудит уже выполнен обязательным restore выше. Убирается только
+        # второй implicit restore; состав отчёта и проверка охвата сохраняются.
         run: |
-          dotnet package list --vulnerable --include-transitive --format json > "$RUNNER_TEMP/nuget-audit.json"
+          dotnet package list --no-restore --vulnerable --include-transitive --format json > "$RUNNER_TEMP/nuget-audit.json"
           python .github/scripts/check_nuget_audit.py --report "$RUNNER_TEMP/nuget-audit.json" --root .
 
   osv:

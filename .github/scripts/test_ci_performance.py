@@ -225,6 +225,34 @@ class RenovateProofTests(unittest.TestCase):
                 self.assertRegex(values["day"], r"^\d{4}-\d{2}-\d{2}$")
 
 
+class NugetAuditWorkflowTests(unittest.TestCase):
+    def test_report_requires_successful_forced_locked_restore(self):
+        steps = job_steps(load_workflow("dependency-audit.yml"), "nuget-audit")
+        restore = next(
+            step for step in steps if "dotnet restore" in str(step.get("run", ""))
+        )
+        report = next(
+            step for step in steps if "dotnet package list" in str(step.get("run", ""))
+        )
+        self.assertLess(steps.index(restore), steps.index(report))
+        self.assertEqual(restore["run"], "dotnet restore --locked-mode --force")
+        for step in (restore, report):
+            self.assertNotIn("continue-on-error", step)
+            self.assertNotIn("if", step)
+        command = str(report["run"])
+        for flag in (
+            "--no-restore",
+            "--vulnerable",
+            "--include-transitive",
+            "--format json",
+        ):
+            self.assertIn(flag, command)
+        self.assertIn(
+            'python .github/scripts/check_nuget_audit.py --report "$RUNNER_TEMP/nuget-audit.json" --root .',
+            command,
+        )
+
+
 class PythonAnalysisTests(unittest.TestCase):
     def test_real_type_error_remains_visible_and_fails_workflow(self):
         steps = job_steps(load_workflow("ci.yml"), "contracts")
