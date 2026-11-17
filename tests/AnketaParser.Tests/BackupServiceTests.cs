@@ -181,11 +181,29 @@ public sealed class BackupServiceTests : IDisposable
         File.WriteAllText(statusPath, originalStatus);
         var service = new BackupService(new BackupSettings { Directory = _directory });
 
-        using (new FileStream(statusPath, FileMode.Open, FileAccess.Write, FileShare.Write | FileShare.Delete))
+        if (OperatingSystem.IsWindows())
         {
-            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-                () => service.RunAsync(TestContext.Current.CancellationToken));
-            Assert.DoesNotContain(_directory, exception.Message, StringComparison.Ordinal);
+            using (new FileStream(statusPath, FileMode.Open, FileAccess.Write, FileShare.Write | FileShare.Delete))
+            {
+                var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                    () => service.RunAsync(TestContext.Current.CancellationToken));
+                Assert.DoesNotContain(_directory, exception.Message, StringComparison.Ordinal);
+            }
+        }
+        else
+        {
+            var unixMode = File.GetUnixFileMode(statusPath);
+            try
+            {
+                File.SetUnixFileMode(statusPath, unixMode & ~(UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead));
+                var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                    () => service.RunAsync(TestContext.Current.CancellationToken));
+                Assert.DoesNotContain(_directory, exception.Message, StringComparison.Ordinal);
+            }
+            finally
+            {
+                File.SetUnixFileMode(statusPath, unixMode);
+            }
         }
 
         Assert.Equal(originalStatus, File.ReadAllText(statusPath));
