@@ -16,6 +16,24 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
     private async Task LockAsync(string key, CancellationToken ct) =>
         await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({key}, 0))", ct).ConfigureAwait(false);
 
+    /// <summary>
+    /// Блокировка строки поста. Триггер guard_profile тоже блокирует OriginalPost, поэтому изменение
+    /// Profile обязано брать эту строку первой: иначе ArchiveAsync (пост → профиль) даёт взаимную блокировку.
+    /// </summary>
+    private async Task LockPostAsync(Guid postId, CancellationToken ct) =>
+        await db.Database.ExecuteSqlInterpolatedAsync($"""SELECT 1 FROM product."OriginalPost" WHERE "Id"={postId} FOR UPDATE""", ct).ConfigureAwait(false);
+
+    /// <summary>Порядок блокировок: пост, затем профиль.</summary>
+    private async Task<Profile> LockProfileAsync(Guid profileId, CancellationToken ct)
+    {
+        var postId = await db.Set<Profile>().AsNoTracking().Where(x => x.Id == profileId)
+            .Select(x => x.PostId).SingleAsync(ct).ConfigureAwait(false);
+        await LockPostAsync(postId, ct).ConfigureAwait(false);
+        var profile = await db.Set<Profile>().SingleAsync(x => x.Id == profileId, ct).ConfigureAwait(false);
+        await db.Entry(profile).ReloadAsync(ct).ConfigureAwait(false);
+        return profile;
+    }
+
     public async Task<Guid> ImportAsync(PostInput input, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -175,8 +193,7 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
         await using var transaction = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
         await LockAsync("profile:" + profileId, ct).ConfigureAwait(false);
-        var profile = await db.Set<Profile>().SingleAsync(x => x.Id == profileId, ct).ConfigureAwait(false);
-        await db.Entry(profile).ReloadAsync(ct).ConfigureAwait(false);
+        var profile = await LockProfileAsync(profileId, ct).ConfigureAwait(false);
         if (profile.State == ProfileState.Archived ||
             await db.Set<OriginalPost>().AnyAsync(x => x.Id == profile.PostId && x.Excluded, ct).ConfigureAwait(false) ||
             (state == ProfileState.Reviewed && profile.State is not (ProfileState.Candidate or ProfileState.Rejected)))
@@ -194,8 +211,7 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
     {
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         await LockAsync("profile:" + profileId, cancellationToken).ConfigureAwait(false);
-        var profile = await db.Set<Profile>().SingleAsync(x => x.Id == profileId, cancellationToken).ConfigureAwait(false);
-        await db.Entry(profile).ReloadAsync(cancellationToken).ConfigureAwait(false);
+        var profile = await LockProfileAsync(profileId, cancellationToken).ConfigureAwait(false);
         if (profile.State == ProfileState.Rejected)
             throw new InvalidOperationException("Отклонённая анкета требует явной повторной проверки перед публикацией.");
         profile.State = ProfileState.Published;

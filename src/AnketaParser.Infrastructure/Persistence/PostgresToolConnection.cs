@@ -42,6 +42,9 @@ internal static class PostgresToolConnection
         // У libpq нет эквивалента системной проверки отзыва .NET и env-параметра sslpassword.
         if (cs.CheckCertificateRevocation || !string.IsNullOrEmpty(cs.SslPassword))
             throw new ArgumentException("Утилиты PostgreSQL не поддерживают заданную проверку отзыва или пароль TLS-ключа через окружение.", nameof(cs));
+        // Npgsql по расширению .pfx выбирает PKCS#12, а libpq читает только PEM-сертификат и отдельный ключ.
+        if (string.Equals(Path.GetExtension(cs.SslCertificate), ".pfx", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Утилиты PostgreSQL не читают контейнер PKCS#12 (.pfx); укажите PEM-сертификат и отдельный ключ.", nameof(cs));
         if (!string.IsNullOrEmpty(cs.TargetSessionAttributes) &&
             !SupportedTargetSessionAttributes.Contains(cs.TargetSessionAttributes))
             throw new ArgumentException("Утилиты PostgreSQL не поддерживают заданное значение целевого сервера.", nameof(cs));
@@ -85,6 +88,11 @@ internal static class PostgresToolConnection
         info.Environment["PGCHANNELBINDING"] = cs.ChannelBinding.ToString().ToLowerInvariant();
         info.Environment["PGKRBSRVNAME"] = cs.KerberosServiceName;
         SetIfConfigured(info, "PGSSLROOTCERT", cs.RootCertificate);
+        // Без RootCertificate Npgsql проверяет сервер системным хранилищем доверия при VerifyFull,
+        // а libpq ищет ~/.postgresql/root.crt и без файла отказывается подключаться.
+        // Значение system сохраняет тот же источник доверия и допустимо только для verify-full.
+        if (cs.SslMode == SslMode.VerifyFull && string.IsNullOrEmpty(cs.RootCertificate))
+            info.Environment["PGSSLROOTCERT"] = "system";
         SetIfConfigured(info, "PGSSLCERT", cs.SslCertificate);
         SetIfConfigured(info, "PGSSLKEY", cs.SslKey);
         SetIfConfigured(info, "PGPASSFILE", passfile);

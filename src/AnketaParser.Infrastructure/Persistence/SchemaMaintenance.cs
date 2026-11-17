@@ -79,8 +79,18 @@ public static class SchemaMaintenance
                 AND to_regclass('product."__EFMigrationsHistory"') IS NOT NULL THEN
                 RAISE EXCEPTION 'ambiguous_migration_history';
               END IF;
+              -- SET SCHEMA не меняет владельца: мигратор обязан остаться владельцем читаемой истории.
+              IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE n.nspname='product' AND c.relname='__EFMigrationsHistory'
+                  AND c.relowner<>(SELECT oid FROM pg_roles WHERE rolname='product_migrator'))
+              THEN RAISE EXCEPTION 'unexpected_migration_history_owner'; END IF;
             END
             $ef_history$;
+            -- Повторный provisioning приводит роли к документированному набору прав:
+            -- вручную выданные права на таблицы и последовательности снимаются перед выдачей.
+            REVOKE ALL ON SCHEMA product, private FROM product_runtime, product_backup;
+            REVOKE ALL ON ALL TABLES IN SCHEMA product, private FROM product_runtime, product_backup;
+            REVOKE ALL ON ALL SEQUENCES IN SCHEMA product, private FROM product_runtime, product_backup;
             GRANT USAGE ON SCHEMA product, private TO product_runtime, product_backup;
             GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA product, private TO product_runtime;
             GRANT SELECT ON ALL TABLES IN SCHEMA product, private TO product_backup;

@@ -235,4 +235,45 @@ public sealed class PostgresToolConnectionTests
             ConnectionString = "Host=primary;Check Certificate Revocation=true",
         }));
     }
+
+    [Fact]
+    public void VerifyFullWithoutRootCertificateUsesSystemTrustStore()
+    {
+        var info = new ProcessStartInfo("pg_dump");
+        info.Environment["PGSSLROOTCERT"] = "inherited-root.crt";
+        PostgresToolConnection.Apply(info, new NpgsqlConnectionStringBuilder { Host = "primary", SslMode = SslMode.VerifyFull });
+        // Npgsql проверяет сервер системным хранилищем; libpq без этого значения искал бы ~/.postgresql/root.crt.
+        Assert.Equal("system", info.Environment["PGSSLROOTCERT"]);
+    }
+
+    [Theory]
+    [InlineData(SslMode.VerifyCA)]
+    [InlineData(SslMode.Require)]
+    [InlineData(SslMode.Prefer)]
+    [InlineData(SslMode.Disable)]
+    public void WeakerSslModesDoNotRequestSystemTrustStore(SslMode mode)
+    {
+        var info = new ProcessStartInfo("pg_dump");
+        PostgresToolConnection.Apply(info, new NpgsqlConnectionStringBuilder { Host = "primary", SslMode = mode });
+        Assert.False(info.Environment.ContainsKey("PGSSLROOTCERT"));
+    }
+
+    [Fact]
+    public void ClientCertificateContainerIsRejectedBeforeProcessStart()
+    {
+        Assert.Throws<ArgumentException>(() => PostgresToolConnection.Validate(
+            new NpgsqlConnectionStringBuilder { SslCertificate = "client.pfx" }));
+        Assert.Throws<ArgumentException>(() => PostgresToolConnection.Validate(
+            new NpgsqlConnectionStringBuilder { SslCertificate = "CLIENT.PFX" }));
+        Assert.Throws<ArgumentException>(() => new BackupService(new BackupSettings
+        {
+            Directory = "unused",
+            ConnectionString = "Host=primary;SSL Certificate=client.pfx",
+        }));
+        PostgresToolConnection.Validate(new NpgsqlConnectionStringBuilder
+        {
+            SslCertificate = "client.pem",
+            SslKey = "client.key",
+        });
+    }
 }

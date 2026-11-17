@@ -318,7 +318,27 @@ public sealed class BackupService
         File.Delete(file.FullName + ".verified");
     }
 
+    /// <summary>Проверяет архив, удерживая блокировку каталога: параллельная ротация не удалит проверяемый файл.</summary>
     public async Task VerifyAsync(string name, CancellationToken ct)
+    {
+        using var gate = AcquireGate();
+        await VerifyCoreAsync(name, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Сериализует операции над каталогом; вызов внутри уже удерживаемой блокировки недопустим.</summary>
+    private FileStream AcquireGate()
+    {
+        try
+        {
+            return new FileStream(Path.Combine(_settings.Directory, ".lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        }
+        catch (IOException exception)
+        {
+            throw new InvalidOperationException("Каталог резервирования занят другой операцией; повторите попытку после её завершения.", exception);
+        }
+    }
+
+    private async Task VerifyCoreAsync(string name, CancellationToken ct)
     {
         var path = ArchivePath(name);
         if (!File.Exists(path + ".sha256") || await DigestAsync(path, ct).ConfigureAwait(false) != await File.ReadAllTextAsync(path + ".sha256", ct).ConfigureAwait(false))
@@ -343,7 +363,7 @@ public sealed class BackupService
             """, connection);
         if ((bool)(await check.ExecuteScalarAsync(ct).ConfigureAwait(false))!)
             throw new RestoreTargetException();
-        await VerifyAsync(name, ct).ConfigureAwait(false);
+        await VerifyCoreAsync(name, ct).ConfigureAwait(false);
         var args = new List<string> { "--exit-on-error", "--no-owner", "--no-acl" };
         if (_settings.RestoreJobs == 1) args.Add("--single-transaction");
         else { args.Add("--jobs"); args.Add(_settings.RestoreJobs.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
@@ -354,19 +374,23 @@ public sealed class BackupService
         // Архив применён и схема совместима. Подтверждение восстановления фиксируется независимо
         // от служебного status.json: его повреждение не отменяет уже выполненное восстановление.
         var verifiedAt = DateTimeOffset.UtcNow;
-        var verification = await PublishRestoreVerificationAsync(name, verifiedAt, ct).ConfigureAwait(false);
+        var verification = await PublishRestoreVerificationAsync(name, verifiedAt).ConfigureAwait(false);
         return new RestoreOutcome(verification.Archive, verifiedAt, RecordRestoreVerification(verification));
     }
 
-    /// <summary>Публикует отметку полного восстановления так же атомарно, как и сам архив.</summary>
-    private async Task<RestoreVerification> PublishRestoreVerificationAsync(string name, DateTimeOffset verifiedAt, CancellationToken ct)
+    /// <summary>
+    /// Публикует отметку полного восстановления так же атомарно, как и сам архив.
+    /// Отмена здесь не применяется: фиксация уже выполненного восстановления иначе была бы потеряна,
+    /// команда сообщила бы об остановке, а повторный restore-empty отклонил бы заполненную цель.
+    /// </summary>
+    private async Task<RestoreVerification> PublishRestoreVerificationAsync(string name, DateTimeOffset verifiedAt)
     {
         var path = ArchivePath(name);
         RestoreVerification verification;
         try
         {
             verification = new RestoreVerification(name, new FileInfo(path).Length, ReadMetadata(path + ".sha256"), verifiedAt);
-            await File.WriteAllTextAsync(path + ".verified.partial", JsonSerializer.Serialize(verification), ct).ConfigureAwait(false);
+            await File.WriteAllTextAsync(path + ".verified.partial", JsonSerializer.Serialize(verification), CancellationToken.None).ConfigureAwait(false);
             RestrictFile(path + ".verified.partial");
             File.Move(path + ".verified.partial", path + ".verified", overwrite: true);
             RestrictFile(path + ".verified");

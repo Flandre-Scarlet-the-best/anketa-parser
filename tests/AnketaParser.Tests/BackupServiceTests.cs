@@ -356,6 +356,31 @@ public sealed class BackupServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task VerifyRejectsConcurrentMaintenanceOfTheSameDirectory()
+    {
+        Directory.CreateDirectory(_directory);
+        var path = Path.Combine(_directory, "archive.dump");
+        File.WriteAllText(path, "синтетический архив");
+        File.WriteAllText(path + ".sha256", Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))));
+        File.WriteAllText(Path.Combine(_directory, "corrupt.dump"), "синтетический архив");
+        File.WriteAllText(Path.Combine(_directory, "corrupt.dump.sha256"), new string('0', 64));
+        var service = new BackupService(new BackupSettings { Directory = _directory });
+
+        using (var gate = new FileStream(Path.Combine(_directory, ".lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            // Параллельная ротация могла бы удалить проверяемый архив: проверка сериализуется блокировкой.
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => service.VerifyAsync("archive.dump", TestContext.Current.CancellationToken));
+            Assert.Contains("занят", exception.Message, StringComparison.Ordinal);
+        }
+
+        // После освобождения блокировки проверка снова доходит до собственной проверки суммы.
+        var checksum = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.VerifyAsync("corrupt.dump", TestContext.Current.CancellationToken));
+        Assert.Contains("Контрольная сумма", checksum.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void InvalidScheduleAndParallelismAreRejected()
     {
         Assert.Throws<ArgumentException>(() => new BackupService(new BackupSettings { Directory = _directory, IntervalSeconds = 0 }));

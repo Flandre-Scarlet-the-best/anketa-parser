@@ -595,6 +595,137 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
         }
     }
 
+    [Theory]
+    [InlineData("publish")]
+    [InlineData("review")]
+    public async Task ProfileStateChangeTakesPostLockBeforeProfile(string operation)
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var store = new ProductStore(db);
+        var revision = await Import(store, "1");
+        var profile = await store.AnalyzeAsync(Analysis(revision), Ct);
+
+        await using var concurrent = database.Open();
+        await using var transaction = await concurrent.Database.BeginTransactionAsync(Ct);
+        await concurrent.Database.ExecuteSqlInterpolatedAsync(
+            $"""SELECT 1 FROM product."OriginalPost" WHERE "Id"=(SELECT "PostId" FROM product."Profile" WHERE "Id"={profile}) FOR UPDATE""",
+            Ct);
+
+        await using var actor = database.Open();
+        var applying = operation == "publish"
+            ? new ProductStore(actor).PublishAsync(profile, Ct)
+            : new ProductStore(actor).ReviewAsync(profile, "администратор", "синтетическая проверка", Ct);
+        await Task.Delay(TimeSpan.FromMilliseconds(500), Ct);
+        Assert.False(applying.IsCompleted);
+
+        // Пока строка поста удерживается, операция не имеет права удерживать строку профиля:
+        // иначе ArchiveAsync (пост → профиль) и изменение состояния (профиль → пост) дают deadlock.
+        await concurrent.Database.ExecuteSqlRawAsync("SET LOCAL lock_timeout = '5s'", Ct);
+        await concurrent.Database.ExecuteSqlInterpolatedAsync(
+            $"""UPDATE product."Profile" SET "State"="State" WHERE "Id"={profile}""", Ct);
+        await transaction.CommitAsync(Ct);
+        await applying;
+
+        db.ChangeTracker.Clear();
+        var stored = await db.Set<Profile>().AsNoTracking().SingleAsync(x => x.Id == profile, Ct);
+        Assert.Equal(operation == "publish" ? ProfileState.Published : ProfileState.Reviewed, stored.State);
+    }
+
+    [Fact]
+    public async Task UnlinkedVerifiedLinkCannotReferenceAnotherContactsVerification()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var store = new ProductStore(db);
+        var revision = await Import(store, "1");
+        var profile = await store.AnalyzeAsync(Analysis(revision), Ct);
+        var first = await Contact(store, revision, "telegram", "first");
+        var second = await Contact(store, revision, "telegram", "second");
+        await store.ConfirmTelegramAsync(first, 10001, null, "первое подтверждение", Ct);
+        await store.ConfirmTelegramAsync(second, 10002, null, "второе подтверждение", Ct);
+        var link = await store.LinkAsync(profile, first, Guid.Empty, LinkConfidence.VerifiedAccount, "проверенный аккаунт", Ct);
+        await store.UnlinkAsync(link.LinkId, "отмена связи", Ct);
+
+        // Исходный контакт наблюдён в ревизии и подтверждён, поэтому подмену отсекает только
+        // сопоставление VerificationId с ContactId, которое теперь действует и для отменённой связи.
+        var error = await Assert.ThrowsAsync<PostgresException>(() => db.Database.ExecuteSqlInterpolatedAsync(
+            $"""UPDATE product."ProfileLink" SET "ContactId"={second} WHERE "Id"={link.LinkId}""", Ct));
+        Assert.Equal(PostgresErrorCodes.CheckViolation, error.SqlState);
+        db.ChangeTracker.Clear();
+        Assert.Equal(first, (await db.Set<ProfileLink>().AsNoTracking().SingleAsync(x => x.Id == link.LinkId, Ct)).ContactId);
+    }
+
+    [Fact]
+    public async Task ProvisioningConvergesRolePrivilegesToDocumentedSet()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using (var admin = new NpgsqlConnection(database.ConnectionString))
+        {
+            await admin.OpenAsync(Ct);
+            // Вручную выданные права не должны переживать повторный provisioning.
+            await using var grant = new NpgsqlCommand("""GRANT UPDATE, DELETE ON product."Source" TO product_backup""", admin);
+            await grant.ExecuteNonQueryAsync(Ct);
+        }
+
+        await SchemaMaintenance.ProvisionAsync(
+            database.ConnectionString,
+            database.RolePassword,
+            database.RolePassword,
+            database.RolePassword,
+            Ct);
+
+        var backupBuilder = new NpgsqlConnectionStringBuilder(database.ConnectionString) { Username = "product_backup" };
+        await using (var backup = ProductDbContext.Create(backupBuilder.ConnectionString))
+        {
+            Assert.Equal("ready", await SchemaMaintenance.StatusAsync(backup, Ct));
+            var error = await Assert.ThrowsAsync<PostgresException>(() => backup.Database.ExecuteSqlRawAsync(
+                """UPDATE product."Source" SET "Key"='изменено'""", Ct));
+            Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, error.SqlState);
+        }
+    }
+
+    [Fact]
+    public async Task ProvisioningRejectsLegacyHistoryOwnedByAnotherRole()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using (var admin = new NpgsqlConnection(database.ConnectionString))
+        {
+            await admin.OpenAsync(Ct);
+            await using var legacy = new NpgsqlCommand("""
+                ALTER TABLE product."__EFMigrationsHistory" SET SCHEMA public;
+                ALTER TABLE public."__EFMigrationsHistory" OWNER TO CURRENT_USER
+                """, admin);
+            await legacy.ExecuteNonQueryAsync(Ct);
+        }
+
+        var error = await Assert.ThrowsAsync<PostgresException>(() => SchemaMaintenance.ProvisionAsync(
+            database.ConnectionString,
+            database.RolePassword,
+            database.RolePassword,
+            database.RolePassword,
+            Ct));
+        Assert.Equal("unexpected_migration_history_owner", error.MessageText);
+
+        // Транзакция provisioning откатилась: история осталась там же и с прежним владельцем.
+        await using var verify = new NpgsqlConnection(database.ConnectionString);
+        await verify.OpenAsync(Ct);
+        await using var location = new NpgsqlCommand("""
+            SELECT to_regclass('public."__EFMigrationsHistory"') IS NOT NULL,
+                   to_regclass('product."__EFMigrationsHistory"') IS NULL,
+                   (SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid='public."__EFMigrationsHistory"'::regclass) = current_user
+            """, verify);
+        await using var row = await location.ExecuteReaderAsync(Ct);
+        Assert.True(await row.ReadAsync(Ct));
+        Assert.True(row.GetBoolean(0));
+        Assert.True(row.GetBoolean(1));
+        Assert.True(row.GetBoolean(2));
+    }
+
     private static void RequireDocker()
     {
         if (!PostgresTestCluster.Enabled)
