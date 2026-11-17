@@ -9,10 +9,10 @@ namespace AnketaParser.Tests;
 public sealed class PostgresToolConnectionTests
 {
     [Fact]
-    public void ToolConnectionRemovesInheritedConnectionOverridesAndPreservesLocale()
+    public void ToolConnectionRemovesInheritedOverridesAndPreservesLocale()
     {
         var info = new ProcessStartInfo("pg_dump");
-        string[] overrides = ["PGSSLROOTCERT", "PGSSLCERT", "PGSSLKEY", "PGPASSFILE", "PGSERVICEFILE", "PGSYSCONFDIR",
+        string[] overrides = ["PGSSLROOTCERT", "PGSSLCERT", "PGSSLKEY", "PGSERVICEFILE", "PGSYSCONFDIR",
             "PGSSLCRL", "PGSSLCRLDIR", "PGSSLCERTMODE", "PGSSLMINPROTOCOLVERSION", "PGSSLMAXPROTOCOLVERSION",
             "PGOPTIONS", "PGAPPNAME", "PGREQUIREAUTH", "PGREQUIREPEER", "PGTARGETSESSIONATTRS",
             "PGSSLSNI", "PGSSLCOMPRESSION", "PGGSSLIB", "PGGSSDELEGATION", "PGMINPROTOCOLVERSION", "PGMAXPROTOCOLVERSION", "PGCLIENTENCODING"];
@@ -24,6 +24,33 @@ public sealed class PostgresToolConnectionTests
         Assert.Equal("локализация", info.Environment["PGLOCALEDIR"]);
         Assert.Equal("disable", info.Environment["PGLOADBALANCEHOSTS"]);
         Assert.Empty(info.ArgumentList);
+    }
+
+    [Fact]
+    public void ToolConnectionPreservesInheritedPassfileAndPrefersConfiguredPassfile()
+    {
+        var inherited = new ProcessStartInfo("pg_dump");
+        inherited.Environment["PGPASSFILE"] = "inherited-passwords.conf";
+        PostgresToolConnection.Apply(inherited, new NpgsqlConnectionStringBuilder { Host = "primary", Database = "product", Username = "backup" });
+        Assert.Equal("inherited-passwords.conf", inherited.Environment["PGPASSFILE"]);
+
+        var configured = new ProcessStartInfo("pg_dump");
+        configured.Environment["PGPASSFILE"] = "inherited-passwords.conf";
+        PostgresToolConnection.Apply(configured, new NpgsqlConnectionStringBuilder
+        {
+            Host = "primary",
+            Database = "product",
+            Username = "backup",
+            Passfile = "configured-passwords.conf",
+        });
+        Assert.Equal("configured-passwords.conf", configured.Environment["PGPASSFILE"]);
+    }
+
+    [Fact]
+    public void DatabaseArgumentQuotesLiteralDatabaseNamesAndEscapesConnectionStringCharacters()
+    {
+        Assert.Equal("dbname='dbname=test_restore'", PostgresToolConnection.FormatDatabaseArgument("dbname=test_restore"));
+        Assert.Equal("dbname='O\\'Connor\\\\db'", PostgresToolConnection.FormatDatabaseArgument("O'Connor\\db"));
     }
 
     [Fact]

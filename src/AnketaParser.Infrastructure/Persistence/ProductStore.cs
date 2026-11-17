@@ -251,6 +251,7 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
     {
         ArgumentNullException.ThrowIfNull(settings);
         var user = await db.Set<BotUser>().SingleAsync(x => x.Id == ownerId, cancellationToken).ConfigureAwait(false);
+        await db.Entry(user).ReloadAsync(cancellationToken).ConfigureAwait(false);
         user.Settings = JsonSerializer.Serialize(settings);
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }

@@ -249,6 +249,51 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
     }
 
     [Fact]
+    public async Task ProfileAnalysisCannotMovePastLinkedContactObservations()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var store = new ProductStore(db);
+        const string source = "https://example.invalid/thread";
+        const string externalId = "profile-origin";
+        var firstRevision = await store.ImportAsync(new(source, externalId, source + "/profile-origin", "Первая ревизия", null), Ct);
+        var profile = await store.AnalyzeAsync(Analysis(firstRevision), Ct);
+        var firstContact = await store.RegisterContactAsync(
+            new(firstRevision, "discord", "first", "first-contact", 0.9m, "синтетическое наблюдение"), Ct);
+        await store.LinkAsync(profile, firstContact, Guid.Empty, LinkConfidence.Suggested, "синтетическая связь", Ct);
+
+        var secondRevision = await store.ImportAsync(new(source, externalId, source + "/profile-origin", "Вторая ревизия", null), Ct);
+        var secondProfile = await store.AnalyzeAsync(Analysis(secondRevision), Ct);
+        var secondAnalysis = await db.Set<Profile>().Where(x => x.Id == secondProfile).Select(x => x.AnalysisId).SingleAsync(Ct);
+
+        var exception = await Assert.ThrowsAsync<PostgresException>(() => db.Database.ExecuteSqlInterpolatedAsync(
+            $"""UPDATE product."Profile" SET "AnalysisId"={secondAnalysis} WHERE "Id"={profile}""", Ct));
+
+        Assert.Equal(PostgresErrorCodes.CheckViolation, exception.SqlState);
+        Assert.Equal("profile_link_analysis_mismatch", exception.MessageText);
+    }
+
+    [Fact]
+    public async Task SaveSettingsRewritesValueAfterAnotherContextChangesIt()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var firstContext = database.Open();
+        await using var secondContext = database.Open();
+        var firstStore = new ProductStore(firstContext);
+        var secondStore = new ProductStore(secondContext);
+        var owner = await firstStore.RegisterBotUserAsync(20003, Ct);
+        var firstValue = new Dictionary<string, string> { ["mode"] = "first" };
+        await firstStore.SaveSettingsAsync(owner, firstValue, Ct);
+        await secondStore.SaveSettingsAsync(owner, new Dictionary<string, string> { ["mode"] = "second" }, Ct);
+
+        await firstStore.SaveSettingsAsync(owner, firstValue, Ct);
+
+        Assert.Equal("first", (await secondStore.ReadSettingsAsync(owner, Ct))["mode"]);
+    }
+
+    [Fact]
     public async Task ConcurrentJobClaimsUseFencingAndBoundedRetries()
     {
         RequireDocker();
@@ -397,6 +442,7 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
             await disableLogin.ExecuteNonQueryAsync(Ct);
         }
 
+        using var operation = new CancellationTokenSource();
         try
         {
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => SchemaMaintenance.ProvisionAsync(
@@ -404,16 +450,23 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
                 database.RolePassword,
                 database.RolePassword,
                 database.RolePassword,
-                Ct));
+                operation.Token));
             Assert.Equal("Служебная роль не разрешает вход; требуется ручная проверка.", exception.Message);
+            operation.Cancel();
         }
         finally
         {
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             await using var admin = new NpgsqlConnection(database.ConnectionString);
-            await admin.OpenAsync(Ct);
+            await admin.OpenAsync(cleanup.Token);
             await using var enableLogin = new NpgsqlCommand("ALTER ROLE product_runtime LOGIN", admin);
-            await enableLogin.ExecuteNonQueryAsync(Ct);
+            await enableLogin.ExecuteNonQueryAsync(cleanup.Token);
         }
+
+        await using var verify = new NpgsqlConnection(database.ConnectionString);
+        await verify.OpenAsync(Ct);
+        await using var roleState = new NpgsqlCommand("SELECT rolcanlogin FROM pg_roles WHERE rolname='product_runtime'", verify);
+        Assert.True((bool)(await roleState.ExecuteScalarAsync(Ct))!);
     }
 
     private static void RequireDocker()

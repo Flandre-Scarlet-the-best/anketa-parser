@@ -23,7 +23,9 @@ public sealed class BackupRecoveryTests(ComposeImageFixture images)
         var daemons = new List<string>();
         string[] prefix = ["compose", "-p", project, "-f", Path.Combine(root, "compose.yaml")];
         var timeout = TimeSpan.FromMinutes(3);
-        Task<string> Sql(string database, string sql) => docker.RunAsync([.. prefix, "exec", "-T", "postgres", "psql", "-U", "test_admin", "-d", database, "-v", "ON_ERROR_STOP=1", "-tAc", sql], timeout, ct);
+        string DatabaseArgument(string database) => "dbname='" + database.Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("'", "\\'", StringComparison.Ordinal) + "'";
+        Task<string> Sql(string database, string sql) => docker.RunAsync([.. prefix, "exec", "-T", "postgres", "psql", "-U", "test_admin", "-d", DatabaseArgument(database), "-v", "ON_ERROR_STOP=1", "-tAc", sql], timeout, ct);
         Task<string> Cli(params string[] args) => docker.RunAsync([.. prefix, "run", "--rm", .. args], timeout, ct);
         Task<string> Shell(string script) => docker.RunAsync([.. prefix, "run", "--rm", "--entrypoint", "/bin/sh", "maintenance", "-c", script], timeout, ct);
         try
@@ -87,11 +89,12 @@ public sealed class BackupRecoveryTests(ComposeImageFixture images)
             Assert.Equal("не запущено", await Shell("test ! -e /backups/restore-was-run && printf 'не запущено'"));
             // Совместимость с состоянием, записанным до появления привязки метаданных к архиву.
             await Shell("sed -i 's/,\"ArchiveLength\":[0-9]*//;s/,\"ArchiveDigest\":\"[A-F0-9]*\"//' /backups/status.json");
+            await Sql("postgres", "CREATE DATABASE \"dbname=test_restore\" OWNER product_migrator");
             await Sql("postgres", "CREATE DATABASE test_restore OWNER product_migrator");
             await Assert.ThrowsAsync<InvalidOperationException>(() => Cli("-e", "ANKETAPARSER_Backup__PgRestore=/bin/false",
-                "-e", $"ANKETAPARSER_Restore__ConnectionString=Host=postgres;Database=test_restore;Username=product_migrator;Password={migrationPassword}",
+                "-e", $"ANKETAPARSER_Restore__ConnectionString=Host=postgres;Database=dbname=test_restore;Username=product_migrator;Password={migrationPassword}",
                 "maintenance", "storage", "restore-empty", name));
-            await Cli("-e", $"ANKETAPARSER_Restore__ConnectionString=Host=postgres;Database=test_restore;Username=product_migrator;Password={migrationPassword}",
+            await Cli("-e", $"ANKETAPARSER_Restore__ConnectionString=Host=postgres;Database=dbname=test_restore;Username=product_migrator;Password={migrationPassword}",
                 "maintenance", "storage", "restore-empty", name);
             const string fingerprint = """
                 SELECT json_build_array(
@@ -108,12 +111,13 @@ public sealed class BackupRecoveryTests(ComposeImageFixture images)
                   (SELECT json_agg(t ORDER BY "Id") FROM product."ModerationDecision" t),
                   (SELECT json_agg(t ORDER BY "MigrationId") FROM public."__EFMigrationsHistory" t))::text
                 """;
-            Assert.Equal(await Sql("test_product", fingerprint), await Sql("test_restore", fingerprint));
-            Assert.Equal("", await Sql("test_restore", "SELECT to_regclass('public.existing_marker')"));
-            Assert.Equal("", await Sql("test_restore", """SELECT to_regclass('public."existing$marker"')"""));
-            Assert.Equal("0", await Sql("test_restore", "SELECT count(*) FROM pg_namespace WHERE nspname='unrelated$schema'"));
+            Assert.Equal(await Sql("test_product", fingerprint), await Sql("dbname=test_restore", fingerprint));
+            Assert.Equal("", await Sql("dbname=test_restore", "SELECT to_regclass('public.existing_marker')"));
+            Assert.Equal("", await Sql("dbname=test_restore", """SELECT to_regclass('public."existing$marker"')"""));
+            Assert.Equal("0", await Sql("dbname=test_restore", "SELECT count(*) FROM pg_namespace WHERE nspname='unrelated$schema'"));
+            Assert.Equal("0", await Sql("test_restore", "SELECT count(*) FROM pg_namespace WHERE nspname IN ('product','private')"));
             await Assert.ThrowsAsync<InvalidOperationException>(() => Cli("-e",
-                $"ANKETAPARSER_Restore__ConnectionString=Host=postgres;Database=test_restore;Username=product_migrator;Password={migrationPassword}",
+                $"ANKETAPARSER_Restore__ConnectionString=Host=postgres;Database=dbname=test_restore;Username=product_migrator;Password={migrationPassword}",
                 "maintenance", "storage", "restore-empty", name));
             await Assert.ThrowsAsync<InvalidOperationException>(() => Cli("-e", "ANKETAPARSER_Backup__PgDump=/bin/false", "maintenance", "storage", "backup"));
             await Assert.ThrowsAsync<InvalidOperationException>(() => Cli("-e", "ANKETAPARSER_Backup__MaxBytes=1", "maintenance", "storage", "backup"));

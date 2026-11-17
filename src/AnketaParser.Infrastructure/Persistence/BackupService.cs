@@ -44,14 +44,20 @@ public sealed class RestoreTargetException : InvalidOperationException
 public sealed class BackupService
 {
     private readonly BackupSettings _settings;
-    public BackupService(BackupSettings settings)
+    private readonly Func<string, string> _readState;
+
+    public BackupService(BackupSettings settings) : this(settings, File.ReadAllText) { }
+
+    internal BackupService(BackupSettings settings, Func<string, string> readState)
     {
         ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(readState);
         ArgumentException.ThrowIfNullOrWhiteSpace(settings.Directory);
         if (settings.TimeoutSeconds < 1 || settings.IntervalSeconds < 1 || settings.Daily < 1 ||
             settings.Weekly < 0 || settings.Monthly < 0 || settings.MaxBytes < 1 || settings.RestoreJobs is < 1 or > 16)
             throw new ArgumentException("Некорректные настройки резервирования.", nameof(settings));
         _settings = settings;
+        _readState = readState;
         if (!string.IsNullOrWhiteSpace(settings.ConnectionString))
             PostgresToolConnection.Validate(new NpgsqlConnectionStringBuilder(settings.ConnectionString));
     }
@@ -59,7 +65,7 @@ public sealed class BackupService
     private string StatePath => Path.Combine(_settings.Directory, "status.json");
 
     public BackupState Status() => File.Exists(StatePath)
-        ? JsonSerializer.Deserialize<BackupState>(File.ReadAllText(StatePath)) ?? new(null, null, "invalid_status", null, null)
+        ? JsonSerializer.Deserialize<BackupState>(_readState(StatePath)) ?? new(null, null, "invalid_status", null, null)
         : new(null, null, null, null, null);
 
     public string[] List() => System.IO.Directory.Exists(_settings.Directory)
@@ -281,7 +287,7 @@ public sealed class BackupService
         var args = new List<string> { "--exit-on-error", "--no-owner", "--no-acl" };
         if (_settings.RestoreJobs == 1) args.Add("--single-transaction");
         else { args.Add("--jobs"); args.Add(_settings.RestoreJobs.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
-        args.Add("--dbname"); args.Add(target.Database!); args.Add(ArchivePath(name));
+        args.Add("--dbname"); args.Add(PostgresToolConnection.FormatDatabaseArgument(target.Database ?? target.Username ?? Environment.UserName)); args.Add(ArchivePath(name));
         await RunToolAsync(_settings.PgRestore, args, targetConnectionString, ct).ConfigureAwait(false);
         await using var db = new ProductDbContext(new DbContextOptionsBuilder<ProductDbContext>().UseNpgsql(targetConnectionString).Options);
         if (await SchemaMaintenance.StatusAsync(db, ct).ConfigureAwait(false) != "ready") throw new InvalidOperationException("Восстановлена несовместимая схема.");

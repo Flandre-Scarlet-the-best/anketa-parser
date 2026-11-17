@@ -179,35 +179,13 @@ public sealed class BackupServiceTests : IDisposable
         var success = DateTimeOffset.UtcNow.AddDays(-1);
         var originalStatus = JsonSerializer.Serialize(new BackupState(success, null, null, "last.dump", null));
         File.WriteAllText(statusPath, originalStatus);
-        var service = new BackupService(new BackupSettings { Directory = _directory });
+        var service = new BackupService(new BackupSettings { Directory = _directory }, _ => throw new IOException("синтетический отказ чтения"));
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.RunAsync(TestContext.Current.CancellationToken));
 
-        if (OperatingSystem.IsWindows())
-        {
-            using (new FileStream(statusPath, FileMode.Open, FileAccess.Write, FileShare.Write | FileShare.Delete))
-            {
-                var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-                    () => service.RunAsync(TestContext.Current.CancellationToken));
-                Assert.DoesNotContain(_directory, exception.Message, StringComparison.Ordinal);
-            }
-        }
-        else
-        {
-            var unixMode = File.GetUnixFileMode(statusPath);
-            try
-            {
-                File.SetUnixFileMode(statusPath, unixMode & ~(UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead));
-                var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-                    () => service.RunAsync(TestContext.Current.CancellationToken));
-                Assert.DoesNotContain(_directory, exception.Message, StringComparison.Ordinal);
-            }
-            finally
-            {
-                File.SetUnixFileMode(statusPath, unixMode);
-            }
-        }
-
+        Assert.DoesNotContain(_directory, exception.Message, StringComparison.Ordinal);
         Assert.Equal(originalStatus, File.ReadAllText(statusPath));
-        Assert.Equal(success, service.Status().LastSuccess);
+        Assert.Equal(success, new BackupService(new BackupSettings { Directory = _directory }).Status().LastSuccess);
     }
 
     [Fact]

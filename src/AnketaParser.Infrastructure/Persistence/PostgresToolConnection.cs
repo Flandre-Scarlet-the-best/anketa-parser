@@ -50,6 +50,9 @@ internal static class PostgresToolConnection
     internal static void Apply(ProcessStartInfo info, NpgsqlConnectionStringBuilder cs)
     {
         Validate(cs);
+        var passfile = cs.Passfile;
+        if (string.IsNullOrEmpty(passfile) && info.Environment.TryGetValue("PGPASSFILE", out var inheritedPassfile))
+            passfile = inheritedPassfile;
         // Только параметры подключения libpq: локализация и настройки сеанса сохраняются.
         foreach (var name in new[]
         {
@@ -84,7 +87,7 @@ internal static class PostgresToolConnection
         SetIfConfigured(info, "PGSSLROOTCERT", cs.RootCertificate);
         SetIfConfigured(info, "PGSSLCERT", cs.SslCertificate);
         SetIfConfigured(info, "PGSSLKEY", cs.SslKey);
-        SetIfConfigured(info, "PGPASSFILE", cs.Passfile);
+        SetIfConfigured(info, "PGPASSFILE", passfile);
         SetIfConfigured(info, "PGOPTIONS", cs.Options);
         SetIfConfigured(info, "PGAPPNAME", cs.ApplicationName);
         SetIfConfigured(info, "PGCLIENTENCODING", cs.ClientEncoding);
@@ -92,6 +95,10 @@ internal static class PostgresToolConnection
         SetIfConfigured(info, "PGREQUIREAUTH", FormatRequireAuthForLibpq(cs.RequireAuth));
         info.Environment["PGLOADBALANCEHOSTS"] = cs.LoadBalanceHosts ? "random" : "disable";
     }
+
+    internal static string FormatDatabaseArgument(string database) =>
+        "dbname='" + database.Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("'", "\\'", StringComparison.Ordinal) + "'";
 
     private static string? FormatRequireAuthForLibpq(string? value)
     {
