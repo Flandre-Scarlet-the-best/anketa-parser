@@ -1,7 +1,7 @@
 # anketa-parser: инфраструктурный хост и PostgreSQL.
 #
 # По умолчанию порты не публикуются, PostgreSQL доступен через сеть Compose,
-# у хоста нет HTTP или административного API. Для отладки БД включите loopback override:
+# у хоста нет HTTP или административного API. Для отладки БД используйте локальный файл переопределения:
 #
 #   docker compose -f compose.yaml -f compose.debug.yaml up -d
 #
