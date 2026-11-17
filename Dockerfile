@@ -35,7 +35,7 @@ WORKDIR /app
 # появлении поддерживаемого снимка APT с воспроизводимыми обновлениями безопасности.
 # hadolint ignore=DL3008
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+ && apt-get install -y --no-install-recommends apt libapt-pkg6.0t64 libgssapi-krb5-2 \
  && rm -rf /var/lib/apt/lists/*
 
 ENV DOTNET_NOLOGO=1 \
@@ -55,9 +55,26 @@ HEALTHCHECK --interval=30s --timeout=15s --start-period=20s --retries=3 \
 USER $APP_UID
 ENTRYPOINT ["dotnet", "/app/host/AnketaParser.Host.dll"]
 
+# Официальный PostgreSQL содержит gosu со старым Go. Собираем закреплённый исходник
+# исправленным компилятором; пересмотреть после обновления gosu в базовом образе.
+FROM golang:1.27.3-alpine3.24@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18 AS gosu-build
+RUN CGO_ENABLED=0 GOTOOLCHAIN=local GOBIN=/out GOFLAGS=-trimpath \
+    go install github.com/tianon/gosu@29b939aa5bd4dc588af765b8248f6e39150d2565
+
+# Общая база сохраняет штатный entrypoint PostgreSQL и обновляет пакеты Alpine.
+FROM postgres:18.6-alpine AS postgres
+COPY --from=gosu-build /out/gosu /usr/local/bin/gosu
+ENV GOSU_VERSION=1.20
+# Обновление установленных пакетов необходимо для исправлений безопасности Alpine;
+# пересмотреть исключение, когда базовый образ будет содержать актуальные исправления.
+# hadolint ignore=DL3017
+RUN apk upgrade --no-cache \
+ && gosu --version \
+ && gosu nobody true
+
 # Обслуживание использует штатные утилиты PostgreSQL 18 и тот же собранный CLI.
 FROM mcr.microsoft.com/dotnet/runtime:10.0.14-alpine3.24 AS maintenance-runtime
-FROM postgres:18.6-alpine AS maintenance
+FROM postgres AS maintenance
 # Версии APK определяет репозиторий Alpine базового образа; пересмотреть при
 # появлении поддерживаемого снимка пакетов с обновлениями безопасности.
 # hadolint ignore=DL3018

@@ -130,10 +130,8 @@ jobs:
         run: |
           set -euo pipefail
           docker compose --project-name anketa-security-audit --profile '*' config --format json > "$RUNNER_TEMP/compose.json"
-          jq -e '.services.host.build.target == "runtime" and .services.maintenance.build.target == "maintenance" and .services.backup.build == .services.maintenance.build and .services.backup.image == .services.maintenance.image and ([.services.host.image, .services.maintenance.image, .services.postgres.image] | (all(type == "string" and length > 0) and (unique | length == 3)))' "$RUNNER_TEMP/compose.json" > /dev/null
-          docker compose --project-name anketa-security-audit --profile '*' build --pull host maintenance
-          postgres=$(jq -er '.services.postgres.image' "$RUNNER_TEMP/compose.json")
-          docker pull "$postgres"
+          jq -e '.services.host.build.target == "runtime" and .services.maintenance.build.target == "maintenance" and .services.postgres.build.target == "postgres" and .services.backup.build == .services.maintenance.build and .services.backup.image == .services.maintenance.image and ([.services.host.image, .services.maintenance.image, .services.postgres.image] | (all(type == "string" and length > 0) and (unique | length == 3)))' "$RUNNER_TEMP/compose.json" > /dev/null
+          docker compose --project-name anketa-security-audit --profile '*' build --pull --no-cache host maintenance postgres
       - name: Проверить все образы и свежую базу CVE
         shell: bash
         env:
