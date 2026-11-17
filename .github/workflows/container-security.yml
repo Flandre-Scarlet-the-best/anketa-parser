@@ -202,6 +202,19 @@ jobs:
             ' "$1" > /dev/null
           }
           check_images "$RUNNER_TEMP/compose.json" || { echo 'Неполный или неоднозначный набор образов Compose' >&2; exit 1; }
+          docker compose --project-name anketa-security-audit --profile '*' -f compose.yaml -f compose.debug.yaml config --format json > "$RUNNER_TEMP/compose-debug.json"
+          check_debug_images() {
+            check_images "$1" && jq -e --slurpfile base "$RUNNER_TEMP/compose.json" '
+              [.services.host, .services.maintenance, .services.postgres] | map({image, build}) ==
+              ([$base[0].services.host, $base[0].services.maintenance, $base[0].services.postgres] | map({image, build}))
+            ' "$1" > /dev/null
+          }
+          check_debug_images "$RUNNER_TEMP/compose-debug.json" || { echo 'Отладочная модель содержит непроверенные образы или сборки' >&2; exit 1; }
+          jq '.services.host.image = "unknown.invalid/unscanned:control"' "$RUNNER_TEMP/compose-debug.json" > "$RUNNER_TEMP/compose-debug-extra.json"
+          if check_debug_images "$RUNNER_TEMP/compose-debug-extra.json"; then
+            echo 'Замена образа в отладочной модели не обнаружена' >&2
+            exit 1
+          fi
           jq '.services.synthetic = {image: "unknown.invalid/unscanned:control"}' "$RUNNER_TEMP/compose.json" > "$RUNNER_TEMP/compose-extra.json"
           if check_images "$RUNNER_TEMP/compose-extra.json"; then
             echo 'Новый образ не обнаружен контролем состава' >&2
