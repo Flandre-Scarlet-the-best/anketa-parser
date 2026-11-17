@@ -207,6 +207,10 @@ dotnet package list --vulnerable --include-transitive --format json > "$env:TEMP
 наборы настроек объединяют пакеты одного монорепозитория, включая `Microsoft.Extensions.*`.
 Правила совместимости удерживают .NET SDK в полосе `10.0.x`, `dotnet-ef` в линии
 EF 10 и Python в `3.15`, а локальные образы `*:local` исключены из обновлений.
+Правило Python сопоставляется по источнику `github-releases`, который Renovate
+назначает `actions/setup-python` для `python-version`; имя `python-version`
+обозначает вход действия, а не источник данных, и как `matchDatasources` правило
+не срабатывает.
 
 [Проверка политики](../.github/workflows/renovate-config.yml) использует
 официальный образ `renovate/renovate:44.251.0`, закреплённый digest манифеста, и

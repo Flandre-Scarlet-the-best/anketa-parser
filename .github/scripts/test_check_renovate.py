@@ -414,6 +414,21 @@ class ManifestTests(RepositoryCase):
             with self.subTest(broken=broken), self.assertRaises(CoverageError):
                 _ = verify_expected({action}, {broken}, "actions")
 
+    def test_quoted_action_reference_keeps_identity(self) -> None:
+        path = ".github/workflows/quoted.yml"
+        sha = "a" * 40
+        _ = self.write(
+            path,
+            f"steps:\n  - uses: \"actions/checkout@{sha}\" # v7.0.1\n  - uses: 'actions/setup-node@v7'\n",
+        )
+        self.assertEqual(
+            expected_actions(self.root, [path]),
+            {
+                Declaration("github-actions", path, "actions/checkout", "v7.0.1", sha),
+                Declaration("github-actions", path, "actions/setup-node", "v7"),
+            },
+        )
+
     def test_copy_external_images_require_exact_extraction(self) -> None:
         path = "Dockerfile"
         _ = self.write(

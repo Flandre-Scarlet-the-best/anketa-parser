@@ -97,6 +97,16 @@ class DependencySetTests(RepositoryCase):
             ("actions", "actions/checkout", "a" * 40, ".github/workflows/ci.yml"), found
         )
 
+    def test_quoted_action_reference_keeps_identity(self) -> None:
+        name = ".github/workflows/quoted.yml"
+        sha = "a" * 40
+        self.write(name, f'steps:\n  - uses: "actions/checkout@{sha}"\n')
+        revision = self.commit("кавычки в объявлении действия")
+        self.assertEqual(
+            dependencies(self.root, revision),
+            {("actions", "actions/checkout", sha, name)},
+        )
+
     def test_requirements_ignore_comments_and_reject_unproved_lines(self) -> None:
         name = "requirements.txt"
         self.write(
@@ -253,6 +263,11 @@ class ComparisonTests(unittest.TestCase):
             verify([], []), ["изменений зависимостей в PR нет; проверять нечего"]
         )
         self.assertEqual(reported(""), [])
+
+    def test_zero_change_contract_requires_empty_report(self) -> None:
+        reported_change = Change("added", "pip", "ruff", "0.17.5", "requirements.txt")
+        with self.assertRaisesRegex(CoverageError, "которых нет в манифестах"):
+            _ = verify([], [reported_change])
 
     def test_actions_ecosystem_is_never_claimed_as_covered(self) -> None:
         expected = [

@@ -28,7 +28,10 @@ WORKFLOW = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$")
 REQUIREMENT = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*(?P<version>[^\s;]+)"
 )
-ACTION_USE = re.compile(r"uses:\s*(?P<action>[^@\s]+)@(?P<ref>[0-9a-f]{40})")
+# YAML допускает значение `uses` в кавычках; кавычки не входят в идентичность.
+ACTION_USE = re.compile(
+    r"uses:\s*[\"']?(?P<action>[^@\s\"']+)@(?P<ref>[0-9a-f]{40})[\"']?"
+)
 # GitHub Dependency Graph возвращает для части NuGet-зависимостей диапазон
 # вместо разрешённой версии; такое значение не доказывает анализ версии.
 IMPRECISE = re.compile(r"^[<>=~^*]")
@@ -216,6 +219,15 @@ UNCONFIRMED_ECOSYSTEMS = frozenset({"actions", "githubactions"})
 def verify(expected: list[Change], reported_changes: list[Change]) -> list[str]:
     """Изменения зависимостей из lock-файлов должны быть подтверждены отчётом."""
     if not expected:
+        # Нулевое изменение согласовано только при пустом отчёте: иначе
+        # обнаруженное действием изменение указывает на пробел в разборе манифестов.
+        if reported_changes:
+            raise CoverageError(
+                "Dependency Review сообщил об изменениях, которых нет в манифестах: "
+                + "; ".join(
+                    change.describe() for change in reported_changes[:MAX_DIAGNOSTIC]
+                )
+            )
         return ["изменений зависимостей в PR нет; проверять нечего"]
     keys = {
         (

@@ -33,8 +33,9 @@ REQUIREMENT = re.compile(
     r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*(?P<version>[^\s;]+)"
 )
 DOCKER_ARG = re.compile(r"^ARG\s+(?P<name>\w+)=(?P<image>\S+)", re.MULTILINE)
+# YAML допускает значение `uses` в кавычках; кавычки не входят в идентичность.
 ACTION_USE = re.compile(
-    r"uses:\s*(?P<action>[^@\s]+)@(?P<ref>\S+)(?:\s+#\s*(?P<comment>v?\S+))?"
+    r"uses:\s*[\"']?(?P<action>[^@\s\"']+)@(?P<ref>[^@\s\"']+)[\"']?(?:\s+#\s*(?P<comment>v?\S+))?"
 )
 MAX_DIAGNOSTIC = 2000
 
