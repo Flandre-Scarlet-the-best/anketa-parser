@@ -41,6 +41,7 @@ arguments = sys.argv[1:]
 lockfile = arguments[arguments.index("--lockfile") + 1]
 entry = plan.get(lockfile, {"code": 128, "results": []})
 print(json.dumps({"results": entry["results"]}))
+sys.stderr.write(entry.get("stderr", ""))
 sys.exit(entry["code"])
 """
 
@@ -315,6 +316,20 @@ class ExitCodeTests(RepositoryCase):
         with self.assertRaises(CoverageError):
             _ = check_source(self.binary(), source, self.root)
 
+    def test_scanner_failure_diagnostic_comes_from_stderr(self) -> None:
+        source = self.source()
+        self.run_plan(
+            {
+                source.lockfile_argument(): {
+                    "code": 2,
+                    "results": [],
+                    "stderr": "OSV: обращение к базе уязвимостей не удалось",
+                }
+            }
+        )
+        with self.assertRaisesRegex(CoverageError, "обращение к базе"):
+            _ = check_source(self.binary(), source, self.root)
+
     def test_empty_lock_requires_no_packages_code(self) -> None:
         _ = self.write("src/Core/packages.lock.json", EMPTY_LOCK)
         self.stage()
@@ -430,8 +445,8 @@ class ScannerIntegrationTests(unittest.TestCase):
             _ = path.write_text(LOCK_TEMPLATE, encoding="utf-8")
             source = parse_lockfile(path, path.name)
             binary = [os.environ["OSV_SCANNER_BINARY"]]
-            code, output = run_scanner(binary, source, root)
-            self.assertIn(code, (0, 1), output)
+            code, output, diagnostic = run_scanner(binary, source, root)
+            self.assertIn(code, (0, 1), output + diagnostic)
             _ = vulnerabilities(output, source, root)
             data = cast(dict[str, list[dict[str, object]]], json.loads(output))
             packages = cast(list[object], data["results"][0]["packages"])

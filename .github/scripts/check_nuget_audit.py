@@ -19,6 +19,7 @@ CLEAN_EXIT_CODE = 0
 CHECK_FINDINGS_CODE = 1
 CHECK_ERROR_CODE = 2
 TRANSITIVE_FLAG = "--include-transitive"
+VULNERABLE_FLAG = "--vulnerable"
 MAX_DIAGNOSTIC = 2000
 
 
@@ -63,9 +64,12 @@ def parse_report(text: str, root: Path) -> tuple[list[str], list[str]]:
     if report.get("version") != 1:
         raise CoverageError(f"Неизвестная версия отчёта: {report.get('version')}")
     parameters = report.get("parameters")
-    if not isinstance(parameters, str) or TRANSITIVE_FLAG not in parameters:
+    requested = parameters.split() if isinstance(parameters, str) else []
+    if VULNERABLE_FLAG not in requested or TRANSITIVE_FLAG not in requested:
+        # Без `--vulnerable` в отчёте нет ключа vulnerabilities, поэтому пустой
+        # список advisories не доказывает отсутствие уязвимостей.
         raise CoverageError(
-            f"Отчёт не подтверждает транзитивный режим: нужен запрос {TRANSITIVE_FLAG}"
+            f"Отчёт не подтверждает режим аудита уязвимостей: нужны {VULNERABLE_FLAG} и {TRANSITIVE_FLAG}"
         )
     sources = report.get("sources")
     if not isinstance(sources, list) or not any(

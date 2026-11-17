@@ -156,8 +156,12 @@ def scanner_command(binary: list[str], source: Source) -> list[str]:
     ]
 
 
-def run_scanner(binary: list[str], source: Source, root: Path) -> tuple[int, str]:
-    """Запустить сканер без shell; вернуть код и сырой вывод."""
+def run_scanner(binary: list[str], source: Source, root: Path) -> tuple[int, str, str]:
+    """Запустить сканер без shell; вернуть код, отчёт и диагностику.
+
+    Диагностика отделена от отчёта: `stderr` объясняет сбой инструмента, а в
+    JSON для разбора попадает только `stdout`.
+    """
     try:
         result = subprocess.run(  # noqa: S603
             scanner_command(binary, source),
@@ -169,7 +173,7 @@ def run_scanner(binary: list[str], source: Source, root: Path) -> tuple[int, str
         )
     except OSError as error:
         raise CoverageError(f"OSV-Scanner не запустился: {error}") from error
-    return result.returncode, result.stdout
+    return result.returncode, result.stdout, result.stderr
 
 
 def vulnerabilities(report: str, source: Source, root: Path | None = None) -> list[str]:
@@ -310,10 +314,15 @@ def describe_packages(
 def check_source(binary: list[str], source: Source, root: Path) -> list[str]:
     """Проверить один источник: код выхода должен соответствовать инвентарю."""
     expected = len(source.packages)
-    code, output = run_scanner(binary, source, root)
+    code, output, diagnostic = run_scanner(binary, source, root)
     if code not in (CLEAN_EXIT_CODE, FINDINGS_EXIT_CODE, NO_PACKAGES_EXIT_CODE):
+        detail = (
+            diagnostic.strip()[:MAX_DIAGNOSTIC]
+            or output.strip()[:MAX_DIAGNOSTIC]
+            or "нет диагностики"
+        )
         raise CoverageError(
-            f"{source.path}: сканер завершился с кодом {code}: {output.strip()[:MAX_DIAGNOSTIC] or 'нет диагностики'}"
+            f"{source.path}: сканер завершился с кодом {code}: {detail}"
         )
     empty = code == NO_PACKAGES_EXIT_CODE
     if empty and expected:

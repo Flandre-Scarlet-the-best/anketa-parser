@@ -56,6 +56,8 @@ class RepositoryCase(unittest.TestCase):
         _ = self.git("init", "-q", "-b", "main")
         _ = self.git("config", "user.email", "f@example.invalid")
         _ = self.git("config", "user.name", "fixture")
+        # Наследуемая подпись коммитов сделала бы фикстуру зависимой от ключей.
+        _ = self.git("config", "commit.gpgsign", "false")
 
     def git(self, *args: str) -> str:
         result = subprocess.run(  # noqa: S603
@@ -105,6 +107,15 @@ class DependencySetTests(RepositoryCase):
         self.assertEqual(
             dependencies(self.root, revision),
             {("actions", "actions/checkout", sha, name)},
+        )
+
+    def test_manifest_in_non_ascii_directory_is_not_skipped(self) -> None:
+        name = "src/Пакеты/packages.lock.json"
+        self.write(name, LOCK % ("Npgsql", "10.0.3"))
+        revision = self.commit("манифест в каталоге с не-ASCII именем")
+        self.assertEqual(
+            dependencies(self.root, revision),
+            {("NuGet", "Npgsql", "10.0.3", name)},
         )
 
     def test_requirements_ignore_comments_and_reject_unproved_lines(self) -> None:

@@ -148,6 +148,18 @@ class ParseTests(ReportCase):
         )
         with self.assertRaises(CoverageError):
             _ = parse_report(without_transitive, self.root)
+        # Отчёт без `--vulnerable` не содержит ключа vulnerabilities, поэтому его
+        # пустой список advisories не доказывает отсутствие уязвимостей.
+        without_vulnerable = json.dumps(
+            {
+                "version": 1,
+                "parameters": "--include-transitive",
+                "sources": SOURCES,
+                "projects": [{"path": self.absolute("a.csproj")}],
+            }
+        )
+        with self.assertRaises(CoverageError):
+            _ = parse_report(without_vulnerable, self.root)
         empty = self.report([])
         with self.assertRaises(CoverageError):
             _ = parse_report(empty, self.root)

@@ -76,8 +76,12 @@ def git(root: Path, *args: str) -> str:
 
 
 def tree_files(root: Path, revision: str) -> list[str]:
-    """Отслеживаемые манифесты в указанной ревизии."""
-    names = git(root, "ls-tree", "-r", "--name-only", revision).split("\n")
+    """Отслеживаемые манифесты в указанной ревизии.
+
+    `-z` обязателен: без него Git экранирует не-ASCII пути, и манифест в
+    каталоге с такими символами выпадает из сверки.
+    """
+    names = git(root, "ls-tree", "-r", "-z", "--name-only", revision).split("\0")
     return [
         name
         for name in names

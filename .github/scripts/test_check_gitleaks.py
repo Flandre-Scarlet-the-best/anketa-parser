@@ -178,6 +178,20 @@ class GitleaksReportTests(unittest.TestCase):
 
 
 class GitleaksDiagnosticTests(unittest.TestCase):
+    def test_failed_scanner_reports_exit_code_and_diagnostic_without_report(
+        self,
+    ) -> None:
+        scan = Scan(check_gitleaks.HISTORY_MODE, head="a" * 40)
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.CompletedProcess([], 3, "", "boom: cannot scan")
+            with (
+                patch("check_gitleaks.subprocess.run", return_value=result),
+                self.assertRaisesRegex(CoverageError, "кодом 3: boom"),
+            ):
+                _ = check_gitleaks.scan_git(
+                    Path(directory), Path("gitleaks"), scan, Path(directory)
+                )
+
     def test_git_errors_block_clean_exit_without_exposing_stderr(self) -> None:
         scan = Scan(check_gitleaks.HISTORY_MODE, head="a" * 40)
         with tempfile.TemporaryDirectory() as directory:
