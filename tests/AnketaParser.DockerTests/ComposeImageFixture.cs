@@ -23,7 +23,9 @@ public sealed class ComposeImageFixture : IAsyncLifetime
     private static readonly TimeSpan BuildTimeout = TimeSpan.FromMinutes(20);
 
     /// <summary>Корень репозитория, относительно которого собираются образы стека.</summary>
-    public string RepositoryRoot { get; } = ComposeStackSmokeTests.FindRepositoryRoot();
+    private readonly Lazy<string> _repositoryRoot = new(ComposeStackSmokeTests.FindRepositoryRoot);
+
+    public string RepositoryRoot => _repositoryRoot.Value;
 
     /// <summary>Признак явного включения контейнерных проверок.</summary>
     public static bool Enabled => Environment.GetEnvironmentVariable(EnableVariable) == "1";

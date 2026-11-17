@@ -172,6 +172,45 @@ public sealed class BackupServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task BackupFailureDoesNotReplaceStatusThatCouldNotBeRead()
+    {
+        Directory.CreateDirectory(_directory);
+        var statusPath = Path.Combine(_directory, "status.json");
+        var success = DateTimeOffset.UtcNow.AddDays(-1);
+        var originalStatus = JsonSerializer.Serialize(new BackupState(success, null, null, "last.dump", null));
+        File.WriteAllText(statusPath, originalStatus);
+        var service = new BackupService(new BackupSettings { Directory = _directory });
+
+        using (new FileStream(statusPath, FileMode.Open, FileAccess.Write, FileShare.Write | FileShare.Delete))
+        {
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => service.RunAsync(TestContext.Current.CancellationToken));
+            Assert.DoesNotContain(_directory, exception.Message, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(originalStatus, File.ReadAllText(statusPath));
+        Assert.Equal(success, service.Status().LastSuccess);
+    }
+
+    [Fact]
+    public async Task BackupStatusWriteFailureReturnsSafeOperationError()
+    {
+        Directory.CreateDirectory(_directory);
+        Directory.CreateDirectory(Path.Combine(_directory, "status.json.partial"));
+        var service = new BackupService(new BackupSettings
+        {
+            Directory = _directory,
+            ConnectionString = "Host=127.0.0.1;Port=1;Database=synthetic;Timeout=1",
+        });
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.RunAsync(TestContext.Current.CancellationToken));
+
+        Assert.Contains("состояние не обновлено", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(_directory, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task BackupAttemptPreservesCorruptStatusAndRecordsFailure()
     {
         Directory.CreateDirectory(_directory);

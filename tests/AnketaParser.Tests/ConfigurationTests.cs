@@ -64,6 +64,25 @@ public sealed class ConfigurationTests
     }
 
     [Fact]
+    public void SeparatePasswordDoesNotConfigureAnOptionalDatabaseWithAnEmptyConnectionString()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Database:ConnectionString"] = string.Empty,
+            ["Database:Password"] = "synthetic-password",
+        }).Build();
+        using var configurationLifetime = configuration as IDisposable;
+        var services = new ServiceCollection();
+        services.AddAnketaParserInfrastructure(configuration, "Test", []);
+        using var provider = services.BuildServiceProvider();
+
+        var database = provider.GetRequiredService<IOptions<DatabaseSettings>>().Value;
+
+        Assert.False(database.IsConfigured);
+        Assert.Equal(string.Empty, database.ConnectionString);
+    }
+
+    [Fact]
     public void RuntimeSnapshotProviderReadsHostSettingsAfterConfigurationReload()
     {
         using var configuration = new ConfigurationManager();

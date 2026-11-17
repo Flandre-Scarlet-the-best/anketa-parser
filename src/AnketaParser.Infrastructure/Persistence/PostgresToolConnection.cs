@@ -19,8 +19,23 @@ internal static class PostgresToolConnection
     };
 
     internal static bool IsSameDatabase(NpgsqlConnectionStringBuilder source, NpgsqlConnectionStringBuilder target) =>
-        string.Equals(source.Host, target.Host, StringComparison.OrdinalIgnoreCase) && source.Port == target.Port &&
+        HaveSameHostPorts(source, target) &&
         string.Equals(source.Database ?? source.Username, target.Database ?? target.Username, StringComparison.Ordinal);
+
+    private static bool HaveSameHostPorts(NpgsqlConnectionStringBuilder source, NpgsqlConnectionStringBuilder target)
+    {
+        var sourceHosts = ParseHostPorts(source);
+        var targetHosts = ParseHostPorts(target);
+        return sourceHosts.Length == targetHosts.Length && sourceHosts.Zip(targetHosts).All(pair =>
+            string.Equals(pair.First.Host, pair.Second.Host, StringComparison.OrdinalIgnoreCase) && pair.First.Port == pair.Second.Port);
+    }
+
+    private static (string Host, int Port)[] ParseHostPorts(NpgsqlConnectionStringBuilder connection) =>
+        string.IsNullOrWhiteSpace(connection.Host)
+            ? []
+            : connection.Host.Split(',', StringSplitOptions.TrimEntries)
+                .Select(host => ParseHostPort(host, connection.Port))
+                .ToArray();
 
     internal static void Validate(NpgsqlConnectionStringBuilder cs)
     {
@@ -74,7 +89,30 @@ internal static class PostgresToolConnection
         SetIfConfigured(info, "PGAPPNAME", cs.ApplicationName);
         SetIfConfigured(info, "PGCLIENTENCODING", cs.ClientEncoding);
         SetIfConfigured(info, "PGTARGETSESSIONATTRS", cs.TargetSessionAttributes?.ToLowerInvariant());
+        SetIfConfigured(info, "PGREQUIREAUTH", FormatRequireAuthForLibpq(cs.RequireAuth));
         info.Environment["PGLOADBALANCEHOSTS"] = cs.LoadBalanceHosts ? "random" : "disable";
+    }
+
+    private static string? FormatRequireAuthForLibpq(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+
+        return string.Join(',', value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Select(token =>
+        {
+            var negated = token.StartsWith('!');
+            var method = negated ? token[1..] : token;
+            var libpqMethod = method.ToLowerInvariant() switch
+            {
+                "password" => "password",
+                "md5" => "md5",
+                "gss" => "gss",
+                "sspi" => "sspi",
+                "scramsha256" => "scram-sha-256",
+                "none" => "none",
+                _ => throw new ArgumentException("Требование аутентификации не поддерживается утилитами PostgreSQL.", nameof(value)),
+            };
+            return negated ? "!" + libpqMethod : libpqMethod;
+        }));
     }
 
     private static void SetIfConfigured(ProcessStartInfo info, string name, string? value)

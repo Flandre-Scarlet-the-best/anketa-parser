@@ -47,6 +47,22 @@ public sealed class PostgresToolConnectionTests
     }
 
     [Theory]
+    [InlineData("ScramSHA256,GSS", "scram-sha-256,gss")]
+    [InlineData("!Password,!MD5", "!password,!md5")]
+    [InlineData("None", "none")]
+    public void ToolConnectionTransfersRequireAuth(string requireAuth, string expected)
+    {
+        var info = new ProcessStartInfo("pg_dump");
+        PostgresToolConnection.Apply(info, new NpgsqlConnectionStringBuilder
+        {
+            Host = "primary",
+            RequireAuth = requireAuth,
+        });
+
+        Assert.Equal(expected, info.Environment["PGREQUIREAUTH"]);
+    }
+
+    [Theory]
     [InlineData("primary", 5432, "product", true)]
     [InlineData("PRIMARY", 5432, "product", true)]
     [InlineData("recovery", 5432, "product", false)]
@@ -57,6 +73,24 @@ public sealed class PostgresToolConnectionTests
         var source = new NpgsqlConnectionStringBuilder { Host = "primary", Database = "product" };
         var target = new NpgsqlConnectionStringBuilder { Host = host, Port = port, Database = database };
         Assert.Equal(same, PostgresToolConnection.IsSameDatabase(source, target));
+    }
+
+    [Fact]
+    public void DatabaseIdentityNormalizesPortEmbeddedInHost()
+    {
+        var source = new NpgsqlConnectionStringBuilder { Host = "primary:5432", Database = "product" };
+        var target = new NpgsqlConnectionStringBuilder { Host = "primary", Port = 5432, Database = "product" };
+
+        Assert.True(PostgresToolConnection.IsSameDatabase(source, target));
+    }
+
+    [Fact]
+    public void DatabaseIdentityNormalizesBracketedIpv6HostAndPort()
+    {
+        var source = new NpgsqlConnectionStringBuilder { Host = "[2001:db8::2]:5442", Database = "product" };
+        var target = new NpgsqlConnectionStringBuilder { Host = "2001:db8::2", Port = 5442, Database = "product" };
+
+        Assert.True(PostgresToolConnection.IsSameDatabase(source, target));
     }
 
     [Theory]

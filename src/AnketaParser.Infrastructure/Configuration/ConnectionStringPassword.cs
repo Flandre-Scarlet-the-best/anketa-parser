@@ -7,7 +7,7 @@ internal static class ConnectionStringPassword
     internal static bool TryApply(string connectionString, string? password, out string effectiveConnectionString)
     {
         effectiveConnectionString = connectionString;
-        if (password is null)
+        if (password is null || string.IsNullOrWhiteSpace(connectionString))
             return true;
 
         try
