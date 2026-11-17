@@ -58,8 +58,12 @@ class Scenario:
 
 
 def node_command(node: str, script: Path) -> list[str]:
-    """Команда запуска официального скрипта Renovate без shell."""
-    return [node, str(script)]
+    """Команда запуска Renovate: node плюс скрипт либо сам исполняемый файл.
+
+    В официальном образе точки входа — исполняемые обёртки, поэтому пустой
+    `--node` означает прямой запуск файла без интерпретатора.
+    """
+    return [str(script)] if not node else [node, str(script)]
 
 
 def run_script(

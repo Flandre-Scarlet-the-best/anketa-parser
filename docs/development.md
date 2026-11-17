@@ -161,18 +161,18 @@ presets объединяют пакеты одной monorepo, включая `M
 Правила совместимости удерживают .NET SDK в полосе `10.0.x`, `dotnet-ef` в линии
 EF 10 и Python в `3.15`, а локальные образы `*:local` исключены из обновлений.
 
-[Проверка политики](../.github/workflows/renovate-config.yml) ставит закреплённый
-Renovate `44.251.0` с проверкой integrity tarball и выполняет три независимые
-проверки через [check_renovate.py](../.github/scripts/check_renovate.py): строгий
+[Проверка политики](../.github/workflows/renovate-config.yml) использует
+официальный образ `renovate/renovate:44.251.0`, закреплённый digest манифеста, и
+выполняет три независимые проверки через
+[check_renovate.py](../.github/scripts/check_renovate.py): строгий
 `renovate-config-validator`, реальное извлечение со сверкой объявленных версий по
 manifests и расчёт веток на изолированных фикстурах вместе с отрицательным
-контролем группировки.
+контролем группировки. Версия образа проверяется отдельным шагом.
 
 ```powershell
-npm install --no-save --no-package-lock renovate@44.251.0
-.venv/Scripts/python .github/scripts/check_renovate.py validate --renovate node_modules/renovate/dist/renovate.js --validator node_modules/renovate/dist/config-validator.js
-.venv/Scripts/python .github/scripts/check_renovate.py extract --renovate node_modules/renovate/dist/renovate.js
-.venv/Scripts/python .github/scripts/check_renovate.py fixtures --renovate node_modules/renovate/dist/renovate.js
+docker run --rm -v "${PWD}:/repo" -w /repo --entrypoint sh `
+  "renovate/renovate:44.251.0@sha256:64adaabe8ee3e34820c2b044b5f87e281aa278bf53e5d76df2ce800f9cc9407a" `
+  -c "python3 .github/scripts/check_renovate.py validate --node '' --renovate /usr/local/sbin/renovate --validator /usr/local/sbin/renovate-config-validator"
 ```
 
 Локальный запуск использует `RENOVATE_CONFIG_FILE`: платформа `local` не отдаёт

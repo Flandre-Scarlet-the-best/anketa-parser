@@ -26,6 +26,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # Официальный образ закреплён digest манифеста: версия и содержимое
+  # инструмента не зависят от изменяемого тега.
+  RENOVATE_IMAGE: renovate/renovate:44.251.0@sha256:64adaabe8ee3e34820c2b044b5f87e281aa278bf53e5d76df2ce800f9cc9407a
+
 jobs:
   renovate-config:
     name: Конфигурация и ветки Renovate
@@ -38,50 +43,34 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '24'
-
-      - name: Установить закреплённый Renovate с проверкой integrity tarball
-        shell: bash
+      - name: Проверить версию закреплённого образа
         run: |
-          set -euo pipefail
-          tools="$RUNNER_TEMP/renovate-tool"
-          mkdir -p "$tools"
-          cd "$tools"
-          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o renovate.tgz https://registry.npmjs.org/renovate/-/renovate-44.251.0.tgz
-          actual=$(node -e "const c=require('crypto'),f=require('fs');process.stdout.write('sha512-'+c.createHash('sha512').update(f.readFileSync('renovate.tgz')).digest('base64'))")
-          expected='sha512-CnWmqR3FVPx2u8BPXLGEvK2kUhVSFUPH7tiq9iFVTa+/QAkknE6EiVulUKkzW1ZaddXAJjH2FpQ1+YO95Pb4wA=='
-          if [ "$actual" != "$expected" ]; then
-            echo "integrity tarball Renovate не совпала с закреплённой" >&2
-            exit 1
-          fi
-          npm install --no-save --no-package-lock --no-audit --no-fund ./renovate.tgz
-          installed=$(node -e "process.stdout.write(require('./node_modules/renovate/package.json').version)")
-          if [ "$installed" != "44.251.0" ]; then
-            echo "установлена другая версия Renovate: $installed" >&2
-            exit 1
-          fi
-          echo "$tools/node_modules/renovate/dist" >> "$GITHUB_PATH"
+          docker run --rm --entrypoint /usr/local/sbin/renovate "$RENOVATE_IMAGE" --version | grep -Fx '44.251.0'
 
       - name: Строгая проверка конфигурации официальным валидатором
         run: |
-          python .github/scripts/check_renovate.py validate \
-            --root . \
-            --renovate "$RUNNER_TEMP/renovate-tool/node_modules/renovate/dist/renovate.js" \
-            --validator "$RUNNER_TEMP/renovate-tool/node_modules/renovate/dist/config-validator.js"
+          docker run --rm \
+            -v "$PWD:/repo" -w /repo \
+            --entrypoint sh "$RENOVATE_IMAGE" \
+            -c "python3 .github/scripts/check_renovate.py validate --node '' --renovate /usr/local/sbin/renovate --validator /usr/local/sbin/renovate-config-validator"
 
       - name: Реальное извлечение по всем поддерживаемым менеджерам
         run: |
-          python .github/scripts/check_renovate.py extract \
-            --root . \
-            --renovate "$RUNNER_TEMP/renovate-tool/node_modules/renovate/dist/renovate.js"
+          docker run --rm \
+            -v "$PWD:/repo" -w /repo \
+            --entrypoint sh "$RENOVATE_IMAGE" \
+            -c "python3 .github/scripts/check_renovate.py extract --node '' --root . --renovate /usr/local/sbin/renovate"
 
       - name: Расчёт веток на изолированных фикстурах и отрицательный контроль
         run: |
-          python .github/scripts/check_renovate.py fixtures \
-            --root . \
-            --renovate "$RUNNER_TEMP/renovate-tool/node_modules/renovate/dist/renovate.js"
+          docker run --rm \
+            -v "$PWD:/repo" -w /repo \
+            --entrypoint sh "$RENOVATE_IMAGE" \
+            -c "python3 .github/scripts/check_renovate.py fixtures --node '' --root . --renovate /usr/local/sbin/renovate"
 
       - name: Самопроверка проверки на синтетических данных
-        run: python -m unittest discover -s .github/scripts -p 'test_check_renovate.py' -v
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" -w /repo \
+            --entrypoint sh "$RENOVATE_IMAGE" \
+            -c "python3 -m unittest discover -s .github/scripts -p 'test_check_renovate.py' -v"
