@@ -1,16 +1,16 @@
 using AnketaParser.Core.Diagnostics;
 
-using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 
 namespace AnketaParser.Infrastructure.Persistence;
 
-public sealed class BackupReadinessProbe(IConfiguration configuration) : IReadinessProbe
+public sealed class BackupReadinessProbe(IOptions<BackupSettings> options) : IReadinessProbe
 {
     public string Name => "backup";
     public Task<ProbeResult> CheckAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var settings = configuration.GetSection("Backup").Get<BackupSettings>() ?? new();
+        var settings = options.Value;
         var service = new BackupService(settings);
         BackupState state;
         try { state = service.Status(); }

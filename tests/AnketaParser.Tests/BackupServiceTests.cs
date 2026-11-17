@@ -3,7 +3,7 @@ using System.Text.Json;
 
 using AnketaParser.Infrastructure.Persistence;
 
-using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 
 namespace AnketaParser.Tests;
 
@@ -43,11 +43,7 @@ public sealed class BackupServiceTests : IDisposable
         if (scenario == "missing_checksum") File.Delete(path + ".sha256");
         if (scenario == "changed_checksum") File.WriteAllText(path + ".sha256", new string('0', 64));
         if (scenario == "missing_verification") File.Delete(path + ".verified");
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-        {
-            ["Backup:Directory"] = _directory,
-        }).Build();
-        var result = await new BackupReadinessProbe(configuration).CheckAsync(TestContext.Current.CancellationToken);
+        var result = await CreateReadinessProbe().CheckAsync(TestContext.Current.CancellationToken);
         Assert.Equal(expected, result.Status);
         Assert.DoesNotContain(_directory, result.Detail, StringComparison.Ordinal);
     }
@@ -86,12 +82,8 @@ public sealed class BackupServiceTests : IDisposable
         Directory.CreateDirectory(_directory);
         var now = DateTimeOffset.UtcNow;
         File.WriteAllText(Path.Combine(_directory, "status.json"), JsonSerializer.Serialize(new BackupState(now, null, null, "missing.dump", now)));
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-        {
-            ["Backup:Directory"] = _directory,
-        }).Build();
         Assert.Equal(Core.Diagnostics.ProbeStatus.Skipped,
-            (await new BackupReadinessProbe(configuration).CheckAsync(TestContext.Current.CancellationToken)).Status);
+            (await CreateReadinessProbe().CheckAsync(TestContext.Current.CancellationToken)).Status);
     }
 
     [Theory]
@@ -126,12 +118,7 @@ public sealed class BackupServiceTests : IDisposable
             ArchiveLength = length,
             ArchiveDigest = digest,
         }));
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-        {
-            ["Backup:Directory"] = _directory,
-            ["Backup:IntervalSeconds"] = "3600",
-        }).Build();
-        var probe = new BackupReadinessProbe(configuration);
+        var probe = CreateReadinessProbe(intervalSeconds: 3600);
         Assert.Equal(Core.Diagnostics.ProbeStatus.Healthy,
             (await probe.CheckAsync(TestContext.Current.CancellationToken)).Status);
 
@@ -145,6 +132,9 @@ public sealed class BackupServiceTests : IDisposable
         Assert.Equal(Core.Diagnostics.ProbeStatus.Skipped,
             (await probe.CheckAsync(TestContext.Current.CancellationToken)).Status);
     }
+
+    private BackupReadinessProbe CreateReadinessProbe(int intervalSeconds = 86_400) =>
+        new(Options.Create(new BackupSettings { Directory = _directory, IntervalSeconds = intervalSeconds }));
 
     [Fact]
     public void RotationUnifiesCalendarBucketsAndPreservesVerifiedCopy()

@@ -10,9 +10,12 @@ namespace AnketaParser.Infrastructure.Persistence;
 
 public sealed class BackupSettings
 {
+    public const string SectionName = "Backup";
+
     public string Directory { get; set; } = string.Empty;
     public string? ExternalDirectory { get; set; }
     public string ConnectionString { get; set; } = string.Empty;
+    public string? Password { get; set; }
     public string PgDump { get; set; } = "pg_dump";
     public string PgRestore { get; set; } = "pg_restore";
     public int IntervalSeconds { get; set; } = 86400;

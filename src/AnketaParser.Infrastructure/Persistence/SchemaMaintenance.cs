@@ -40,9 +40,17 @@ public static class SchemaMaintenance
                 await using var create = new NpgsqlCommand($"CREATE ROLE {role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS", connection, transaction);
                 await create.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
-            await using var check = new NpgsqlCommand("SELECT rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls OR EXISTS(SELECT 1 FROM pg_auth_members WHERE member=pg_roles.oid) FROM pg_roles WHERE rolname=$1", connection, transaction);
+            await using var check = new NpgsqlCommand("SELECT rolcanlogin, rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls OR EXISTS(SELECT 1 FROM pg_auth_members WHERE member=pg_roles.oid) FROM pg_roles WHERE rolname=$1", connection, transaction);
             check.Parameters.AddWithValue(role);
-            if ((bool)(await check.ExecuteScalarAsync(ct).ConfigureAwait(false))!) throw new InvalidOperationException("Служебная роль имеет неожиданные привилегии; требуется ручная проверка.");
+            await using (var reader = await check.ExecuteReaderAsync(ct).ConfigureAwait(false))
+            {
+                if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+                    throw new InvalidOperationException("Служебная роль исчезла во время подготовки.");
+                if (!reader.GetBoolean(0))
+                    throw new InvalidOperationException("Служебная роль не разрешает вход; требуется ручная проверка.");
+                if (reader.GetBoolean(1))
+                    throw new InvalidOperationException("Служебная роль имеет неожиданные привилегии; требуется ручная проверка.");
+            }
             await using var format = new NpgsqlCommand("SELECT format('ALTER ROLE %I PASSWORD %L', $1::text, $2::text)", connection, transaction);
             format.Parameters.AddWithValue(role); format.Parameters.AddWithValue(password);
             var sql = (string)(await format.ExecuteScalarAsync(ct).ConfigureAwait(false))!;

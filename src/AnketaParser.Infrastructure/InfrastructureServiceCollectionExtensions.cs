@@ -61,6 +61,14 @@ public static class InfrastructureServiceCollectionExtensions
             new ConfigurationChangeTokenSource<DiagnosticsSettings>(
                 Options.DefaultName, configuration.GetSection(DiagnosticsSettings.SectionName)));
 
+        services.AddOptions<BackupSettings>()
+            .Configure(options => BindSettings(configuration.GetSection(BackupSettings.SectionName), options))
+            .ValidateOnStart();
+        services.AddSingleton<IValidateOptions<BackupSettings>, BackupSettingsValidator>();
+        services.AddSingleton<IOptionsChangeTokenSource<BackupSettings>>(
+            new ConfigurationChangeTokenSource<BackupSettings>(
+                Options.DefaultName, configuration.GetSection(BackupSettings.SectionName)));
+
         services.TryAddSingleton(TimeProvider.System);
         services.AddDbContext<ProductDbContext>((provider, options) =>
             options.UseNpgsql(provider.GetRequiredService<IOptions<DatabaseSettings>>().Value.ConnectionString));
@@ -71,8 +79,9 @@ public static class InfrastructureServiceCollectionExtensions
 
         services.TryAddSingleton<IRuntimeSnapshotProvider, RuntimeSnapshotProvider>();
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IReadinessProbe, PostgresReadinessProbe>());
-        if (!string.IsNullOrWhiteSpace(configuration["Backup:Directory"]))
-            services.AddSingleton<IReadinessProbe>(new BackupReadinessProbe(configuration));
+        if (!string.IsNullOrWhiteSpace(configuration[$"{BackupSettings.SectionName}:Directory"]))
+            services.AddSingleton<IReadinessProbe>(provider =>
+                new BackupReadinessProbe(provider.GetRequiredService<IOptions<BackupSettings>>()));
         services.TryAddSingleton<DiagnosticsRunner>();
 
         return services;

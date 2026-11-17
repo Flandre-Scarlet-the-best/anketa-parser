@@ -7,6 +7,7 @@ using AnketaParser.Core.Diagnostics;
 using AnketaParser.Infrastructure;
 using AnketaParser.Infrastructure.Configuration;
 using AnketaParser.Infrastructure.Diagnostics;
+using AnketaParser.Infrastructure.Persistence;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -205,6 +206,7 @@ public static class CliApplication
             _ = provider.GetRequiredService<IOptions<HostSettings>>().Value;
             var databaseSettings = provider.GetRequiredService<IOptions<DatabaseSettings>>().Value;
             var diagnosticsSettings = provider.GetRequiredService<IOptions<DiagnosticsSettings>>().Value;
+            _ = provider.GetRequiredService<IOptions<BackupSettings>>().Value;
 
             var runner = provider.GetRequiredService<DiagnosticsRunner>();
             DiagnosticReport report;

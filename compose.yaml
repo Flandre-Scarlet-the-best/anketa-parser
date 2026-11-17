@@ -46,7 +46,8 @@ services:
       DOTNET_ENVIRONMENT: ${DOTNET_ENVIRONMENT:-Production}
       ANKETAPARSER_Host__InstanceName: ${ANKETAPARSER_INSTANCE_NAME:-anketa-parser}
       ANKETAPARSER_Host__ShutdownTimeoutSeconds: "20"
-      ANKETAPARSER_Database__ConnectionString: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-anketa_parser};Username=product_runtime;Password=\"${PRODUCT_RUNTIME_PASSWORD:-local-runtime-password}\";Timeout=5;Command Timeout=5"
+      ANKETAPARSER_Database__ConnectionString: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-anketa_parser};Username=product_runtime;Timeout=5;Command Timeout=5"
+      ANKETAPARSER_Database__Password: ${PRODUCT_RUNTIME_PASSWORD:-local-runtime-password}
       ANKETAPARSER_Database__Required: "true"
       ANKETAPARSER_Backup__Directory: /backups
       ANKETAPARSER_Backup__IntervalSeconds: ${BACKUP_INTERVAL_SECONDS:-86400}
@@ -68,11 +69,13 @@ services:
     image: anketa-parser-maintenance:local
     init: true
     environment:
-      ANKETAPARSER_Database__ConnectionString: "Host=postgres;Database=${POSTGRES_DB:-anketa_parser};Username=product_migrator;Password=\"${PRODUCT_MIGRATION_PASSWORD:-local-migration-password}\""
+      ANKETAPARSER_Database__ConnectionString: "Host=postgres;Database=${POSTGRES_DB:-anketa_parser};Username=product_migrator"
+      ANKETAPARSER_Database__Password: ${PRODUCT_MIGRATION_PASSWORD:-local-migration-password}
       ANKETAPARSER_Provision__MigrationPassword: ${PRODUCT_MIGRATION_PASSWORD:-local-migration-password}
       ANKETAPARSER_Provision__RuntimePassword: ${PRODUCT_RUNTIME_PASSWORD:-local-runtime-password}
       ANKETAPARSER_Provision__BackupPassword: ${PRODUCT_BACKUP_PASSWORD:-local-backup-password}
-      ANKETAPARSER_Backup__ConnectionString: "Host=postgres;Database=${POSTGRES_DB:-anketa_parser};Username=product_backup;Password=\"${PRODUCT_BACKUP_PASSWORD:-local-backup-password}\""
+      ANKETAPARSER_Backup__ConnectionString: "Host=postgres;Database=${POSTGRES_DB:-anketa_parser};Username=product_backup"
+      ANKETAPARSER_Backup__Password: ${PRODUCT_BACKUP_PASSWORD:-local-backup-password}
       ANKETAPARSER_Backup__Directory: /backups
       ANKETAPARSER_Backup__IntervalSeconds: ${BACKUP_INTERVAL_SECONDS:-86400}
       ANKETAPARSER_Backup__MaxBytes: ${BACKUP_MAX_BYTES:-10737418240}
@@ -91,7 +94,8 @@ services:
     restart: unless-stopped
     init: true
     environment:
-      ANKETAPARSER_Backup__ConnectionString: "Host=postgres;Database=${POSTGRES_DB:-anketa_parser};Username=product_backup;Password=\"${PRODUCT_BACKUP_PASSWORD:-local-backup-password}\""
+      ANKETAPARSER_Backup__ConnectionString: "Host=postgres;Database=${POSTGRES_DB:-anketa_parser};Username=product_backup"
+      ANKETAPARSER_Backup__Password: ${PRODUCT_BACKUP_PASSWORD:-local-backup-password}
       ANKETAPARSER_Backup__Directory: /backups
       ANKETAPARSER_Backup__IntervalSeconds: ${BACKUP_INTERVAL_SECONDS:-86400}
       ANKETAPARSER_Backup__MaxBytes: ${BACKUP_MAX_BYTES:-10737418240}

@@ -49,7 +49,7 @@ internal static partial class StorageCommands
             _ = provider.GetRequiredService<IOptions<HostSettings>>().Value;
             var database = provider.GetRequiredService<IOptions<DatabaseSettings>>().Value;
             _ = provider.GetRequiredService<IOptions<DiagnosticsSettings>>().Value;
-            var settings = config.GetSection("Backup").Get<BackupSettings>() ?? new();
+            var settings = provider.GetRequiredService<IOptions<BackupSettings>>().Value;
             switch (args)
             {
                 case ["storage", "provision"]:

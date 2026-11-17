@@ -27,7 +27,7 @@ public sealed class DockerCliTests
     }
 
     [Fact]
-    public async Task ComposeConnectionStringsPreservePasswordsWithSemicolons()
+    public async Task ComposeConnectionStringsPreservePasswordsWithQuotesAndSemicolons()
     {
         if (!ComposeImageFixture.Enabled)
         {
@@ -37,9 +37,9 @@ public sealed class DockerCliTests
         var root = ComposeStackSmokeTests.FindRepositoryRoot();
         var expected = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["PRODUCT_RUNTIME_PASSWORD"] = "runtime;synthetic",
-            ["PRODUCT_MIGRATION_PASSWORD"] = "migration;synthetic",
-            ["PRODUCT_BACKUP_PASSWORD"] = "backup;synthetic",
+            ["PRODUCT_RUNTIME_PASSWORD"] = "runtime;\"synthetic",
+            ["PRODUCT_MIGRATION_PASSWORD"] = "migration;\"synthetic",
+            ["PRODUCT_BACKUP_PASSWORD"] = "backup;\"synthetic",
         };
         var docker = new DockerCli(root, expected);
         var output = await docker.RunAsync(
@@ -49,16 +49,22 @@ public sealed class DockerCliTests
         using var document = JsonDocument.Parse(output);
         var services = document.RootElement.GetProperty("services");
 
-        AssertPassword(services.GetProperty("host"), "ANKETAPARSER_Database__ConnectionString", expected["PRODUCT_RUNTIME_PASSWORD"]);
-        AssertPassword(services.GetProperty("maintenance"), "ANKETAPARSER_Database__ConnectionString", expected["PRODUCT_MIGRATION_PASSWORD"]);
-        AssertPassword(services.GetProperty("maintenance"), "ANKETAPARSER_Backup__ConnectionString", expected["PRODUCT_BACKUP_PASSWORD"]);
-        AssertPassword(services.GetProperty("backup"), "ANKETAPARSER_Backup__ConnectionString", expected["PRODUCT_BACKUP_PASSWORD"]);
+        AssertPassword(services.GetProperty("host"), "ANKETAPARSER_Database__ConnectionString", "ANKETAPARSER_Database__Password", expected["PRODUCT_RUNTIME_PASSWORD"]);
+        AssertPassword(services.GetProperty("maintenance"), "ANKETAPARSER_Database__ConnectionString", "ANKETAPARSER_Database__Password", expected["PRODUCT_MIGRATION_PASSWORD"]);
+        AssertPassword(services.GetProperty("maintenance"), "ANKETAPARSER_Backup__ConnectionString", "ANKETAPARSER_Backup__Password", expected["PRODUCT_BACKUP_PASSWORD"]);
+        AssertPassword(services.GetProperty("backup"), "ANKETAPARSER_Backup__ConnectionString", "ANKETAPARSER_Backup__Password", expected["PRODUCT_BACKUP_PASSWORD"]);
     }
 
-    private static void AssertPassword(JsonElement service, string setting, string expected)
+    private static void AssertPassword(JsonElement service, string connectionStringSetting, string passwordSetting, string expected)
     {
-        var connectionString = service.GetProperty("environment").GetProperty(setting).GetString();
-        Assert.Equal(expected, new NpgsqlConnectionStringBuilder(connectionString).Password);
+        var environment = service.GetProperty("environment");
+        var connectionString = environment.GetProperty(connectionStringSetting).GetString();
+        Assert.DoesNotContain("Password=", connectionString, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(expected, environment.GetProperty(passwordSetting).GetString());
+        Assert.Equal(expected, new NpgsqlConnectionStringBuilder(connectionString)
+        {
+            Password = environment.GetProperty(passwordSetting).GetString(),
+        }.Password);
     }
 
     [Theory]

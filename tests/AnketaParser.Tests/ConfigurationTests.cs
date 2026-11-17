@@ -4,6 +4,7 @@ using AnketaParser.Core.Diagnostics;
 using AnketaParser.Infrastructure;
 using AnketaParser.Infrastructure.Configuration;
 using AnketaParser.Infrastructure.Diagnostics;
+using AnketaParser.Infrastructure.Persistence;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.Json;
@@ -11,6 +12,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Primitives;
+
+using Npgsql;
 
 namespace AnketaParser.Tests;
 
@@ -34,6 +37,30 @@ public sealed class ConfigurationTests
         Assert.Equal(20, host.ShutdownTimeoutSeconds);
         Assert.Contains(sources, source => source is { Name: "appsettings.json", Kind: "file" });
         Assert.Contains(sources, source => source.Kind == "environment");
+    }
+
+    [Fact]
+    public void SeparatePasswordsAreEscapedByTheSharedSettingsPipeline()
+    {
+        const string databasePassword = "runtime;\"synthetic";
+        const string backupPassword = "backup;\"synthetic";
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Database:ConnectionString"] = "Host=localhost;Database=synthetic;Username=runtime",
+            ["Database:Password"] = databasePassword,
+            ["Backup:ConnectionString"] = "Host=localhost;Database=synthetic;Username=backup",
+            ["Backup:Password"] = backupPassword,
+        }).Build();
+        using var configurationLifetime = configuration as IDisposable;
+        var services = new ServiceCollection();
+        services.AddAnketaParserInfrastructure(configuration, "Test", []);
+        using var provider = services.BuildServiceProvider();
+
+        var database = provider.GetRequiredService<IOptions<DatabaseSettings>>().Value;
+        var backup = provider.GetRequiredService<IOptions<BackupSettings>>().Value;
+
+        Assert.Equal(databasePassword, new NpgsqlConnectionStringBuilder(database.ConnectionString).Password);
+        Assert.Equal(backupPassword, new NpgsqlConnectionStringBuilder(backup.ConnectionString).Password);
     }
 
     [Fact]

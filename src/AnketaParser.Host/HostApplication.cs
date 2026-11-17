@@ -2,6 +2,7 @@ using AnketaParser.Core;
 using AnketaParser.Core.Diagnostics;
 using AnketaParser.Infrastructure;
 using AnketaParser.Infrastructure.Configuration;
+using AnketaParser.Infrastructure.Persistence;
 
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -107,6 +108,7 @@ public static class HostApplication
             _ = host.Services.GetRequiredService<IOptions<HostSettings>>().Value;
             _ = host.Services.GetRequiredService<IOptions<DatabaseSettings>>().Value;
             _ = host.Services.GetRequiredService<IOptions<DiagnosticsSettings>>().Value;
+            _ = host.Services.GetRequiredService<IOptions<BackupSettings>>().Value;
             return host;
         }
         catch

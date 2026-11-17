@@ -40,6 +40,7 @@
 | `Host:StartupDiagnosticsEnabled` | bool | `true` | Начальная проверка готовности |
 | `Host:ReadinessCheckIntervalSeconds` | int | `60` | 0–86400; `0` отключает монитор |
 | `Database:ConnectionString` | string | пусто | Строка Npgsql; секрет; пусто означает отсутствие настройки |
+| `Database:Password` | string | не задано | Отдельный секрет, переопределяющий пароль строки подключения через NpgsqlConnectionStringBuilder |
 | `Database:Required` | bool | `false` | Отказ начальной проверки останавливает хост при `true` |
 | `Database:ConnectTimeoutSeconds` | int | `5` | 1–120; подключение |
 | `Database:CommandTimeoutSeconds` | int | `5` | 1–600; команда проверки |

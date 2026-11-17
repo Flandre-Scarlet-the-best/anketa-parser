@@ -36,7 +36,8 @@ public sealed class BackupRecoveryTests(ComposeImageFixture images)
                 CREATE SCHEMA "unrelated$schema"; CREATE TABLE "unrelated$schema".marker(id int);
                 INSERT INTO "unrelated$schema".marker VALUES(44)
                 """);
-            await Cli("-e", $"ANKETAPARSER_Database__ConnectionString=Host=postgres;Database=test_product;Username=test_admin;Password={password}", "maintenance", "storage", "provision");
+            await Cli("-e", "ANKETAPARSER_Database__ConnectionString=Host=postgres;Database=test_product;Username=test_admin",
+                "-e", $"ANKETAPARSER_Database__Password={password}", "maintenance", "storage", "provision");
             await Cli("maintenance", "storage", "migrate");
             Assert.Equal("f", await Sql("test_product", "SELECT has_table_privilege('product_backup','public.existing_marker','SELECT')"));
             await Sql("test_product", """

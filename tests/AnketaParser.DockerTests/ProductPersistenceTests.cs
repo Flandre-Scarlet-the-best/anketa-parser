@@ -385,6 +385,37 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
             "SELECT * FROM public.existing_marker", Ct));
     }
 
+    [Fact]
+    public async Task ProvisioningRejectsExistingRuntimeRoleThatCannotLogin()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using (var admin = new NpgsqlConnection(database.ConnectionString))
+        {
+            await admin.OpenAsync(Ct);
+            await using var disableLogin = new NpgsqlCommand("ALTER ROLE product_runtime NOLOGIN", admin);
+            await disableLogin.ExecuteNonQueryAsync(Ct);
+        }
+
+        try
+        {
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => SchemaMaintenance.ProvisionAsync(
+                database.ConnectionString,
+                database.RolePassword,
+                database.RolePassword,
+                database.RolePassword,
+                Ct));
+            Assert.Equal("Служебная роль не разрешает вход; требуется ручная проверка.", exception.Message);
+        }
+        finally
+        {
+            await using var admin = new NpgsqlConnection(database.ConnectionString);
+            await admin.OpenAsync(Ct);
+            await using var enableLogin = new NpgsqlCommand("ALTER ROLE product_runtime LOGIN", admin);
+            await enableLogin.ExecuteNonQueryAsync(Ct);
+        }
+    }
+
     private static void RequireDocker()
     {
         if (!PostgresTestCluster.Enabled)

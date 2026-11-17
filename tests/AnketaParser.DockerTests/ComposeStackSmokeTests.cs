@@ -44,7 +44,8 @@ public sealed class ComposeStackSmokeTests(ComposeImageFixture images)
             // поэтому повторная сборка при запуске стека не нужна.
             await compose.RunAsync([.. composePrefix, "build", "maintenance", "host"], StartTimeout, _cancellationToken);
             await compose.RunAsync([.. composePrefix, "run", "--rm", "-e",
-                $"ANKETAPARSER_Database__ConnectionString=Host=postgres;Database=anketa_parser;Username={DatabaseUser};Password={processEnvironment["POSTGRES_PASSWORD"]}",
+                $"ANKETAPARSER_Database__ConnectionString=Host=postgres;Database=anketa_parser;Username={DatabaseUser}",
+                "-e", $"ANKETAPARSER_Database__Password={processEnvironment["POSTGRES_PASSWORD"]}",
                 "maintenance", "storage", "provision"], ShortCommandTimeout, _cancellationToken);
             await compose.RunAsync([.. composePrefix, "run", "--rm", "maintenance", "storage", "migrate"], ShortCommandTimeout, _cancellationToken);
             // Оба сервиса должны пройти проверки готовности. Образы уже собраны выше,

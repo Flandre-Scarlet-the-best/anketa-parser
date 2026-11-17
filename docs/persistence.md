@@ -90,11 +90,12 @@ POSTGRES_PASSWORD не меняет серверный пароль.
     docker compose up -d --wait postgres
     docker compose build host maintenance
 
-Передайте существующую административную строку подключения через временную
-переменную окружения ANKETAPARSER_Database__ConnectionString. Не помещайте её
-значение в команду, историю оболочки или журнал. Затем:
+Передайте существующую административную строку без пароля через временную
+переменную окружения ANKETAPARSER_Database__ConnectionString, а пароль отдельно
+через ANKETAPARSER_Database__Password. Не помещайте значения в команду, историю
+оболочки или журнал. Затем:
 
-    docker compose run --rm -e ANKETAPARSER_Database__ConnectionString maintenance storage provision
+    docker compose run --rm -e ANKETAPARSER_Database__ConnectionString -e ANKETAPARSER_Database__Password maintenance storage provision
     docker compose run --rm maintenance storage migrate
     docker compose run --rm maintenance storage schema
     docker compose up -d --wait host backup
@@ -137,6 +138,7 @@ product_backup. Host монтирует том только для чтения.
 | --- | --- |
 | Directory | Обязательна для включения; Compose: /backups |
 | ConnectionString | Отдельная строка backup-роли |
+| Password | Не задан; отдельный секрет, кодируемый в строку подключения |
 | IntervalSeconds / TimeoutSeconds | 86400 / 1800 |
 | Daily / Weekly / Monthly | 7 / 4 / 3 разных календарных корзин; совпадения объединяются |
 | MaxBytes | 10737418240 байт опубликованных архивов |
@@ -154,8 +156,11 @@ TimeoutSeconds ограничивает всю попытку backup: запро
 хеширование и асинхронное внешнее копирование. Для отдельных backup-verify и
 restore-empty этот параметр ограничивает каждый запуск утилиты, а не всё
 восстановление. Ctrl+C и SIGTERM в контейнере отменяют daemon во время работы
-и ожидания; status.json различает cancelled и timeout. Отмена перед публикацией
-сохраняет предыдущий успех, после публикации — новый. Синхронные операции
+и ожидания; status.json различает cancelled и timeout. Успешная копия фиксируется
+атомарной заменой status.json после публикации локального и настроенного внешнего
+архива. До публикации имени .dump отмена сохраняет прежний успех; после неё
+синхронная фиксация status.json завершается, а последующая отмена записывается
+как отказ уже после нового успеха. Синхронные операции
 файловых метаданных и зависший ввод-вывод ядра не имеют гарантированного срока
 отмены: сетевому носителю нужны собственные системные ограничения ожидания.
 
@@ -182,6 +187,9 @@ public исключаются по каталогу; другие схемы и 
 Независимые данные требуют отдельного административного резервирования.
 Во время обслуживания не меняйте состав объектов DDL параллельно с выгрузкой.
 
+Пароли подключения передаются в Backup:Password отдельно от Backup:ConnectionString
+и кодируются через NpgsqlConnectionStringBuilder; точки с запятой и кавычки
+сохраняются без сборки строки через конкатенацию.
 Подключения pg_dump/pg_restore получают режим TLS, CA, клиентский сертификат/ключ,
 режим согласования TLS, GSS и channel binding из строки подключения. Проверка
 отзыва сертификата средствами .NET и пароль TLS-ключа не имеют поддерживаемого

@@ -27,6 +27,7 @@ public sealed class CliApplicationTests
     [InlineData("Host", "ShutdownTimeoutSeconds")]
     [InlineData("Database", "ConnectTimeoutSeconds")]
     [InlineData("Diagnostics", "ProbeTimeoutSeconds")]
+    [InlineData("Backup", "TimeoutSeconds")]
     public async Task StorageUsesSharedTypedValidators(string section, string key)
     {
         using var root = new Support.TemporaryContentRoot($$"""
