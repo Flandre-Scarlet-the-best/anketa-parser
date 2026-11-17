@@ -39,7 +39,7 @@ jobs:
           tar -xzf zizmor.tar.gz -C bin zizmor
           tar -xzf shellcheck.tar.gz --strip-components=1 -C bin shellcheck-v0.11.0/shellcheck
           echo "$tools/bin" >> "$GITHUB_PATH"
-      - name: Проверить версии и все workflow
+      - name: Проверить версии и все файлы рабочих процессов GitHub Actions
         shell: bash
         run: |
           set -euo pipefail
@@ -49,10 +49,10 @@ jobs:
           shopt -s nullglob
           workflows=(.github/workflows/*.yml .github/workflows/*.yaml)
           if (( ${#workflows[@]} == 0 )); then
-            echo 'Не найдены GitHub Actions workflow' >&2
+            echo 'Не найдены файлы рабочих процессов GitHub Actions' >&2
             exit 1
           fi
-          printf 'Проверяется workflow: %s\n' "${workflows[@]}"
+          printf 'Проверяется файл рабочего процесса: %s\n' "${workflows[@]}"
           actionlint -no-color -verbose -shellcheck shellcheck "${workflows[@]}"
           zizmor --offline --strict-collection --no-config --persona regular --format plain --color never --render-links never "${workflows[@]}"
 

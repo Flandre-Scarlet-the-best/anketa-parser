@@ -91,20 +91,21 @@ python3 -m venv .venv
 Независимое задание `Безопасность GitHub Actions` в [CI](../.github/workflows/ci.yml)
 проверяет все `.github/workflows/*.yml` и `*.yaml` при `pull_request`, push в
 `main` и `merge_group`. Пустой список файлов считается ошибкой; список входов,
-версии и результаты каждого workflow видны в логе. Задания .NET и контрактов
-не являются зависимостями этого задания.
+версии и результаты каждого файла рабочего процесса видны в логе. Задания .NET и
+контрактов не являются зависимостями этого задания.
 
 Используются actionlint `1.7.12`, zizmor `1.32.0` и ShellCheck `0.11.0` из
 официальных GitHub Releases. Версии, URL архивов Linux x86_64 и ожидаемые SHA256
 закреплены непосредственно в CI; архивы проверяются до распаковки. Бинарные файлы
 устанавливаются в `RUNNER_TEMP`, без изменения Python/.NET окружения.
-Задание рассчитано на hosted `ubuntu-26.04` x86_64 с Bash, curl, tar и sha256sum.
+Задание рассчитано на исполнителя GitHub `ubuntu-26.04` x86_64 с Bash, curl, tar
+и sha256sum.
 ShellCheck установлен явно и подключён к actionlint через `-shellcheck`.
 Все задания закреплены на `ubuntu-26.04`. В
-[actionlint.yaml](../.github/actionlint.yaml) эта официальная hosted-метка
-добавлена явно, поскольку справочник actionlint `1.7.12` её ещё не содержит.
-Дополнение удаляется после перехода на версию, распознающую метку самостоятельно;
-остальные проверки runner labels не отключаются.
+[actionlint.yaml](../.github/actionlint.yaml) эта официальная метка исполнителя
+GitHub добавлена явно, поскольку справочник actionlint `1.7.12` её ещё не
+содержит. Дополнение удаляется после перехода на версию, распознающую метку
+самостоятельно; остальные проверки меток исполнителя не отключаются.
 
 Для локального запуска скачайте архивы своей платформы из
 [actionlint Releases](https://github.com/rhysd/actionlint/releases/tag/v1.7.12),
@@ -120,7 +121,7 @@ actionlint -version
 zizmor --version
 shellcheck --version
 $workflows = @(Get-ChildItem .github/workflows -File | Where-Object Extension -In '.yml', '.yaml' | ForEach-Object FullName)
-if ($workflows.Count -eq 0) { throw 'Не найдены GitHub Actions workflow' }
+if ($workflows.Count -eq 0) { throw 'Не найдены файлы рабочих процессов GitHub Actions' }
 $workflows
 actionlint -no-color -verbose -shellcheck shellcheck @workflows
 if ($LASTEXITCODE -ne 0) { throw 'Ошибка actionlint' }
@@ -135,14 +136,15 @@ shell-скрипты через ShellCheck. Проверка Python через p
 Actions не заменяет изучение их исходников.
 
 zizmor запускается принудительно offline без передачи токена, с отказом при
-ошибках parsing/collection. `--no-config` исключает неявную конфигурацию;
-учитываются адресные inline-исключения. Используется стандартная `regular`
-persona без снижения severity/confidence. Для расширенного диагностического
-аудита можно добавить `--persona auditor`, для проверки исключений —
-`--no-ignores`. Код `0` означает отсутствие активных замечаний, `1–3` — ошибки
-инструмента, аргументов или пустой охват, `11–14` — замечания по уровню серьёзности.
-SARIF и `--no-exit-codes` не используются, поэтому замечания блокируют задание.
-Текстовые диагностики не требуют `security-events: write`.
+ошибках `parsing` и `collection`. `--no-config` исключает неявную конфигурацию;
+учитываются адресные inline-исключения. Используется стандартный профиль
+(`persona`) zizmor `regular` без снижения уровней серьёзности и достоверности. Для
+расширенного диагностического аудита можно добавить `--persona auditor`, для
+проверки исключений — `--no-ignores`. Код `0` означает отсутствие активных
+замечаний, `1–3` — ошибки инструмента, аргументов или пустой охват, `11–14` —
+замечания по уровню серьёзности. SARIF и `--no-exit-codes` не используются,
+поэтому замечания блокируют задание. Текстовые диагностики не требуют
+`security-events: write`.
 
 Статический offline-анализ не выполняет online-аудиты provenance и ссылок Actions,
 не анализирует весь исполняемый код зависимостей и не доказывает безопасность
