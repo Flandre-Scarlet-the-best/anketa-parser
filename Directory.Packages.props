@@ -30,7 +30,7 @@
   </ItemGroup>
 
   <ItemGroup Label="Sources">
-    <PackageVersion Include="AngleSharp" Version="1.7.3" />
+    <PackageVersion Include="AngleSharp" Version="1.10.5" />
   </ItemGroup>
 
   <ItemGroup Label="Testing">
