@@ -171,6 +171,10 @@ reference for the operation. It owns publication, PR structure, Draft/Ready,
 conflicts, the narrowly verified stack exception and post-merge cleanup. Do not
 duplicate these procedures in README, another skill or a context index.
 
+For code changes, debugging, symbol impact or refactoring, consult
+[code-intelligence](.agents/skills/code-intelligence/SKILL.md) as needed; load
+only relevant references. Ordinary text and file lookup do not require it.
+
 Discover repository skills under `.agents/skills/<name>/SKILL.md`, check their
 frontmatter and applicability, and read only relevant references. There is one
 canonical copy, independent of the agent harness. Do not create compatibility
