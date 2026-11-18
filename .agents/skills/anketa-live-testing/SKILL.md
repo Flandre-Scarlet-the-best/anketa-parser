@@ -103,9 +103,10 @@ specified, executed, observed, judged and reported.
 ## Verdict contract
 
 Every mandatory scenario receives its own `PASS`, `FAIL`, `PARTIAL` or
-`NOT_RUN` with the actual command, the verified build, the true process exit
-code, separated stdout and stderr, independent postconditions and the boundary
-that was really exercised.
+`NOT_RUN`. Follow the [acceptance procedure](references/acceptance-procedure.md#6-report-per-scenario)
+for evidence appropriate to its execution state: report blockers for scenarios
+that never ran, and distinguish observations from unavailable or pending results
+for scenarios that did run. Never invent an exit code or a stream capture.
 
 Overall PASS requires `PASS` for every mandatory scenario and stated coverage of
 the materially affected paths. A single `FAIL` forbids an overall PASS; an
@@ -153,8 +154,8 @@ permanent change.
    missing real scenario or independent observation. Follow
    [helper execution](references/helper-execution.md) for observability and
    cancellation.
-5. Execute the mandatory scenarios through the real entry points, recording
-   real exits, separated streams, statuses and postconditions.
+5. Execute the mandatory scenarios through the real entry points. Record the
+   evidence actually observed and give the reason for any blocked scenario.
 6. Verify postconditions independently of the component under test, and repeat
    runs to establish idempotency, progress preservation and absence of
    duplicates or losses where the change affects them.

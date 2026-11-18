@@ -137,17 +137,31 @@ even if the artifact behaved as desired.
 
 ## 6. Report per scenario
 
-For each mandatory scenario report:
+For each mandatory scenario report its verdict, reason and actual coverage.
+Choose the remaining evidence according to what happened:
 
-- the sanitized target, effective configuration and isolated resources used;
-- the actual commands and the verified executable or image identity;
-- the true process exit code and separated stdout and stderr, quoted only as far
-  as needed and free of secrets, contacts and raw source text;
-- the machine status, relevant fields and their meaning according to the command
-  contract, not the exit code alone;
-- independent postconditions and how they were inspected;
-- the verdict, the boundary actually exercised, and what remains unproven;
-- cleanup performed and resources intentionally left in place.
+- **Not run (`NOT_RUN`):** State the blocking condition, why it prevented the
+  scenario from running, and which boundary remains untested. If useful, label
+  any planned command as planned and keep preflight results separate. There is
+  no scenario execution command, process exit code or stream capture to report.
+- **Executed or observed:** Record the actual command if you ran one, the
+  executable or image identity and whether provenance was verified, the sanitized
+  target, effective configuration and isolated resources used. Record observed
+  machine status and independent postconditions, and say how you checked them.
+  Keep captured stdout and stderr separate, quoting only what is needed and
+  excluding secrets, contacts and raw source text. Report unavailable captures
+  as unavailable, not empty.
+- **Process outcome:** For a terminated process report the observed exit code,
+  or mark it unknown if it was not captured as described in
+  [Helper execution](helper-execution.md). For a process still running at the end
+  of observation (for example, a Host), report the observation window, observed
+  state or transitions, and that no exit was observed yet. Do not infer shutdown
+  or an exit code. Use `PARTIAL` if a required outcome remains unobserved; an
+  observation-only scenario can pass while the process is still running if all
+  predeclared criteria were proved and none requires termination.
+
+Report cleanup performed and resources intentionally left in place, including
+any owned resources allocated before a scenario was blocked.
 
 Separate unit, contract, integration, real-database, external-source, container
 and hosted-CI evidence explicitly.

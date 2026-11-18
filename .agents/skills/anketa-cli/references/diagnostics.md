@@ -11,13 +11,17 @@ Launch the build output you intended to test and record what produced it. Prefer
 a DLL built for the current task: running the build through the SDK can mix build
 output into a captured stream, which corrupts a machine document.
 
-A prebuilt artifact found on the machine is acceptable only when you can state how
-it corresponds to the code under test — a build you performed from this worktree,
-a build time consistent with the revision, or a hash compared with a fresh build.
-If you cannot establish that, say the provenance is unproven instead of implying
-that the current revision ran. Then read `--help` and the relevant command group's
-help from that exact executable; the current parser, not an older example, defines
-which arguments exist and where they are accepted.
+Establish a reproducible link from the executed artifact to the source under test,
+including uncommitted changes. For example, run the output of a fresh build from
+the recorded worktree and build command, or verify that a prebuilt artifact's
+hash matches the output of that build. A file timestamp is not proof of that link.
+Without it, report provenance as unproven and treat any acceptance claim that
+depends on the tested revision as `PARTIAL`, even if the command behaved as
+expected.
+
+Read `--help` and the relevant command group's help from that exact executable;
+the current parser, not an older example, defines which arguments exist and where
+they are accepted.
 
 ## Identify configuration, process and target
 
