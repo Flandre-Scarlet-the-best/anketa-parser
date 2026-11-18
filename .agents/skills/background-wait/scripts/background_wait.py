@@ -10,10 +10,15 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
+from typing import BinaryIO, cast
+
+# Ограничение для каждого потока не мешает дочернему процессу писать дальше.
+MAX_LOG_BYTES = 16 * 1024 * 1024
 
 
 def write_json(path: Path, data: dict[str, object]) -> None:
@@ -33,11 +38,57 @@ def job_root() -> Path:
     ) / "background-wait"
 
 
+def owned_job(directory: Path) -> Path:
+    root = job_root().absolute()
+    candidate = directory.absolute()
+    if os.path.normcase(str(candidate.parent)) != os.path.normcase(str(root)):
+        raise ValueError("Каталог задания находится вне каталога Codex")
+    if str(uuid.UUID(candidate.name)) != candidate.name:
+        raise ValueError("Некорректный идентификатор задания")
+    if candidate.is_symlink() or candidate.is_junction():
+        raise ValueError("Каталог задания не должен быть ссылкой")
+    if candidate.resolve(strict=True).parent != root.resolve(strict=True):
+        raise ValueError("Каталог задания находится вне каталога Codex")
+    return candidate
+
+
+def copy_bounded(
+    source: BinaryIO, destination: BinaryIO, status: dict[str, object]
+) -> None:
+    written = 0
+    while True:
+        try:
+            chunk = source.read(65536)
+        except OSError as error:
+            status["error"] = str(error)
+            status["truncated"] = True
+            return
+        if not chunk:
+            return
+        remaining = max(0, MAX_LOG_BYTES - written)
+        if len(chunk) > remaining:
+            status["truncated"] = True
+        if remaining and "error" not in status:
+            try:
+                part = chunk[:remaining]
+                count = destination.write(part)
+                written += count
+                if count != len(part):
+                    status["error"] = "Неполная запись журнала"
+                    status["truncated"] = True
+            except OSError as error:
+                status["error"] = str(error)
+                status["truncated"] = True
+
+
 @contextlib.contextmanager
 def notification_lock(directory: Path) -> Iterator[None]:
     import msvcrt
 
-    with (directory / "notification.lock").open("a+b") as lock:
+    path = directory / "notification.lock"
+    if path.is_symlink() or path.is_junction():
+        raise ValueError("Файл блокировки не должен быть ссылкой")
+    with path.open("a+b") as lock:
         lock.seek(0)
         msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
         try:
@@ -52,6 +103,8 @@ def start(args: argparse.Namespace) -> int:
         raise ValueError("Фоновый запуск поддерживается только в Windows")
     thread = str(uuid.UUID(args.thread or os.environ.get("CODEX_THREAD_ID", "")))
     cwd = Path(args.cwd)
+    if str(cwd).startswith("\\\\") and not getattr(args, "allow_unc", False):
+        raise ValueError("Для UNC и пространств имён Windows требуется --allow-unc")
     if not cwd.is_absolute() or not cwd.is_dir():
         raise ValueError("Рабочий каталог должен быть существующим абсолютным путём")
     command = args.command
@@ -64,6 +117,7 @@ def start(args: argparse.Namespace) -> int:
         raise ValueError(
             "Укажите доступный исполняемый файл, а не cmd/bat или псевдоним"
         )
+    command[0] = str(Path(executable).absolute())
     codex = shutil.which("codex.cmd") or shutil.which("codex.exe")
     if not codex:
         raise ValueError("Не найден исполняемый файл Codex CLI")
@@ -101,17 +155,21 @@ def start(args: argparse.Namespace) -> int:
 
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
-        for name in ("started.json", "result.json"):
+        for name in ("result.json", "started.json"):
             path = directory / name
             if path.exists():
-                state = "completed" if name == "result.json" else "running"
+                state = (
+                    read_json(path).get("state", "unknown")
+                    if name == "result.json"
+                    else "running"
+                )
                 print(
                     json.dumps(
                         {"state": state, "job_id": job_id, "job_dir": str(directory)},
                         ensure_ascii=False,
                     )
                 )
-                return 0
+                return 0 if state in {"running", "completed"} else 1
         time.sleep(0.05)
     print(
         json.dumps(
@@ -129,33 +187,64 @@ def worker(directory: Path) -> int:
     request = read_json(directory / "request.json")
     thread = str(uuid.UUID(str(request["thread"])))
     result: dict[str, object]
-    started = time.time()
+    started = time.monotonic()
     try:
         with (
-            (directory / "stdout.log").open("wb") as stdout,
-            (directory / "stderr.log").open("wb") as stderr,
+            (directory / "stdout.log").open("wb", buffering=0) as stdout,
+            (directory / "stderr.log").open("wb", buffering=0) as stderr,
         ):
             process = subprocess.Popen(  # noqa: S603 - команда явно передана вызывающей стороной
                 request["command"],
                 cwd=request["cwd"],
                 stdin=subprocess.DEVNULL,
-                stdout=stdout,
-                stderr=stderr,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 close_fds=True,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
-            write_json(directory / "started.json", {"pid": process.pid})
+            child_stdout = cast(BinaryIO, process.stdout)
+            child_stderr = cast(BinaryIO, process.stderr)
+            out_status: dict[str, object] = {"truncated": False}
+            err_status: dict[str, object] = {"truncated": False}
+            readers = [
+                threading.Thread(
+                    target=copy_bounded, args=(child_stdout, stdout, out_status)
+                ),
+                threading.Thread(
+                    target=copy_bounded, args=(child_stderr, stderr, err_status)
+                ),
+            ]
+            for reader in readers:
+                reader.start()
+            started_error = None
+            try:
+                write_json(directory / "started.json", {"pid": process.pid})
+            except OSError as error:
+                started_error = str(error)
             exit_code = process.wait()
+            for reader in readers:
+                reader.join()
+            child_stdout.close()
+            child_stderr.close()
         result = {
             "state": "completed",
             "exit_code": exit_code,
-            "duration_seconds": time.time() - started,
+            "duration_seconds": time.monotonic() - started,
+            "stdout_truncated": out_status["truncated"],
+            "stderr_truncated": err_status["truncated"],
         }
+        if started_error is not None:
+            result["started_error"] = started_error
+        if "error" in out_status or "error" in err_status:
+            result["log_errors"] = {
+                "stdout": out_status.get("error"),
+                "stderr": err_status.get("error"),
+            }
     except (OSError, ValueError) as error:
         result = {
             "state": "start_failed",
             "error": str(error),
-            "duration_seconds": time.time() - started,
+            "duration_seconds": time.monotonic() - started,
         }
     write_json(directory / "result.json", result)
     with notification_lock(directory):
@@ -196,7 +285,11 @@ def worker(directory: Path) -> int:
                     "stderr": delivery.stderr,
                 },
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except subprocess.TimeoutExpired as error:
+            write_json(
+                directory / "delivery.json", {"state": "uncertain", "error": str(error)}
+            )
+        except OSError as error:
             write_json(
                 directory / "delivery.json", {"state": "failed", "error": str(error)}
             )
@@ -204,6 +297,7 @@ def worker(directory: Path) -> int:
 
 
 def cancel(directory: Path) -> int:
+    directory = owned_job(directory)
     if not (directory / "request.json").is_file():
         raise ValueError("Указанный каталог не содержит задания")
     with notification_lock(directory):
@@ -215,12 +309,55 @@ def cancel(directory: Path) -> int:
                 )
             )
             return 1
-        write_json(directory / "cancel.json", {"requested": True})
+        marker = directory / "cancel.json"
+        if not marker.exists():
+            with marker.open("x", encoding="utf-8") as file:
+                json.dump({"requested": True}, file)
     print(
         json.dumps(
             {"state": "suppression_requested", "job_dir": str(directory)},
             ensure_ascii=False,
         )
+    )
+    return 0
+
+
+def cleanup(directory: Path) -> int:
+    directory = owned_job(directory)
+    allowed = {
+        "request.json",
+        "started.json",
+        "result.json",
+        "delivery.json",
+        "cancel.json",
+        "startup-error.json",
+        "notification.lock",
+        "stdout.log",
+        "stderr.log",
+    }
+    with notification_lock(directory):
+        if (
+            not (directory / "request.json").is_file()
+            or not (directory / "result.json").is_file()
+            or not (directory / "delivery.json").is_file()
+        ):
+            raise ValueError(
+                "Удалять можно только завершённое задание с результатом доставки"
+            )
+        entries = list(directory.iterdir())
+        if any(
+            entry.name not in allowed
+            or entry.is_symlink()
+            or entry.is_junction()
+            or not entry.is_file()
+            for entry in entries
+        ):
+            raise ValueError("Каталог содержит неизвестные файлы или ссылки")
+    for entry in entries:
+        entry.unlink()
+    directory.rmdir()
+    print(
+        json.dumps({"state": "removed", "job_dir": str(directory)}, ensure_ascii=False)
     )
     return 0
 
@@ -231,8 +368,9 @@ def main() -> int:
     start_parser = subparsers.add_parser("start")
     start_parser.add_argument("--cwd", required=True)
     start_parser.add_argument("--thread")
+    start_parser.add_argument("--allow-unc", action="store_true")
     start_parser.add_argument("command", nargs=argparse.REMAINDER)
-    for name in ("worker", "cancel"):
+    for name in ("worker", "cancel", "cleanup"):
         subparsers.add_parser(name).add_argument("directory", type=Path)
     args = parser.parse_args()
     try:
@@ -240,6 +378,8 @@ def main() -> int:
             return start(args)
         if args.action == "worker":
             return worker(args.directory)
+        if args.action == "cleanup":
+            return cleanup(args.directory)
         return cancel(args.directory)
     except (OSError, ValueError) as error:
         print(f"Ошибка: {error}", file=sys.stderr)
