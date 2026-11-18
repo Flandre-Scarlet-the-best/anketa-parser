@@ -83,7 +83,7 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
         Assert.Equal(revision, await store.ImportAsync(input, Ct));
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.ReviewAsync(profile, "оператор", "обход архива", Ct));
         await Assert.ThrowsAsync<InvalidOperationException>(() => store.RejectAsync(profile, "оператор", "обход архива", Ct));
-        await Assert.ThrowsAsync<DbUpdateException>(() => store.PublishAsync(profile, Ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.PublishAsync(profile, Ct));
         db.ChangeTracker.Clear();
         var history = await db.Set<ModerationDecision>().OrderBy(x => x.CreatedAt).ToArrayAsync(Ct);
         Assert.Equal(["review", "reject", "review", "archive"], history.Select(x => x.Action));
@@ -238,10 +238,9 @@ public sealed class ProductPersistenceTests(PostgresTestCluster cluster) : IClas
         await store.ArchiveAsync(next, "администратор", "подтверждённая подделка", Ct);
         Assert.Equal(profile, (await store.LatestAsync(anon, Ct))!.Id);
         Assert.Equal(nextRevision, await Import(store, "2"));
-        await Assert.ThrowsAsync<DbUpdateException>(() => store.PublishAsync(next, Ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.PublishAsync(next, Ct));
         db.ChangeTracker.Clear();
-        var reprocessed = await store.AnalyzeAsync(Analysis(nextRevision), Ct);
-        await Assert.ThrowsAsync<DbUpdateException>(() => store.PublishAsync(reprocessed, Ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.AnalyzeAsync(Analysis(nextRevision), Ct));
         db.ChangeTracker.Clear();
         Assert.Equal(2, await db.Set<ModerationDecision>().CountAsync(Ct));
         Assert.Equal(1, await db.Set<Anon>().CountAsync(Ct));

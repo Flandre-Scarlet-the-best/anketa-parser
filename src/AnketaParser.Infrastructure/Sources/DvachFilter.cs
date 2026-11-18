@@ -13,6 +13,9 @@ internal static partial class DvachFilter
 {
     internal const string Candidate = "candidate";
     internal const string Excluded = "moderation_excluded";
+    internal const string OpeningPost = "opening_post";
+    internal const string NoOwnContact = "no_own_contact";
+    internal const string OtherReply = "other_reply";
     internal const string ProcessorVersion = "profile-analysis-v1";
     internal const int MaxAttempts = 5;
 
@@ -33,11 +36,11 @@ internal static partial class DvachFilter
         var reply = post.Number == thread.Number ? "op"
             : body.Replies.Count == 0 ? "none"
             : body.Replies.All(r => r.Board == thread.Board && r.Thread == thread.Number && r.Post == thread.Number)
-                ? "op_reply" : "other_reply";
+                ? "op_reply" : OtherReply;
         var contacts = reply == "op" ? [] : Extract(body.Lines);
         var ambiguous = contacts.GroupBy(c => c.Platform, StringComparer.Ordinal)
             .Any(group => group.Select(c => c.NormalizedValue).Distinct(StringComparer.Ordinal).Skip(1).Any());
-        var reason = reply == "op" ? "opening_post" : contacts.Count == 0 ? "no_own_contact" : Candidate;
+        var reason = reply == "op" ? OpeningPost : contacts.Count == 0 ? NoOwnContact : Candidate;
         var id = DvachSnapshot.PostId(post.Number);
         var metadata = JsonSerializer.Serialize(new
         {
@@ -270,7 +273,7 @@ internal static partial class DvachFilter
             "email" when at > 0 => value[..(at + 1)] + value[(at + 1)..].ToLowerInvariant(),
             _ => value,
         };
-        var provenance = string.Create(CultureInfo.InvariantCulture, $"dvach:body:{line}:{offset}:{origin}");
+        var provenance = DvachProvenance.Create(line, offset, origin);
         return new DetectedContact(platform, raw, normalized, confidence, provenance);
     }
 

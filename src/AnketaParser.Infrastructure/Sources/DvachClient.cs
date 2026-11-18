@@ -52,7 +52,7 @@ internal sealed class DvachClient(HttpClient client, TimeProvider clock)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, thread.JsonUrl);
         request.Headers.Accept.ParseAdd("application/json");
-        request.Headers.UserAgent.ParseAdd("anketa-parser (+https://github.com/Flandre-Scarlet-the-best/anketa-parser)");
+        request.Headers.UserAgent.ParseAdd(AnketaParser.Core.ApplicationInfo.DefaultProductName);
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
         var status = (int)response.StatusCode;
         var retry = response.Headers.RetryAfter;

@@ -21,6 +21,7 @@ public sealed class CliApplicationTests
         var result = await RunAsync(["source", command, argument], root.Path);
         Assert.Equal(code, result.ExitCode);
         using var document = JsonDocument.Parse(result.Stdout);
+        Assert.Equal(1, document.RootElement.GetProperty("schemaVersion").GetInt32());
         Assert.Equal(code, document.RootElement.GetProperty("exitCode").GetInt32());
         Assert.Equal(status, document.RootElement.GetProperty("status").GetString());
         Assert.DoesNotContain(argument, result.Stderr, StringComparison.Ordinal);

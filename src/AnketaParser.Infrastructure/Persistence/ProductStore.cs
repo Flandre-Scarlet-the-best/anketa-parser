@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 
 using AnketaParser.Core.Persistence;
+using AnketaParser.Infrastructure.Sources;
 
 using Microsoft.EntityFrameworkCore;
 
@@ -13,9 +14,11 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
 {
     private static DateTimeOffset Now => DateTimeOffset.UtcNow;
 
-    // Сколько кандидатов рассматривается за один захват: пост, закрытый другой
-    // транзакцией, пропускается через SKIP LOCKED и не лишает захвата остальных.
-    private const int ClaimCandidates = 8;
+    // Псевдонимы post и revision общие для постановки и обоих этапов захвата.
+    private const string EligibleRevisionSql = """
+        NOT post."Excluded" AND (post."IngestedRevisionId" IS NULL OR
+        (post."IngestedRevisionId"=revision."Id" AND revision."IngestionReason"={0}))
+        """;
 
     private async Task LockAsync(string key, CancellationToken ct) =>
         await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({key}, 0))", ct).ConfigureAwait(false);
@@ -124,8 +127,8 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
 
     private async Task RequireCurrentIngestedRevisionAsync(Guid postId, Guid revisionId, CancellationToken ct)
     {
-        if (await db.Set<OriginalPost>().AnyAsync(p => p.Id == postId && p.IngestedRevisionId != null &&
-            (p.Excluded || p.IngestedRevisionId != revisionId), ct).ConfigureAwait(false))
+        if (await db.Set<OriginalPost>().AnyAsync(p => p.Id == postId &&
+            (p.Excluded || (p.IngestedRevisionId != null && p.IngestedRevisionId != revisionId)), ct).ConfigureAwait(false))
             throw new InvalidOperationException("Ревизия исходного поста устарела или исключена.");
     }
 
@@ -160,7 +163,7 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         ArgumentException.ThrowIfNullOrWhiteSpace(provenance);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(technicalId);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        // Общая блокировка нужна для атомарной передачи username между аккаунтами.
+        // Общая блокировка нужна для атомарной передачи имени между аккаунтами.
         await LockAsync("telegram-identities", cancellationToken).ConfigureAwait(false);
         var contact = await db.Set<Contact>().SingleAsync(x => x.Id == contactId, cancellationToken).ConfigureAwait(false);
         if (contact.Platform != "telegram") throw new InvalidOperationException("Подтверждение Telegram недопустимо для другой платформы.");
@@ -168,7 +171,7 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         if (account is null) { account = new TelegramAccount { TechnicalId = technicalId }; db.Add(account); }
         username = username?.TrimStart('@').ToLowerInvariant();
         // Пустое значение означает «имя не передано»: отсутствие сведений не доказывает смену имени,
-        // поэтому история username не меняется, а новое доказательство сохраняется отдельной проверкой.
+        // поэтому история имён не меняется, а новое доказательство сохраняется отдельной проверкой.
         var requested = string.IsNullOrWhiteSpace(username) ? null : username;
         var open = requested is null
             ? await db.Set<TelegramUsername>().Where(x => x.ValidTo == null && x.AccountId == account.Id).ToListAsync(cancellationToken).ConfigureAwait(false)
@@ -373,17 +376,17 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
             WHERE revision."Id"={revisionId}
             FOR UPDATE OF post
             """, cancellationToken).ConfigureAwait(false);
-        var ids = await db.Database.SqlQuery<Guid>($"""
+        var ids = await db.Database.SqlQueryRaw<Guid>("""
             INSERT INTO product."ProcessingJob" ("Id","RevisionId","ProcessorVersion","MaxAttempts","Attempts","State","AvailableAt")
-            SELECT {Guid.NewGuid()},revision."Id",{processorVersion},{maxAttempts},0,'pending',{Now}
+            SELECT {1},revision."Id",{2},{3},0,'pending',{4}
             FROM product."PostRevision" AS revision
             JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
-            WHERE revision."Id"={revisionId} AND NOT post."Excluded"
-            AND (post."IngestedRevisionId" IS NULL OR
-                (post."IngestedRevisionId"=revision."Id" AND revision."IngestionReason"='candidate'))
+            WHERE revision."Id"={5} AND
+            """ + " " + EligibleRevisionSql + " " + """
+
             ON CONFLICT ("RevisionId","ProcessorVersion") DO UPDATE SET "ProcessorVersion"=EXCLUDED."ProcessorVersion"
             RETURNING "Id" AS "Value"
-            """).ToListAsync(cancellationToken).ConfigureAwait(false);
+            """, DvachFilter.Candidate, Guid.NewGuid(), processorVersion, maxAttempts, Now, revisionId).ToListAsync(cancellationToken).ConfigureAwait(false);
         if (transaction is not null)
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return ids.Count == 1 ? ids[0] : throw new InvalidOperationException("Ревизия недоступна для постановки в очередь.");
@@ -410,18 +413,18 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
             UPDATE product."JobAttempt" SET "FinishedAt"={expirationCutoff},"FailureCategory"='lease_expired'
             WHERE "FinishedAt" IS NULL AND "JobId" IN (SELECT "Id" FROM released)
             """, cancellationToken).ConfigureAwait(false);
-        var jobs = await db.Database.SqlQuery<Guid>($"""
+        var jobs = await db.Database.SqlQueryRaw<Guid>("""
             SELECT job."Id" AS "Value"
             FROM product."ProcessingJob" AS job
             JOIN product."PostRevision" AS revision ON revision."Id"=job."RevisionId"
             JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
             WHERE job."State"='pending'
-            AND job."Attempts"<job."MaxAttempts" AND job."AvailableAt"<={Now}
-            AND NOT post."Excluded"
-            AND (post."IngestedRevisionId" IS NULL OR
-                (post."IngestedRevisionId"=revision."Id" AND revision."IngestionReason"='candidate'))
-            ORDER BY job."AvailableAt", job."Id" LIMIT {ClaimCandidates}
-            """).ToListAsync(cancellationToken).ConfigureAwait(false);
+            AND job."Attempts"<job."MaxAttempts" AND job."AvailableAt"<={1}
+            AND
+            """ + " " + EligibleRevisionSql + " " + """
+
+            ORDER BY job."AvailableAt", job."Id"
+            """, DvachFilter.Candidate, Now).ToListAsync(cancellationToken).ConfigureAwait(false);
         // Блокировка берётся по одному кандидату и в порядке «пост, затем задание»:
         // остальные готовые задания остаются доступными другим захватам.
         ProcessingJob? job = null;
@@ -432,24 +435,24 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
                 JOIN product."PostRevision" AS revision ON revision."Id"=job."RevisionId"
                 JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
                 WHERE job."Id"={candidate}
-                FOR UPDATE OF post
+                FOR UPDATE OF post SKIP LOCKED
                 """).ToListAsync(cancellationToken).ConfigureAwait(false);
             if (posts.Count == 0)
                 continue;
             // Задание перечитывается под собственной блокировкой: аренда выдаётся только
             // заданию, которое всё ещё ожидает и не исчерпало попытки, а пост и ревизия
             // проверяются заново и видят зафиксированные изменения.
-            var locked = await db.Set<ProcessingJob>().FromSqlInterpolated($"""
+            var locked = await db.Set<ProcessingJob>().FromSqlRaw("""
                 SELECT job.* FROM product."ProcessingJob" AS job
                 JOIN product."PostRevision" AS revision ON revision."Id"=job."RevisionId"
                 JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
-                WHERE job."Id"={candidate} AND job."State"='pending'
-                AND job."Attempts"<job."MaxAttempts" AND job."AvailableAt"<={Now}
-                AND NOT post."Excluded"
-                AND (post."IngestedRevisionId" IS NULL OR
-                    (post."IngestedRevisionId"=revision."Id" AND revision."IngestionReason"='candidate'))
-                FOR UPDATE OF job
-                """).ToListAsync(cancellationToken).ConfigureAwait(false);
+                WHERE job."Id"={1} AND job."State"='pending'
+                AND job."Attempts"<job."MaxAttempts" AND job."AvailableAt"<={2}
+                AND
+                """ + " " + EligibleRevisionSql + " " + """
+
+                FOR UPDATE OF job SKIP LOCKED
+                """, DvachFilter.Candidate, candidate, Now).ToListAsync(cancellationToken).ConfigureAwait(false);
             if (locked.Count == 0)
                 continue;
             job = locked[0];

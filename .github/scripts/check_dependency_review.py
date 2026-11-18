@@ -282,7 +282,7 @@ def reported(text: str) -> list[Change]:
 
 
 # Граф может перечислять ссылки Actions на SHA, но это не доказывает анализ
-# уязвимостей закреплённого кода: GitHub поддерживает alerts для семантических
+# уязвимостей закреплённого кода: GitHub поддерживает уведомления для семантических
 # версий Actions. Кроме того, снимок PR может не содержать часть новых ссылок.
 # Эти изменения перечисляются отдельно даже при наличии записи в графе.
 #
@@ -442,33 +442,22 @@ def exact_version(value: str) -> bool:
 
 def imprecise(
     reported_changes: list[Change],
-    expected: list[Change],
     base_locks: dict[str, str | None],
     head_locks: dict[str, str | None],
-    base_direct: set[tuple[str, str, str]] | None = None,
-    head_direct: set[tuple[str, str, str]] | None = None,
+    base_direct: set[tuple[str, str, str]],
+    head_direct: set[tuple[str, str, str]],
 ) -> list[str]:
     """Отчёт с диапазоном версии не доказывает анализ разрешённой версии."""
     # Прямая ссылка с точной версией закрывает пробел и без смены версии: переход
     # Transitive → Direct меняет только тип записи. Транзитивная запись не годится.
-    lock_changes: set[tuple[str, str, str]] = set()
-    if base_direct is None and head_direct is None:
-        # Вызов без прямых записей опирается на изменения lock-файлов.
-        lock_changes = {
-            (change.kind, change.name.casefold(), change.manifest)
-            for change in expected
-            if change.ecosystem.lower() == "nuget"
-            and LOCKFILE.search(change.manifest)
-            and exact_version(change.version)
-        }
-    lock_changes |= {
+    lock_changes = {
         ("removed", package, manifest)
-        for package, version, manifest in base_direct or set()
+        for package, version, manifest in base_direct
         if exact_version(version)
     }
     lock_changes |= {
         ("added", package, manifest)
-        for package, version, manifest in head_direct or set()
+        for package, version, manifest in head_direct
         if exact_version(version)
     }
     gaps: list[str] = []
@@ -602,7 +591,6 @@ def main() -> int:
             notes.append(nuget_audit_proof(root))
         gaps = imprecise(
             reported_changes,
-            expected,
             project_locks(root, base_sha),
             head_locks,
             direct_dependencies(root, base_sha),

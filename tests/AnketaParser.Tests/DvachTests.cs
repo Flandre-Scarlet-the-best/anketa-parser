@@ -25,52 +25,53 @@ public sealed class DvachTests
     {
         var bytes = await File.ReadAllBytesAsync(Fixture, TestContext.Current.CancellationToken);
         var snapshot = DvachSnapshot.Parse(bytes, Thread);
-        (string Reply, string Contacts)[] expected =
+        (string Reply, string Contacts, bool Ambiguous)[] expected =
         [
-            ("op", ""),
-            ("none", ""),
-            ("none", "telegram:fixture_test_25_zq"),
-            ("none", "discord:fixture_test_26_zq"),
-            ("op_reply", "telegram:fixture_test_35_zq"),
-            ("none", "telegram:fixture_test_43_zq"),
-            ("none", "email:Fixture.Test.50@example.invalid"),
-            ("op_reply", "telegram:fixture_test_57_zq"),
-            ("op_reply", "telegram:fixture_test_77_zq"),
-            ("none", "telegram:fixture_test_79_zq"),
-            ("none", "telegram:fixture_test_101_zq"),
-            ("none", "telegram:fixture_test_117_zq"),
-            ("none", "discord:fixture_test_146_zq"),
-            ("none", ""),
-            ("none", "discord:fixture_236_zq"),
-            ("other_reply", ""),
-            ("none", "email:Mailbox326@example.invalid"),
-            ("none", ""),
-            ("other_reply", ""),
-            ("op_reply", "telegram:fixture_test_395_zq"),
-            ("op_reply", "telegram:fixture_test_411_zq"),
-            ("op_reply", "discord:fixture_427_zq"),
-            ("none", "email:fixture.test.445@example.invalid"),
-            ("none", "telegram:fixture_452_one_zq,telegram:fixture_452_two_zq,telegram:fixture_452_three_zq"),
-            ("op_reply", "telegram:fixture_test_504_zq"),
-            ("other_reply", "telegram:fixture_521_one_zq,telegram:fixture_521_two_zq,telegram:fixture_521_three_zq,telegram:fixture_521_four_zq"),
-            ("none", "telegram:fixture_573_zq"),
-            ("none", "telegram:fixture_test_622_zq,discord:fixture_discord_622_zq"),
-            ("none", "telegram:fixture_test_624_zq"),
-            ("none", "telegram:fixture_test_639_zq"),
-            ("other_reply", ""),
+            ("op", "", false),
+            ("none", "", false),
+            ("none", "telegram:fixture_test_25_zq", false),
+            ("none", "discord:fixture_test_26_zq", false),
+            ("op_reply", "telegram:fixture_test_35_zq", false),
+            ("none", "telegram:fixture_test_43_zq", false),
+            ("none", "email:Fixture.Test.50@example.invalid", false),
+            ("op_reply", "telegram:fixture_test_57_zq", false),
+            ("op_reply", "telegram:fixture_test_77_zq", false),
+            ("none", "telegram:fixture_test_79_zq", false),
+            ("none", "telegram:fixture_test_101_zq", false),
+            ("none", "telegram:fixture_test_117_zq", false),
+            ("none", "discord:fixture_test_146_zq", false),
+            ("none", "", false),
+            ("none", "discord:fixture_236_zq", false),
+            ("other_reply", "", false),
+            ("none", "email:Mailbox326@example.invalid", false),
+            ("none", "", false),
+            ("other_reply", "", false),
+            ("op_reply", "telegram:fixture_test_395_zq", false),
+            ("op_reply", "telegram:fixture_test_411_zq", false),
+            ("op_reply", "discord:fixture_427_zq", false),
+            ("none", "email:fixture.test.445@example.invalid", false),
+            ("none", "telegram:fixture_452_one_zq,telegram:fixture_452_two_zq,telegram:fixture_452_three_zq", true),
+            ("op_reply", "telegram:fixture_test_504_zq", false),
+            ("other_reply", "telegram:fixture_521_one_zq,telegram:fixture_521_two_zq,telegram:fixture_521_three_zq,telegram:fixture_521_four_zq", true),
+            ("none", "telegram:fixture_573_zq", false),
+            ("none", "telegram:fixture_test_622_zq,discord:fixture_discord_622_zq", false),
+            ("none", "telegram:fixture_test_624_zq", false),
+            ("none", "telegram:fixture_test_639_zq", false),
+            ("other_reply", "", false),
         ];
+
 
         Assert.Equal(expected.Length, snapshot.Posts.Count);
         for (var i = 0; i < expected.Length; i++)
         {
             var sourcePost = snapshot.Posts[i];
             var prepared = DvachFilter.Prepare(Thread, sourcePost, Thread.SourceKey);
-            var (reply, contacts) = expected[i];
+            var (reply, contacts, ambiguous) = expected[i];
             Assert.Equal(reply, prepared.Reply);
             var reason = reply == "op" ? "opening_post" : contacts.Length == 0 ? "no_own_contact" : "candidate";
             Assert.Equal(reason, prepared.Reason);
             Assert.Equal(contacts, string.Join(',', prepared.Contacts.Select(c => $"{c.Platform}:{c.NormalizedValue}")));
-            Assert.Equal(i is 23 or 25, prepared.Ambiguous);
+            Assert.Equal(ambiguous, prepared.Ambiguous);
             Assert.Equal(sourcePost.Html, prepared.Post.Content);
             // Идентификатор и адрес сверяются с номером исходного сообщения фикстуры:
             // ожидание не выводится из проверяемого результата фильтра.
@@ -322,6 +323,7 @@ public sealed class DvachTests
         using var client = Client((request, _) =>
         {
             Assert.Equal("https://2ch.org/soc/res/100000.json", request.RequestUri!.AbsoluteUri);
+            Assert.Equal(AnketaParser.Core.ApplicationInfo.DefaultProductName, request.Headers.UserAgent.ToString());
             var response = new HttpResponseMessage((HttpStatusCode)status);
             response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(600));
             return Task.FromResult(response);

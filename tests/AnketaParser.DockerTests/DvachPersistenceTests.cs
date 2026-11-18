@@ -22,6 +22,65 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     [Fact]
+    public async Task ExcludedDirectPostCannotBeAnalyzedOrPublished()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var store = new ProductStore(db);
+        var revision = await store.ImportAsync(new PostInput("synthetic", "1", "https://example.invalid/1", "текст", null), Ct);
+        var profile = await store.AnalyzeAsync(Analysis(revision), Ct);
+        await store.PublishAsync(profile, Ct);
+        await store.ArchiveAsync(profile, "оператор", "исключено", Ct);
+        Assert.Null((await db.Set<OriginalPost>().AsNoTracking().SingleAsync(Ct)).IngestedRevisionId);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.AnalyzeAsync(Analysis(revision), Ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.PublishAsync(profile, Ct));
+        Assert.Equal(1, await db.Set<Analysis>().CountAsync(Ct));
+        Assert.Equal(ProfileState.Archived, (await db.Set<Profile>().AsNoTracking().SingleAsync(Ct)).State);
+    }
+
+    [Fact]
+    public async Task ClaimSkipsLockedPostsAndJobsBeyondFirstEight()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var store = new ProductStore(db);
+        for (var i = 0; i < 10; i++)
+        {
+            var id = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var revision = await store.ImportAsync(new PostInput("synthetic", id, "https://example.invalid/" + id, id, null), Ct);
+            await store.EnqueueAsync(revision, "synthetic", 3, Ct);
+        }
+        var jobs = await db.Set<ProcessingJob>().AsNoTracking().OrderBy(x => x.AvailableAt).ThenBy(x => x.Id).ToArrayAsync(Ct);
+        await using var blocker = database.Open();
+        await using var transaction = await blocker.Database.BeginTransactionAsync(Ct);
+        for (var i = 0; i < 8; i++)
+        {
+            var revision = jobs[i].RevisionId;
+            await blocker.Database.ExecuteSqlInterpolatedAsync($"""
+                SELECT 1 FROM product."OriginalPost" AS post
+                JOIN product."PostRevision" AS revision ON revision."PostId"=post."Id"
+                WHERE revision."Id"={revision} FOR UPDATE OF post
+                """, Ct);
+        }
+        var lockedJob = jobs[8].Id;
+        await blocker.Database.ExecuteSqlInterpolatedAsync($"""
+            SELECT 1 FROM product."ProcessingJob" WHERE "Id"={lockedJob} FOR UPDATE
+            """, Ct);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        var lease = Assert.IsType<JobLease>(await store.ClaimAsync(TimeSpan.FromMinutes(1), timeout.Token));
+        Assert.Equal(jobs[9].Id, lease.JobId);
+        Assert.Equal(1, lease.Attempt);
+        Assert.Null(await store.ClaimAsync(TimeSpan.FromMinutes(1), timeout.Token));
+        await transaction.RollbackAsync(Ct);
+        var next = Assert.IsType<JobLease>(await store.ClaimAsync(TimeSpan.FromMinutes(1), Ct));
+        Assert.NotEqual(lease.JobId, next.JobId);
+        Assert.Equal(1, next.Attempt);
+    }
+
+    [Fact]
     public async Task RevisingArchivingAndRevisitingPreservesHistoryAndSelectsCurrentJobs()
     {
         RequireDocker();
@@ -226,7 +285,7 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
     }
 
     [Fact]
-    public async Task ReobservingLegacyDecisionsRefreshesContactsWithoutResettingJobsOrModeration()
+    public async Task ReobservingDecisionsRefreshesContactsWithoutResettingJobsOrModeration()
     {
         RequireDocker();
         await using var database = await cluster.CreateDatabaseAsync(Ct);
@@ -245,7 +304,7 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
             var contacts = oldCandidate ? prepared.Contacts.Take(1).ToArray() : [];
             await scanStore.ApplyAsync(state, prepared with
             {
-                Reason = oldCandidate ? "candidate" : number == Thread + 1 ? "reply_to_other_post" : "no_own_contact",
+                Reason = oldCandidate ? "candidate" : number == Thread + 1 ? "synthetic_previous_decision" : "no_own_contact",
                 Contacts = contacts,
                 Ambiguous = false,
             }, Ct);
@@ -253,6 +312,10 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
 
         await Seed(Thread + 1, first, false);
         await Seed(Thread + 2, partial, true);
+        var previousObservation = await db.Set<ContactObservation>().SingleAsync(Ct);
+        previousObservation.Provenance = DvachProvenance.Coordinate(previousObservation.Provenance) + ":old_rule";
+        await db.SaveChangesAsync(Ct);
+        db.Entry(previousObservation).State = EntityState.Detached;
         var product = new ProductStore(db);
         var completed = await product.ClaimAsync(TimeSpan.FromMinutes(10), Ct);
         Assert.Equal(await RevisionAsync(db, partial), completed!.RevisionId);
@@ -284,6 +347,8 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
         Assert.Null((await scanner.PostAsync(false, Thread + 4, Ct)).JobState);
         Assert.Equal(5, await db.Set<PostRevision>().CountAsync(Ct));
         Assert.Equal(5, await db.Set<ContactObservation>().CountAsync(Ct));
+        Assert.DoesNotContain(await db.Set<ContactObservation>().Select(x => x.Provenance).ToArrayAsync(Ct),
+            provenance => provenance.EndsWith(":old_rule", StringComparison.Ordinal));
         Assert.Equal(3, await db.Set<ProcessingJob>().CountAsync(Ct));
         Assert.Equal(2, await db.Set<JobAttempt>().CountAsync(Ct));
 

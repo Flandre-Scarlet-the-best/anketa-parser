@@ -52,17 +52,17 @@ internal sealed class DvachScanStore(ProductDbContext db)
         revision.RetrievalMetadata = input.Post.RetrievalMetadata;
         var existing = await (from observation in db.Set<ContactObservation>()
                               join contact in db.Set<Contact>() on observation.ContactId equals contact.Id
-                              where observation.RevisionId == revision.Id && observation.Provenance.StartsWith("dvach:body:")
+                              where observation.RevisionId == revision.Id && observation.Provenance.StartsWith(DvachProvenance.Prefix)
                               select new { observation, contact.Platform, contact.NormalizedValue }).ToListAsync(ct).ConfigureAwait(false);
         // Исторические наблюдения сохраняются: они могут подтверждать существующие связи.
         // Совпадение координат не зависит от названия старого правила обнаружения.
         foreach (var contact in input.Contacts.OrderBy(c => c.Platform, StringComparer.Ordinal)
                      .ThenBy(c => c.NormalizedValue, StringComparer.Ordinal))
         {
-            var coordinate = contact.Provenance[..contact.Provenance.LastIndexOf(':')];
+            var coordinate = DvachProvenance.Coordinate(contact.Provenance);
             var found = existing.FirstOrDefault(item => item.Platform == contact.Platform &&
                 item.NormalizedValue == contact.NormalizedValue &&
-                item.observation.Provenance.StartsWith(coordinate + ":", StringComparison.Ordinal));
+                DvachProvenance.Coordinate(item.observation.Provenance) == coordinate);
             if (found is null)
             {
                 await _product.RegisterObservationAsync(new ContactInput(revision.Id, contact.Platform, contact.RawValue,
@@ -93,9 +93,9 @@ internal sealed class DvachScanStore(ProductDbContext db)
             Candidates = metrics.Candidates + (reason == DvachFilter.Candidate ? 1 : 0),
             Ambiguous = metrics.Ambiguous + (reason == DvachFilter.Candidate && revision.IngestionAmbiguous ? 1 : 0),
             Contacts = metrics.Contacts + revision.IngestionContacts,
-            OpeningPosts = metrics.OpeningPosts + (reason == "opening_post" ? 1 : 0),
-            OtherReplies = metrics.OtherReplies + (input.Reply == "other_reply" ? 1 : 0),
-            NoOwnContact = metrics.NoOwnContact + (reason == "no_own_contact" ? 1 : 0),
+            OpeningPosts = metrics.OpeningPosts + (reason == DvachFilter.OpeningPost ? 1 : 0),
+            OtherReplies = metrics.OtherReplies + (input.Reply == DvachFilter.OtherReply ? 1 : 0),
+            NoOwnContact = metrics.NoOwnContact + (reason == DvachFilter.NoOwnContact ? 1 : 0),
             Excluded = metrics.Excluded + (reason == DvachFilter.Excluded ? 1 : 0),
         });
         await SaveAsync(ct).ConfigureAwait(false);

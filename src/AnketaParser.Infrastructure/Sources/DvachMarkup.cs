@@ -54,8 +54,7 @@ internal sealed partial class DvachMarkup
         if (node is not IElement element)
             return;
 
-        if (element.LocalName is "script" or "style" or "template" or "svg" or "math" or "iframe" or "textarea" ||
-            element.HasAttribute("hidden"))
+        if (IsHidden(element))
             return;
         if (element.LocalName is "blockquote" or "q" || element.ClassList.Contains("unkfunc") || element.ClassList.Contains("quote"))
         {
@@ -104,8 +103,7 @@ internal sealed partial class DvachMarkup
             FlushLine();
             return;
         }
-        var block = element.LocalName is "p" or "div" or "li" or "pre" or "hr" or "tr" or "section"
-            or "h1" or "h2" or "h3" or "h4" or "h5" or "h6";
+        var block = IsBlock(element);
         if (block && _line.Length != 0)
             FlushLine();
         foreach (var child in element.ChildNodes)
@@ -134,8 +132,7 @@ internal sealed partial class DvachMarkup
             return text.Data;
         if (node is not IElement element)
             return string.Empty;
-        if (element.LocalName is "script" or "style" or "template" or "svg" or "math" or "iframe" or "textarea" ||
-            element.HasAttribute("hidden"))
+        if (IsHidden(element))
             return string.Empty;
         // Граница строки сохраняется: подпись `>>12` и `3` через `<br>` не равна `>>123`.
         if (element.LocalName == "br")
@@ -143,8 +140,7 @@ internal sealed partial class DvachMarkup
         if (element.LocalName is "blockquote" or "q" || element.ClassList.Contains("unkfunc") || element.ClassList.Contains("quote"))
             return string.Empty;
         // Блочный элемент разделяет строки так же, как при разборе авторского текста.
-        var block = element.LocalName is "p" or "div" or "li" or "pre" or "hr" or "tr" or "section"
-            or "h1" or "h2" or "h3" or "h4" or "h5" or "h6";
+        var block = IsBlock(element);
         var builder = new StringBuilder();
         if (block)
             builder.Append('\n');
@@ -160,6 +156,14 @@ internal sealed partial class DvachMarkup
         var expected = ">>" + DvachSnapshot.PostId(number);
         return label == expected || (number == thread && label == expected + " (OP)");
     }
+
+    private static bool IsHidden(IElement element) =>
+        element.LocalName is "script" or "style" or "template" or "svg" or "math" or "iframe" or "textarea" ||
+        element.HasAttribute("hidden");
+
+    private static bool IsBlock(IElement element) =>
+        element.LocalName is "p" or "div" or "li" or "pre" or "hr" or "tr" or "section"
+            or "h1" or "h2" or "h3" or "h4" or "h5" or "h6";
 
     private static bool TryNumber(string? value, out long number) =>
         long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out number) && number > 0;

@@ -48,6 +48,26 @@ CENTRAL = '<Project><ItemGroup>\n  <PackageVersion Include="%s" Version="%s" />\
 WORKFLOW = "steps:\n  - uses: actions/checkout@%s\n"
 
 
+def imprecise_from_direct_changes(
+    reported_changes: list[Change],
+    direct_changes: list[Change],
+    base_locks: dict[str, str | None],
+    head_locks: dict[str, str | None],
+) -> list[str]:
+    """Фикстуры перечисляют прямые записи соответствующей ревизии."""
+
+    def entries(kind: str) -> set[tuple[str, str, str]]:
+        return {
+            (c.name.casefold(), c.version, c.manifest)
+            for c in direct_changes
+            if c.kind == kind and c.ecosystem.lower() == "nuget"
+        }
+
+    return imprecise(
+        reported_changes, base_locks, head_locks, entries("removed"), entries("added")
+    )
+
+
 def chosen_locks(project: str, lock: str | None) -> dict[str, str | None]:
     """Выбранный NuGet lock-файл проекта для проверки сверки."""
     return {project: lock}
@@ -421,7 +441,7 @@ class ComparisonTests(unittest.TestCase):
                 _ = reported(text)
 
     def test_imprecise_versions_are_reported(self) -> None:
-        found = imprecise(
+        found = imprecise_from_direct_changes(
             [
                 Change("added", "NuGet", "Npgsql", ">= 0", "packages.lock.json"),
                 Change("added", "pip", "httpx", "0.28.0", "requirements.txt"),
@@ -438,7 +458,9 @@ class ComparisonTests(unittest.TestCase):
             "added", "NuGet", "Npgsql", "10.0.4", "src/Lib/packages.lock.json"
         )
         chosen = chosen_locks("src/Lib/Lib.csproj", "src/Lib/packages.lock.json")
-        self.assertEqual(imprecise([graph], [lock], chosen, chosen), [])
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [lock], chosen, chosen), []
+        )
         for mismatch in (
             Change(
                 "added", "NuGet", "Npgsql", "10.0.4", "src/Other/packages.lock.json"
@@ -449,13 +471,16 @@ class ComparisonTests(unittest.TestCase):
         ):
             with self.subTest(mismatch=mismatch):
                 self.assertEqual(
-                    imprecise([graph], [mismatch], chosen, chosen), ["npgsql >= 0"]
+                    imprecise_from_direct_changes([graph], [mismatch], chosen, chosen),
+                    ["npgsql >= 0"],
                 )
 
         different_range = Change("added", "nuget", "npgsql", ">= 10", graph.manifest)
         python_range = Change("added", "pip", "httpx", ">= 0", "requirements.txt")
         self.assertEqual(
-            imprecise([different_range, python_range], [lock], chosen, chosen),
+            imprecise_from_direct_changes(
+                [different_range, python_range], [lock], chosen, chosen
+            ),
             ["npgsql >= 10", "httpx >= 0"],
         )
 
@@ -468,18 +493,23 @@ class ComparisonTests(unittest.TestCase):
             "added", "NuGet", "Npgsql", "10.0.4", "src/Lib/packages.lock.json"
         )
         chosen = chosen_locks("src/Lib/Lib.csproj", "src/Lib/packages.Lib.lock.json")
-        self.assertEqual(imprecise([graph], [named], chosen, chosen), [])
-        self.assertEqual(imprecise([graph], [plain], chosen, chosen), ["npgsql >= 0"])
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [named], chosen, chosen), []
+        )
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [plain], chosen, chosen),
+            ["npgsql >= 0"],
+        )
 
     def test_direct_reference_closes_gap_without_version_change(self) -> None:
         graph = Change("added", "nuget", "npgsql", ">= 0", "src/Lib/Lib.csproj")
         chosen = chosen_locks("src/Lib/Lib.csproj", "src/Lib/packages.lock.json")
         direct = {("npgsql", "10.0.4", "src/Lib/packages.lock.json")}
         # Переход Transitive → Direct меняет только тип записи lock-файла.
-        self.assertEqual(imprecise([graph], [], chosen, chosen, set(), direct), [])
+        self.assertEqual(imprecise([graph], chosen, chosen, set(), direct), [])
         # Транзитивная запись подтверждением не служит.
         self.assertEqual(
-            imprecise([graph], [], chosen, chosen, set(), set()), ["npgsql >= 0"]
+            imprecise([graph], chosen, chosen, set(), set()), ["npgsql >= 0"]
         )
 
     def test_lock_choice_is_taken_from_the_revision_of_the_change(self) -> None:
@@ -491,17 +521,24 @@ class ComparisonTests(unittest.TestCase):
         head_locks = chosen_locks(
             "src/Lib/Lib.csproj", "src/Lib/packages.Lib.lock.json"
         )
-        self.assertEqual(imprecise([graph], [lock], base_locks, head_locks), [])
         self.assertEqual(
-            imprecise([graph], [lock], head_locks, base_locks), ["npgsql >= 0"]
+            imprecise_from_direct_changes([graph], [lock], base_locks, head_locks), []
+        )
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [lock], head_locks, base_locks),
+            ["npgsql >= 0"],
         )
         added = Change("added", "nuget", "npgsql", ">= 0", "src/Lib/Lib.csproj")
         head_lock = Change(
             "added", "NuGet", "Npgsql", "10.0.4", "src/Lib/packages.Lib.lock.json"
         )
-        self.assertEqual(imprecise([added], [head_lock], base_locks, head_locks), [])
         self.assertEqual(
-            imprecise([added], [head_lock], head_locks, base_locks), ["npgsql >= 0"]
+            imprecise_from_direct_changes([added], [head_lock], base_locks, head_locks),
+            [],
+        )
+        self.assertEqual(
+            imprecise_from_direct_changes([added], [head_lock], head_locks, base_locks),
+            ["npgsql >= 0"],
         )
 
     def test_shared_lock_without_proven_owner_is_not_a_proof(self) -> None:
@@ -511,7 +548,7 @@ class ComparisonTests(unittest.TestCase):
         )
         shared = chosen_locks("src/Lib/Lib.csproj", None)
         self.assertEqual(
-            imprecise([graph], [lock], shared, shared),
+            imprecise_from_direct_changes([graph], [lock], shared, shared),
             ["npgsql >= 0"],
         )
 
@@ -526,18 +563,27 @@ class ComparisonTests(unittest.TestCase):
                     "added", "NuGet", "Npgsql", version, "packages.lock.json"
                 )
                 self.assertEqual(
-                    imprecise([interval], [], {}, {}), [f"Npgsql {version}"]
+                    imprecise_from_direct_changes([interval], [], {}, {}),
+                    [f"Npgsql {version}"],
                 )
 
     def test_empty_lock_version_keeps_the_graph_gap(self) -> None:
         graph = Change("added", "nuget", "npgsql", ">= 0", "src/Lib/Lib.csproj")
         chosen = chosen_locks("src/Lib/Lib.csproj", "src/Lib/packages.lock.json")
         empty = Change("added", "NuGet", "Npgsql", "", "src/Lib/packages.lock.json")
-        self.assertEqual(imprecise([graph], [empty], chosen, chosen), ["npgsql >= 0"])
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [empty], chosen, chosen),
+            ["npgsql >= 0"],
+        )
         spaced = Change("added", "NuGet", "Npgsql", "  ", empty.manifest)
-        self.assertEqual(imprecise([graph], [spaced], chosen, chosen), ["npgsql >= 0"])
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [spaced], chosen, chosen),
+            ["npgsql >= 0"],
+        )
         resolved = Change("added", "NuGet", "Npgsql", "10.0.4", empty.manifest)
-        self.assertEqual(imprecise([graph], [resolved], chosen, chosen), [])
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [resolved], chosen, chosen), []
+        )
 
     def test_floating_nuget_version_keeps_the_graph_gap(self) -> None:
         for version in ("6.0.*", " [10.0,11.0)"):
@@ -546,7 +592,8 @@ class ComparisonTests(unittest.TestCase):
                     "added", "NuGet", "Npgsql", version, "packages.lock.json"
                 )
                 self.assertEqual(
-                    imprecise([floating], [], {}, {}), [f"Npgsql {version}"]
+                    imprecise_from_direct_changes([floating], [], {}, {}),
+                    [f"Npgsql {version}"],
                 )
 
     def test_exact_version_rejects_ranges_and_empty_values(self) -> None:

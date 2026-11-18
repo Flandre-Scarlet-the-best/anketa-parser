@@ -16,6 +16,8 @@ namespace AnketaParser.Cli;
 
 internal static class SourceCommands
 {
+    private const int CurrentSchemaVersion = 1;
+
     private const string Usage = """
         Команды source (вывод JSON):
           source scan [--fixture <файл.json>]  Выполнить один опрос и сохранить результат.
@@ -160,7 +162,7 @@ internal static class SourceCommands
     {
         await stdout.WriteLineAsync(JsonSerializer.Serialize(new
         {
-            schemaVersion = 1,
+            schemaVersion = CurrentSchemaVersion,
             command = "source " + command,
             status,
             exitCode,
