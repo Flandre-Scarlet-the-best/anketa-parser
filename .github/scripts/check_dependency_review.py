@@ -18,7 +18,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 from xml.etree import ElementTree
 
@@ -370,13 +370,36 @@ def nuget_audit_proof(root: Path) -> str:
     )
 
 
-def imprecise(reported_changes: list[Change]) -> list[str]:
+def imprecise(reported_changes: list[Change], expected: list[Change]) -> list[str]:
     """Отчёт с диапазоном версии не доказывает анализ разрешённой версии."""
-    return [
-        f"{change.name} {change.version}"
-        for change in reported_changes
-        if IMPRECISE.match(change.version)
-    ]
+    lock_changes = {
+        (change.kind, change.name.casefold(), change.manifest)
+        for change in expected
+        if change.ecosystem.lower() == "nuget"
+        and LOCKFILE.search(change.manifest)
+        and not IMPRECISE.match(change.version)
+    }
+    gaps: list[str] = []
+    for change in reported_changes:
+        if not IMPRECISE.match(change.version):
+            continue
+        project = PurePosixPath(change.manifest)
+        # Особое значение графа для PackageReference без версии. Точная версия
+        # проверяется отдельным аудитом соответствующего lock-файла.
+        sibling = (
+            project.with_name("packages.lock.json").as_posix()
+            if project.suffix == ".csproj"
+            else None
+        )
+        if (
+            change.ecosystem.lower() == "nuget"
+            and change.version == ">= 0"
+            and sibling is not None
+            and (change.kind, change.name.casefold(), sibling) in lock_changes
+        ):
+            continue
+        gaps.append(f"{change.name} {change.version}")
+    return gaps
 
 
 class Arguments(argparse.Namespace):
@@ -433,7 +456,7 @@ def main() -> int:
             for change in [*expected, *reported_changes]
         ):
             notes.append(nuget_audit_proof(root))
-        gaps = imprecise(reported_changes)
+        gaps = imprecise(reported_changes, expected)
     except CoverageError as error:
         print(f"::error::Охват Dependency Review не доказан: {error}", file=sys.stderr)
         return CHECK_ERROR_CODE

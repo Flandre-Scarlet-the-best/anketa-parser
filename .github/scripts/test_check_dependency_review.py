@@ -359,9 +359,34 @@ class ComparisonTests(unittest.TestCase):
             [
                 Change("added", "NuGet", "Npgsql", ">= 0", "packages.lock.json"),
                 Change("added", "pip", "httpx", "0.28.0", "requirements.txt"),
-            ]
+            ],
+            [],
         )
         self.assertEqual(found, ["Npgsql >= 0"])
+
+    def test_nuget_project_placeholder_requires_matching_lock_change(self) -> None:
+        graph = Change("added", "nuget", "npgsql", ">= 0", "src/Lib/Lib.csproj")
+        lock = Change(
+            "added", "NuGet", "Npgsql", "10.0.4", "src/Lib/packages.lock.json"
+        )
+        self.assertEqual(imprecise([graph], [lock]), [])
+        for mismatch in (
+            Change(
+                "added", "NuGet", "Npgsql", "10.0.4", "src/Other/packages.lock.json"
+            ),
+            Change("removed", "NuGet", "Npgsql", "10.0.4", lock.manifest),
+            Change("added", "NuGet", "Other", "10.0.4", lock.manifest),
+            Change("added", "NuGet", "Npgsql", ">= 0", lock.manifest),
+        ):
+            with self.subTest(mismatch=mismatch):
+                self.assertEqual(imprecise([graph], [mismatch]), ["npgsql >= 0"])
+
+        different_range = Change("added", "nuget", "npgsql", ">= 10", graph.manifest)
+        python_range = Change("added", "pip", "httpx", ">= 0", "requirements.txt")
+        self.assertEqual(
+            imprecise([different_range, python_range], [lock]),
+            ["npgsql >= 10", "httpx >= 0"],
+        )
 
     def test_report_codes_are_distinct(self) -> None:
         self.assertNotEqual(CHECK_FINDINGS_CODE, CHECK_ERROR_CODE)
