@@ -221,7 +221,7 @@ internal static partial class DvachFilter
     private static bool InsideUrl(string text, int offset)
     {
         var start = offset;
-        while (start > 0 && !char.IsWhiteSpace(text[start - 1]) && text[start - 1] is not ('"' or '\'' or '<' or '>' or '('))
+        while (start > 0 && !char.IsWhiteSpace(text[start - 1]) && text[start - 1] is not ('"' or '\'' or '<' or '>'))
             start--;
         var prefix = text.AsSpan(start, offset - start);
         if (prefix.Contains("://", StringComparison.Ordinal))
@@ -285,7 +285,7 @@ internal static partial class DvachFilter
     [GeneratedRegex(@"(?<![\w])(?<platform>" + Platforms + @")(?![\w])(?:\s*[:=—–-]\s*|\s+)[\""«]?(?<value>@?[A-Za-z0-9_.#-]+)[\""»]?(?![\w@.:%+#-])", IgnoreCase)]
     private static partial Regex LabeledValue();
 
-    [GeneratedRegex(@"\G\s*/\s*[\""«]?(?<value>@?[A-Za-z0-9_.#-]+)(?=/|\z)", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\G\s*/\s*[\""«]?(?<value>@?[A-Za-z0-9_.#-]+)(?=[ \t]*(?:/|\z))", RegexOptions.CultureInvariant)]
     private static partial Regex SlashValue();
 
     [GeneratedRegex(@"\G[\""»]?\s*[,;|/]\s*[\""«]?(?<value>@?[A-Za-z0-9_.#-]+)(?![\w@./:%+#-])", RegexOptions.CultureInvariant)]

@@ -55,7 +55,7 @@ internal static class SourceCommands
         var command = valid ? arguments[0] : "unknown";
         if (!valid)
         {
-            await stderr.WriteLineAsync(Usage).ConfigureAwait(false);
+            await TryWriteAsync(stderr, Usage).ConfigureAwait(false);
             return await WriteAsync(stdout, command, "invalid_usage", ExitCodes.InvalidUsage).ConfigureAwait(false);
         }
 
@@ -134,7 +134,7 @@ internal static class SourceCommands
             };
             // Отчёт об ошибке не содержит частичного результата операции.
             result = null;
-            await stderr.WriteLineAsync("Операция источника не выполнена. Категория указана в отчёте.").ConfigureAwait(false);
+            await TryWriteAsync(stderr, "Операция источника не выполнена. Категория указана в отчёте.").ConfigureAwait(false);
         }
 
         return await WriteAsync(stdout, command, status, code, result).ConfigureAwait(false);
@@ -142,6 +142,19 @@ internal static class SourceCommands
 
     private static bool ParseNumber(string value, out long number) =>
         long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out number) && number > 0;
+
+    /// <summary>Пояснение в stderr не должно отменять сформированный отчёт в stdout.</summary>
+    private static async Task TryWriteAsync(TextWriter writer, string text)
+    {
+        try
+        {
+            await writer.WriteLineAsync(text).ConfigureAwait(false);
+        }
+        catch (IOException)
+        {
+            // Отказ пояснения не меняет статус и код завершения команды.
+        }
+    }
 
     private static async Task<int> WriteAsync(TextWriter stdout, string command, string status, int exitCode, object? result = null)
     {

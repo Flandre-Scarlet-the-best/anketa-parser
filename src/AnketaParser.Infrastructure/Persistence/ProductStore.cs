@@ -421,14 +421,21 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
             AND (post."IngestedRevisionId" IS NULL OR
                 (post."IngestedRevisionId"=revision."Id" AND revision."IngestionReason"='candidate'))
             ORDER BY job."AvailableAt", job."Id" LIMIT {ClaimCandidates}
-            FOR UPDATE OF post SKIP LOCKED
             """).ToListAsync(cancellationToken).ConfigureAwait(false);
-        // Блокировка поста взята первой и в том же порядке, что в EnqueueAsync и ArchiveAsync.
-        // Решение о доступности поста и ревизии остаётся в силе до конца захвата, поэтому
-        // исключённый пост не получает аренду даже при одновременной архивации.
+        // Блокировка берётся по одному кандидату и в порядке «пост, затем задание»:
+        // остальные готовые задания остаются доступными другим захватам.
         ProcessingJob? job = null;
         foreach (var candidate in jobs)
         {
+            var posts = await db.Database.SqlQuery<int>($"""
+                SELECT 1 AS "Value" FROM product."ProcessingJob" AS job
+                JOIN product."PostRevision" AS revision ON revision."Id"=job."RevisionId"
+                JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
+                WHERE job."Id"={candidate}
+                FOR UPDATE OF post
+                """).ToListAsync(cancellationToken).ConfigureAwait(false);
+            if (posts.Count == 0)
+                continue;
             // Задание перечитывается под собственной блокировкой: аренда выдаётся только
             // заданию, которое всё ещё ожидает и не исчерпало попытки, а пост и ревизия
             // проверяются заново и видят зафиксированные изменения.

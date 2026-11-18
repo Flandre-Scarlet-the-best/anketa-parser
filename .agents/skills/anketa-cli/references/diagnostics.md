@@ -40,9 +40,9 @@ source guide `docs/dvach.md` to resolve the fixture identity. The tracked sample
    failure phase and last successful scan. Keep fixture contents out of reports.
    If `source scan --fixture` reports `fixture_conflict`, the stored journal
    belongs to another snapshot: rerun with the unchanged fixture version that
-   produced it and wait for `complete`. A changed file, even at the same path,
-   is a new snapshot; resume it in a separate isolated database instead of the
-   previous run.
+   produced it and wait for `complete`. If that version is unavailable, run the
+   changed file as a separate independent run in an isolated database; it does
+   not resume the original scan and does not release or delete its journal.
 
 A zero exit code from `source status` proves that CLI read the stored status.
 Inspect the outcome and last success time to tell whether a scan succeeded.

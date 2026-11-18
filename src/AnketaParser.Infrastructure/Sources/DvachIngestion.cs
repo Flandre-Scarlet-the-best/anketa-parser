@@ -74,6 +74,7 @@ public sealed class DvachIngestion
                     }
                 }
 
+                PreparedPost[] pending;
                 if (!resuming)
                 {
                     await StartAsync(store, state, ct).ConfigureAwait(false);
@@ -90,7 +91,8 @@ public sealed class DvachIngestion
                         ct.ThrowIfCancellationRequested();
                         posts.Add(DvachFilter.Prepare(thread, post, key));
                     }
-                    state.Pending = JsonSerializer.Serialize(posts);
+                    pending = [.. posts];
+                    state.Pending = JsonSerializer.Serialize(pending);
                     state.Metrics = JsonSerializer.Serialize(new DvachScanMetrics(snapshot.Posts.Count, snapshot.Closed));
                     state.Phase = "apply";
                     // Журнал сохраняется до первого импорта. После сбоя он воспроизводится без HTTP.
@@ -99,9 +101,9 @@ public sealed class DvachIngestion
                 else
                 {
                     await ResumeAsync(store, state, ct).ConfigureAwait(false);
+                    pending = JsonSerializer.Deserialize<PreparedPost[]>(state.Pending!)!;
                 }
 
-                var pending = JsonSerializer.Deserialize<PreparedPost[]>(state.Pending!)!;
                 for (var index = state.Applied; index < pending.Length; index++)
                 {
                     // Журнал может быть сохранён предыдущей версией фильтра. Исходный HTML

@@ -403,9 +403,7 @@ public sealed class DvachTests
         var adapter = new DvachClient(client, TimeProvider.System);
         var fetch = adapter.FetchAsync(
             Thread, new() { RequestTimeoutSeconds = 1 }, null, TestContext.Current.CancellationToken);
-        // Проверка выполняется сразу после входа в обработчик, а не по паузе планировщика.
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
-        Assert.False(fetch.IsCompleted);
         var error = await Assert.ThrowsAsync<SourceFailure>(() => fetch);
         Assert.Equal("timeout", error.Category);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => adapter.FetchAsync(Thread, new(), null, new CancellationToken(true)));

@@ -488,7 +488,10 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
         Assert.Equal("interrupted", interrupted.Status);
         Assert.Equal("cancelled", interrupted.Failure);
         Assert.Equal(lastSuccess, interrupted.LastSuccessAt!.Value.ToUnixTimeMilliseconds());
-        Assert.Equal("candidate", (await next.PostAsync(false, Thread + 1, Ct)).Reason);
+        var afterCancel = await next.PostAsync(false, Thread + 1, Ct);
+        Assert.Equal("candidate", afterCancel.Reason);
+        // Отмена опроса не теряет задание уже обработанного поста.
+        Assert.NotNull(afterCancel.JobState);
     }
 
     private static void RequireDocker()

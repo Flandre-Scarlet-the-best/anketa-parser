@@ -449,15 +449,18 @@ def imprecise(
     head_direct: set[tuple[str, str, str]] | None = None,
 ) -> list[str]:
     """Отчёт с диапазоном версии не доказывает анализ разрешённой версии."""
-    lock_changes = {
-        (change.kind, change.name.casefold(), change.manifest)
-        for change in expected
-        if change.ecosystem.lower() == "nuget"
-        and LOCKFILE.search(change.manifest)
-        and exact_version(change.version)
-    }
     # Прямая ссылка с точной версией закрывает пробел и без смены версии: переход
     # Transitive → Direct меняет только тип записи. Транзитивная запись не годится.
+    lock_changes: set[tuple[str, str, str]] = set()
+    if base_direct is None and head_direct is None:
+        # Вызов без прямых записей опирается на изменения lock-файлов.
+        lock_changes = {
+            (change.kind, change.name.casefold(), change.manifest)
+            for change in expected
+            if change.ecosystem.lower() == "nuget"
+            and LOCKFILE.search(change.manifest)
+            and exact_version(change.version)
+        }
     lock_changes |= {
         ("removed", package, manifest)
         for package, version, manifest in base_direct or set()
@@ -470,7 +473,13 @@ def imprecise(
     }
     gaps: list[str] = []
     for change in reported_changes:
-        if not IMPRECISE.match(change.version):
+        is_nuget = change.ecosystem.lower() == "nuget"
+        # Для NuGet допустима только точная версия или служебный диапазон `>= 0`.
+        # Плавающая версия вида `6.0.*` и прочие формы пробел не закрывают.
+        if is_nuget:
+            if change.version != ">= 0" and exact_version(change.version):
+                continue
+        elif not IMPRECISE.match(change.version):
             continue
         project = PurePosixPath(change.manifest)
         # Особое значение графа для PackageReference без версии. Точная версия
@@ -479,7 +488,7 @@ def imprecise(
         locks = base_locks if change.kind == "removed" else head_locks
         sibling = locks.get(project.as_posix()) if project.suffix == ".csproj" else None
         if (
-            change.ecosystem.lower() == "nuget"
+            is_nuget
             and change.version == ">= 0"
             and sibling is not None
             and (change.kind, change.name.casefold(), sibling) in lock_changes
@@ -536,13 +545,54 @@ def expected_changes(root: Path, base: str, head: str) -> list[Change]:
     )
 
 
+def confirmed_direct_transitions(
+    reported_changes: list[Change],
+    head_locks: dict[str, str | None],
+    head_direct: set[tuple[str, str, str]],
+) -> list[Change]:
+    """Записи графа, подтверждённые прямой ссылкой head без смены версии."""
+    confirmed: list[Change] = []
+    for change in reported_changes:
+        if (
+            change.ecosystem.lower() != "nuget"
+            or change.kind != "added"
+            or change.version != ">= 0"
+        ):
+            continue
+        project = PurePosixPath(change.manifest)
+        sibling = (
+            head_locks.get(project.as_posix()) if project.suffix == ".csproj" else None
+        )
+        if sibling is None:
+            continue
+        if any(
+            package == change.name.casefold()
+            and manifest == sibling
+            and exact_version(version)
+            for package, version, manifest in head_direct
+        ):
+            confirmed.append(change)
+    return confirmed
+
+
 def main() -> int:
     args = build_parser().parse_args(namespace=Arguments())
     try:
         root = args.root.resolve()
-        expected = expected_changes(root, args.base, args.head)
+        base_sha = merge_base(root, args.base, args.head)
+        expected = expected_changes(root, base_sha, args.head)
         reported_changes = reported(output_text(args))
-        notes = verify(expected, reported_changes)
+        head_locks = project_locks(root, args.head)
+        head_direct = direct_dependencies(root, args.head)
+        # Переход Transitive → Direct не входит в изменения lock-файлов, поэтому
+        # подтверждённые им записи не считаются расхождением на этапе сверки.
+        transitions = confirmed_direct_transitions(
+            reported_changes, head_locks, head_direct
+        )
+        notes = verify(
+            expected,
+            [change for change in reported_changes if change not in transitions],
+        )
         # Неподтверждённые графом версии NuGet обязаны быть покрыты аудитом —
         # и когда они пришли из манифестов, и когда их обнаружило само действие.
         if any(
@@ -553,10 +603,10 @@ def main() -> int:
         gaps = imprecise(
             reported_changes,
             expected,
-            project_locks(root, merge_base(root, args.base, args.head)),
-            project_locks(root, args.head),
-            direct_dependencies(root, merge_base(root, args.base, args.head)),
-            direct_dependencies(root, args.head),
+            project_locks(root, base_sha),
+            head_locks,
+            direct_dependencies(root, base_sha),
+            head_direct,
         )
     except CoverageError as error:
         print(f"::error::Охват Dependency Review не доказан: {error}", file=sys.stderr)

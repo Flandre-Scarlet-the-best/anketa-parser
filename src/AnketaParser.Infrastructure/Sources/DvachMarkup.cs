@@ -142,9 +142,16 @@ internal sealed partial class DvachMarkup
             return "\n";
         if (element.LocalName is "blockquote" or "q" || element.ClassList.Contains("unkfunc") || element.ClassList.Contains("quote"))
             return string.Empty;
+        // Блочный элемент разделяет строки так же, как при разборе авторского текста.
+        var block = element.LocalName is "p" or "div" or "li" or "pre" or "hr" or "tr" or "section"
+            or "h1" or "h2" or "h3" or "h4" or "h5" or "h6";
         var builder = new StringBuilder();
+        if (block)
+            builder.Append('\n');
         foreach (var child in element.ChildNodes)
             builder.Append(VisibleText(child));
+        if (block)
+            builder.Append('\n');
         return builder.ToString();
     }
 

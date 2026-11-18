@@ -8,6 +8,7 @@
 
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -538,6 +539,16 @@ class ComparisonTests(unittest.TestCase):
         resolved = Change("added", "NuGet", "Npgsql", "10.0.4", empty.manifest)
         self.assertEqual(imprecise([graph], [resolved], chosen, chosen), [])
 
+    def test_floating_nuget_version_keeps_the_graph_gap(self) -> None:
+        for version in ("6.0.*", " [10.0,11.0)"):
+            with self.subTest(version=version):
+                floating = Change(
+                    "added", "NuGet", "Npgsql", version, "packages.lock.json"
+                )
+                self.assertEqual(
+                    imprecise([floating], [], {}, {}), [f"Npgsql {version}"]
+                )
+
     def test_exact_version_rejects_ranges_and_empty_values(self) -> None:
         self.assertTrue(exact_version("10.0.4"))
         for value in ("", "   ", ">= 0", "[10.0,11.0)", "(10.0,11.0]"):
@@ -567,6 +578,57 @@ class ComparisonTests(unittest.TestCase):
 
 
 class NugetAuditTests(RepositoryCase):
+    def test_main_accepts_confirmed_direct_transition(self) -> None:
+        self.write("src/Lib/Lib.csproj", "<Project />")
+        self.write(
+            "src/Lib/packages.lock.json",
+            (LOCK % ("Npgsql", "10.0.3")).replace('"Direct"', '"Transitive"'),
+        )
+        base = self.commit("транзитивная зависимость")
+        self.write("src/Lib/packages.lock.json", LOCK % ("Npgsql", "10.0.3"))
+        head = self.commit("прямая зависимость той же версии")
+        self.write(
+            NUGET_AUDIT_WORKFLOW.as_posix(),
+            "on:\n  pull_request:\nsteps:\n"
+            "  - run: python .github/scripts/check_nuget_audit.py\n"
+            "  - run: python .github/scripts/check_osv.py\n",
+        )
+        head = self.commit("аудит зависимостей")
+        changes_file = self.root / "changes.json"
+        _ = changes_file.write_text(
+            json.dumps(
+                [
+                    {
+                        "change_type": "added",
+                        "ecosystem": "NuGet",
+                        "name": "Npgsql",
+                        "version": ">= 0",
+                        "manifest": "src/Lib/Lib.csproj",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        result = subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                str(Path(__file__).with_name("check_dependency_review.py")),
+                "--root",
+                str(self.root),
+                "--base",
+                base,
+                "--head",
+                head,
+                "--changes-file",
+                str(changes_file),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+
     def test_absent_workflow_blocks_unconfirmed_nuget(self) -> None:
         with self.assertRaisesRegex(CoverageError, "не удалось прочитать"):
             _ = nuget_audit_proof(self.root)
