@@ -395,11 +395,14 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
     public async Task<JobLease?> ClaimAsync(TimeSpan lease, CancellationToken cancellationToken)
     {
         if (lease <= TimeSpan.Zero || lease > TimeSpan.FromDays(1)) throw new ArgumentOutOfRangeException(nameof(lease));
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         // Закрываем просроченные попытки вместе со снятием аренды. При возврате
         // ревизии незавершённое задание может продолжиться с оставшимися попытками.
-        var expirationCutoff = Now;
-        await db.Database.ExecuteSqlInterpolatedAsync($"""
+        // Завершаем эту транзакцию до блокировки постов, чтобы не нарушить порядок
+        // «пост, затем задание» при одновременной постановке в очередь.
+        await using (var expiration = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var expirationCutoff = Now;
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
             WITH expired AS MATERIALIZED (
                 SELECT "Id" FROM product."ProcessingJob"
                 WHERE "State"='running' AND "LeaseUntil"<={expirationCutoff}
@@ -413,6 +416,9 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
             UPDATE product."JobAttempt" SET "FinishedAt"={expirationCutoff},"FailureCategory"='lease_expired'
             WHERE "FinishedAt" IS NULL AND "JobId" IN (SELECT "Id" FROM released)
             """, cancellationToken).ConfigureAwait(false);
+            await expiration.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         var jobs = await db.Database.SqlQueryRaw<Guid>("""
             SELECT job."Id" AS "Value"
             FROM product."ProcessingJob" AS job
