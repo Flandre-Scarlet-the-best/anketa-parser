@@ -8,6 +8,7 @@ read files; its historical path does not require a particular harness.
 | --- | --- |
 | Locate a project, entry point, adapter or test | [Project map](01-PROJECT-MAP.md) |
 | Locate a CLI, JSON, configuration or readiness contract | [Interface map](02-INTERFACES.md) |
+| Navigate code semantically or choose diagnostics | [Code intelligence skill](../../.agents/skills/code-intelligence/SKILL.md) |
 | Choose checks and interpret their evidence | [Verification map](03-VERIFICATION.md) |
 | Understand product usage and operations | [Russian documentation](../../docs/README.md) |
 | Publish or maintain a work item | [Git skill](../../.agents/skills/git-workflow/SKILL.md) |
