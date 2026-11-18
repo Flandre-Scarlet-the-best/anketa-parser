@@ -72,18 +72,30 @@ A legitimate out-of-model monitor:
 2. Persists run ID, safe events and real worker outcome. Before the
    agent turn ends, verify the monitor is alive, survives that turn,
    and has a valid delivery channel; only then claim it will monitor.
-3. Assigns stable `<run-id>:<sequence>` keys to significant events
-   and records each before notification. Send at most one notification
-   per meaningful new actionable anomaly, with a bounded count; send
-   a separate **single terminal** notification even after an anomaly.
-   No model wakeups for repeated alarms, normal progress or heartbeat.
-4. On delivery, reconciles the event key with the actual worker
-   outcome and durable postconditions. Retries/duplicate notifications
-   MUST NOT restart completed or ongoing work. Late events after
-   cancellation only document cleanup, not another terminal wake-up.
+3. Assigns stable `<run-id>:<sequence>` keys to significant events.
+   Persists the event and its pending delivery state before dispatch.
+   Ensures one dispatcher owns each run; if multiple processes can
+   dispatch, requires an atomic claim on the event ID. Emit at most
+   one *new event* per actionable anomaly transition, with a bounded
+   count, and one distinct terminal event even after an anomaly.
+   Repeated alarms, progress and heartbeats do not wake the model.
+4. Records delivery attempts and outcomes durably, reconciles pending
+   events after monitor restart, and retries an uncertain delivery
+   only with a stable event ID and verified receiver-side idempotency.
+   The receiver deduplicates the ID and MUST NOT restart completed
+   or ongoing work. Late events after cancellation document cleanup
+   without a second terminal wake-up.
 5. Terminates the monitor after a terminal event; records failed
    launch, worker error, monitor failure, cancellation and delivery
    failure as different outcomes.
+
+A persisted event is not proof of delivery. Exactly-once transport
+cannot be inferred from a local log or a send response: distinguish
+recorded, attempted, acknowledged and confirmed-session-resumption
+states. If durable dispatch/recovery or receiver deduplication is
+unavailable, mark notification delivery BEST_EFFORT/UNCONFIRMED and
+do not promise reliable background resumption. Do not build an
+unnecessary permanent messaging system for a one-off helper.
 
 Only use harness-specific queue/resume syntax after verifying actual
 tool capabilities and the correct session ID. Do not assume a
