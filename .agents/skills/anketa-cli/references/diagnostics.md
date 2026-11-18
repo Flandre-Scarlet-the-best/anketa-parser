@@ -1,50 +1,57 @@
 # Diagnostic scenarios
 
-## Identify the process
+This reference explains **safe command execution and result interpretation**.
+For independent runtime acceptance, see the sibling
+`.agents/skills/anketa-live-testing/SKILL.md`; its CLI acceptance reference
+owns multi-scenario proof and durable postconditions.
 
-Run `--help` from the built CLI, or forward it with
-`dotnet run --project src/AnketaParser.Cli -- --help` from the repository.
-For structured output prefer a built DLL so build messages cannot enter the
-stdout capture. Read the command group's help before choosing arguments.
-Capture stdout into one file and stderr into another over normal pipes. Parse
-stdout only after saving the process exit code. Check both the reported state
-and the numeric exit code. Keep evidence in ignored local artifacts or a
-temporary directory and record which build and target were used.
+## Identify the exact executable
 
-`doctor --json` diagnoses the CLI process and its dependency view. Its output
-cannot establish what an existing Host is polling. To inspect a running
-container, first verify the actual Compose project, service and configuration.
-Run a read-only command in that container when its connection and environment
-are required. Read source status from the same database and thread as Host.
+Run `--help` from the known built CLI, or from the repo via
+`dotnet run --project src/AnketaParser.Cli -- --help`, and consult the
+command group's help. A built DLL is preferable when capturing machine
+stdout: a build may otherwise introduce unrelated output. Preserve real
+exit status; capture stdout and stderr through separate pipes, parse
+the documented JSON document and check its `status`, `exitCode` and
+required fields. Evidence belongs in ignored local artifacts or an owned
+temporary directory. Record executed build/worktree and sanitized target.
 
-## Reproduce source selection
+`doctor --json` reports the CLI's configuration and dependency view,
+not what another Host process has fetched. A healthcheck running an
+independent CLI also does not reveal Host in-memory state. To diagnose
+the Host, verify the actual Compose project, selected source, database
+and role, then use an authorized read-only command against the same
+configuration. A query exit 0 does not prove the prior operation succeeded.
 
-Use an isolated migrated PostgreSQL and an anonymized fixture. Follow the
-database guide `docs/persistence.md` to resolve the database owner and the
-source guide `docs/dvach.md` to resolve the fixture identity. The tracked sample
-`tests/fixtures/dvach/thread.json` uses thread
-`100000`; avoid assuming fixture numbers are production IDs.
+## Controlled source diagnosis
 
-1. With the test configuration, run `source help`, then `source scan --fixture
-   <path>`. Confirm successful completion, counts and application progress.
-2. Inspect `source status --fixture`, `source post 100017 --fixture` and
-   `source queue --fixture`. The post is a quote-only contact case and should
-   return `no_own_contact` with no job. Queue counts describe current and
-   historical jobs independently.
-3. Rerun the same scan and compare repeated posts and queue counts. To reproduce
-   malformed input, write a separate broken fixture and use a fresh test thread
-   or database if a prior failure is in backoff. The new target has no previous
-   successful scan, so run a successful scan there before breaking the fixture;
-   otherwise the comparison does not prove that the failing run kept the earlier
-   success. If the target is unchanged, wait out the backoff instead. Compare the
-   failure phase and last successful scan. Keep fixture contents out of reports.
-   If `source scan --fixture` reports `fixture_conflict`, the stored journal
-   belongs to another snapshot: rerun with the unchanged fixture version that
-   produced it and wait for `complete`. If that version is unavailable, run the
-   changed file as a separate independent run in an isolated database; it does
-   not resume the original scan and does not release or delete its journal.
+Use a disposable migrated PostgreSQL and anonymized fixture; consult
+`docs/persistence.md` and `docs/dvach.md` for target setup and
+actual fixture identities. The tracked sample
+`tests/fixtures/dvach/thread.json` is test data; its IDs must not
+become production defaults.
 
-A zero exit code from `source status` proves that CLI read the stored status.
-Inspect the outcome and last success time to tell whether a scan succeeded.
-If storage is unreachable, verify the connection role, database and schema on
-the intended test target. Use `storage schema` for schema status.
+Start with `source help`. Use `source scan --fixture <path>` only
+against isolated storage: it performs actual database writes despite
+using a fixture. Then inspect `source status --fixture`,
+`source post <number> --fixture` and `source queue --fixture`.
+Check the decision and state, not only exit 0. A second controlled scan
+can help diagnose repeated observations, but full idempotency proof
+requires independently checked before/after records under
+`anketa-live-testing`.
+
+For failures preserve the original fixture and the last-success state.
+Backoff is stored and may defer retry even when the next fixture is
+malformed. To show preservation of a **previous success**, first prove
+a real success on that same test source, then exercise the bad input;
+a fresh empty source cannot support that claim.
+
+If a changed fixture yields `fixture_conflict`, a pending durable
+snapshot belongs to the earlier content: resume it with the original
+fixture until complete. If that content is unavailable, use an
+independent disposable source/database and label the run accordingly.
+Do not delete or overwrite the pending journal just to remove conflict.
+When storage is unavailable, inspect the intended role, database and
+schema; `storage schema` reports schema state but grants no migration
+permission. Redact fixture content, contact data and connection values
+from shared reports.

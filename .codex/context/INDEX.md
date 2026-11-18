@@ -12,6 +12,7 @@ read files; its historical path does not require a particular harness.
 | Choose checks and interpret their evidence | [Verification map](03-VERIFICATION.md) |
 | Understand product usage and operations | [Russian documentation](../../docs/README.md) |
 | Exercise live CLI contracts and reproduce source failures | [anketa-cli skill](../../.agents/skills/anketa-cli/SKILL.md) |
+| Prove runtime behavior through real CLI/Host/PostgreSQL acceptance | [Live testing skill](../../.agents/skills/anketa-live-testing/SKILL.md) |
 | Publish or maintain a work item | [Git skill](../../.agents/skills/git-workflow/SKILL.md) |
 | Execute an explicitly authorized local provider review | [CodeRabbit skill](../../.agents/skills/coderabbit-review/SKILL.md) |
 

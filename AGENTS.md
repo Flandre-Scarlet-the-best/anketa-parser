@@ -175,6 +175,12 @@ For code changes, debugging, symbol impact or refactoring, consult
 [code-intelligence](.agents/skills/code-intelligence/SKILL.md) as needed; load
 only relevant references. Ordinary text and file lookup do not require it.
 
+For CLI command selection and safe operation use
+[anketa-cli](.agents/skills/anketa-cli/SKILL.md). For requested or
+risk-justified live, smoke, integration or recovery acceptance also consult
+[anketa-live-testing](.agents/skills/anketa-live-testing/SKILL.md);
+its independent execution evidence does not replace normal tests or CI.
+
 Discover repository skills under `.agents/skills/<name>/SKILL.md`, check their
 frontmatter and applicability, and read only relevant references. There is one
 canonical copy, independent of the agent harness. Do not create compatibility
