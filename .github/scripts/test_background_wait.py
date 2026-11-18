@@ -31,6 +31,8 @@ spec.loader.exec_module(module)
 class BackgroundWaitModule(Protocol):
     def start(self, args: argparse.Namespace) -> int: ...
     def worker(self, directory: Path) -> int: ...
+    def start_tray_indicator(self, command_pid: int, job_id: str) -> None: ...
+    def find_executable(self, command: str) -> str | None: ...
     def write_json(self, path: Path, data: dict[str, object]) -> None: ...
     def copy_bounded(
         self, source: BinaryIO, destination: BinaryIO, status: dict[str, object]
@@ -302,6 +304,7 @@ class BackgroundWaitTests(unittest.TestCase):
 
         with (
             mock.patch.dict(os.environ, self.env),
+            mock.patch.object(background_wait, "start_tray_indicator") as indicator,
             mock.patch.object(background_wait, "write_json", side_effect=write),
             mock.patch.object(subprocess, "Popen", return_value=process),
             mock.patch.object(
@@ -312,6 +315,7 @@ class BackgroundWaitTests(unittest.TestCase):
         ):
             _ = background_wait.worker(job)
         wait.assert_called_once()
+        indicator.assert_called_once_with(123, job.name)
         result = cast(
             dict[str, object],
             json.loads((job / "result.json").read_text(encoding="utf-8")),
@@ -340,6 +344,7 @@ class BackgroundWaitTests(unittest.TestCase):
         )
         with (
             mock.patch.dict(os.environ, self.env),
+            mock.patch.object(background_wait, "start_tray_indicator"),
             mock.patch.object(subprocess, "Popen", return_value=process),
             mock.patch.object(
                 subprocess,
@@ -353,6 +358,132 @@ class BackgroundWaitTests(unittest.TestCase):
             json.loads((job / "delivery.json").read_text(encoding="utf-8")),
         )
         self.assertEqual(delivery["state"], "uncertain")
+
+    def test_tray_launch_error_does_not_interrupt_worker(self) -> None:
+        job = Path(self.env["CODEX_HOME"]) / "background-wait" / str(uuid.uuid4())
+        job.mkdir(parents=True)
+        background_wait.write_json(
+            job / "request.json",
+            {
+                "thread": self.env["CODEX_THREAD_ID"],
+                "cwd": str(self.root),
+                "command": [sys.executable],
+                "codex": str(self.queue),
+            },
+        )
+        process = types.SimpleNamespace(
+            pid=123,
+            wait=mock.Mock(return_value=0),
+            stdout=io.BytesIO(),
+            stderr=io.BytesIO(),
+        )
+        with (
+            mock.patch.dict(os.environ, self.env),
+            mock.patch.object(
+                background_wait, "find_executable", return_value=sys.executable
+            ),
+            mock.patch.object(
+                subprocess, "Popen", side_effect=[process, OSError("tray unavailable")]
+            ) as spawn,
+            mock.patch.object(
+                subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, "queued", ""),
+            ),
+        ):
+            self.assertEqual(background_wait.worker(job), 0)
+        self.assertEqual(spawn.call_count, 2)
+        self.assertEqual(
+            json.loads((job / "result.json").read_text(encoding="utf-8"))["exit_code"],
+            0,
+        )
+        self.assertEqual(
+            json.loads((job / "delivery.json").read_text(encoding="utf-8"))["state"],
+            "queued",
+        )
+
+    def test_tray_process_exits_after_command_finishes(self) -> None:
+        powershell = shutil.which("powershell.exe")
+        self.assertIsNotNone(powershell)
+        tray_script = SCRIPT.with_name("tray_indicator.ps1")
+        with (
+            subprocess.Popen(  # noqa: S603 - изолированная проверочная команда
+                [sys.executable, "-c", "import time; time.sleep(3)"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            ) as command,
+            subprocess.Popen(  # noqa: S603 - запуск проверяемого индикатора
+                [
+                    cast(str, powershell),
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-STA",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-File",
+                    str(tray_script),
+                    str(command.pid),
+                    str(os.getpid()),
+                    str(uuid.uuid4()),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            ) as tray,
+        ):
+            time.sleep(1.5)
+            self.assertIsNone(tray.poll(), "Индикатор завершился до команды")
+            self.assertEqual(command.wait(timeout=8), 0)
+            stdout, stderr = tray.communicate(timeout=8)
+            self.assertEqual(tray.returncode, 0, repr((stdout, stderr)))
+
+    def test_tray_process_exits_if_watcher_dies(self) -> None:
+        powershell = shutil.which("powershell.exe")
+        self.assertIsNotNone(powershell)
+        with (
+            subprocess.Popen(  # noqa: S603 - изолированная проверочная команда
+                [sys.executable, "-c", "import time; time.sleep(8)"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            ) as command,
+            subprocess.Popen(  # noqa: S603 - изолированный наблюдатель
+                [sys.executable, "-c", "import time; time.sleep(3)"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            ) as watcher,
+            subprocess.Popen(  # noqa: S603 - запуск проверяемого индикатора
+                [
+                    cast(str, powershell),
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-STA",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-File",
+                    str(SCRIPT.with_name("tray_indicator.ps1")),
+                    str(command.pid),
+                    str(watcher.pid),
+                    str(uuid.uuid4()),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            ) as tray,
+        ):
+            time.sleep(1)
+            self.assertIsNone(tray.poll())
+            self.assertEqual(watcher.wait(timeout=8), 0)
+            stdout, stderr = tray.communicate(timeout=8)
+            self.assertEqual(tray.returncode, 0, repr((stdout, stderr)))
+            self.assertIsNone(command.poll())
 
     def test_worker_rejects_foreign_uuid_directory_before_writing(self) -> None:
         job = self.root / str(uuid.uuid4())

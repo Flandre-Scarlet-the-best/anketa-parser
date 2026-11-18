@@ -66,6 +66,35 @@ def find_executable(command: str) -> str | None:
     return None
 
 
+def start_tray_indicator(command_pid: int, job_id: str) -> None:
+    try:
+        powershell = find_executable("powershell.exe")
+        if not powershell:
+            return
+        _ = subprocess.Popen(  # noqa: S603 - запуск собственного визуального индикатора
+            [
+                powershell,
+                "-NoProfile",
+                "-NonInteractive",
+                "-STA",
+                "-WindowStyle",
+                "Hidden",
+                "-File",
+                str(Path(__file__).with_name("tray_indicator.ps1")),
+                str(command_pid),
+                str(os.getpid()),
+                job_id,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except OSError:
+        pass
+
+
 def copy_bounded(
     source: BinaryIO, destination: BinaryIO, status: dict[str, object]
 ) -> None:
@@ -217,6 +246,7 @@ def worker(directory: Path) -> int:
                 close_fds=True,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
+            start_tray_indicator(process.pid, job_id)
             child_stdout = cast(BinaryIO, process.stdout)
             child_stderr = cast(BinaryIO, process.stderr)
             out_status: dict[str, object] = {"truncated": False}
