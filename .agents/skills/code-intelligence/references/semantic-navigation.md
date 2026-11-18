@@ -14,7 +14,10 @@ absence of uses. If semantic navigation is unavailable, combine scoped search an
 reading with compiler and relevant tests; report that semantic coverage is unknown.
 
 For multiple worktrees or subagents, verify that the server serves the intended root
-and current contents before relying on results. An active different Serena project
+and current contents before relying on results. A subagent usually shares its parent's
+server and inherits that root, so relative paths resolve there and identical file names
+can hide that the answer describes another worktree; confirm absolute paths or returned
+URIs, or give the subagent its own server and root. An active different Serena project
 or unsynchronized index is not evidence for this worktree. Choose an isolated server
 or safe sharing based on actual session state and access policy; do not assume one
 server per agent is always necessary. Avoid switching a shared session while another
