@@ -103,7 +103,9 @@ internal static class SourceCommands
                     case "post":
                         var report = await ingestion.PostAsync(arguments.Length == 3, postNumber, ct).ConfigureAwait(false);
                         status = report.Status;
-                        code = report.Status == "ok" ? ExitCodes.Success : ExitCodes.DependencyUnavailable;
+                        // Выполненный запрос без поста — успешное чтение хранилища,
+                        // а не недоступная обязательная зависимость.
+                        code = report.Status is "ok" or "post_not_found" ? ExitCodes.Success : ExitCodes.DependencyUnavailable;
                         result = report;
                         break;
                     default:

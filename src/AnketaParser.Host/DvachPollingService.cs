@@ -10,8 +10,13 @@ internal sealed partial class DvachPollingService(
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!ingestion.IsEnabled)
+        if (!ingestion.IsConfigured)
+        {
+            // Ненастроенная необязательная зависимость пропускается с деградацией,
+            // поэтому цикл не повторяет отказ на каждом интервале.
+            LogSkipped(logger);
             return;
+        }
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -48,4 +53,8 @@ internal sealed partial class DvachPollingService(
     [LoggerMessage(EventId = 5002, Level = LogLevel.Warning,
         Message = "Сверка Двача завершилась со статусом {Status} на фазе {Phase}. Категория {Failure}.")]
     private static partial void LogFailure(ILogger logger, string status, string phase, string? failure);
+
+    [LoggerMessage(EventId = 5003, Level = LogLevel.Information,
+        Message = "Сверка Двача пропущена: тред или подключение к PostgreSQL не настроены.")]
+    private static partial void LogSkipped(ILogger logger);
 }

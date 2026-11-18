@@ -237,8 +237,8 @@ public sealed class CliApplicationTests
         Assert.Equal(ExitCodes.Success, result.ExitCode);
         Assert.Contains("Коды завершения:", result.Stdout, StringComparison.Ordinal);
         Assert.Contains("команда выполнена успешно; это само по себе не означает, что система здорова", result.Stdout, StringComparison.Ordinal);
-        Assert.Contains("source status с кодом 0", result.Stdout, StringComparison.Ordinal);
-        Assert.Contains("последний опрос мог завершиться ошибкой", result.Stdout, StringComparison.Ordinal);
+        Assert.Contains("Код 0 команды source status", result.Stdout, StringComparison.Ordinal);
+        Assert.Contains("а не наличие сохранённого опроса", result.Stdout, StringComparison.Ordinal);
         Assert.Contains("doctor", result.Stdout, StringComparison.Ordinal);
     }
 

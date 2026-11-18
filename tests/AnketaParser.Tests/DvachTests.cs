@@ -168,12 +168,43 @@ public sealed class DvachTests
     [Fact]
     public void SlashSeparatedLabeledListYieldsEveryTelegramAddress()
     {
-        var prepared = Prepare("Контакты: telegram: firstuser42/seconduser42");
+        var prepared = Prepare("Контакты: telegram: firstuser42/seconduser42/thirduser42");
         Assert.Equal("candidate", prepared.Reason);
-        Assert.Equal(["firstuser42", "seconduser42"],
+        Assert.Equal(["firstuser42", "seconduser42", "thirduser42"],
             prepared.Contacts.Select(contact => contact.NormalizedValue));
         // Слэш как часть пути не открывает список и не даёт контакт.
         Assert.Empty(Prepare("Профиль: telegram: alice_name/path").Contacts);
+    }
+
+    [Fact]
+    public void EmailRightOfLabelDoesNotSuppressTelegramReverseMatch()
+    {
+        // Подавление обратного совпадения относится только к контакту той же платформы.
+        var prepared = Prepare("alice_name тг; Mailbox@example.invalid");
+        Assert.Equal(["telegram:alice_name", "email:Mailbox@example.invalid"],
+            prepared.Contacts.Select(contact => $"{contact.Platform}:{contact.NormalizedValue}"));
+    }
+
+    [Fact]
+    public void EmailHrefWithoutMailtoIsNotAContact()
+    {
+        // `alice@example.invalid` в href — относительный путь, а не почтовая ссылка.
+        Assert.Empty(Prepare("""Связаться <a href="alice@example.invalid">письмо</a>""").Contacts);
+        // Явный mailto остаётся контактом.
+        Assert.Single(Prepare("""Связаться <a href="mailto:alice@example.invalid">письмо</a>""").Contacts);
+    }
+
+    [Fact]
+    public void QuotedReplyLinkCaptionStaysInsideTheQuote()
+    {
+        var prepared = Prepare("""
+            &gt; цитата <a class="post-reply-link" href="/soc/res/100000.html#100001" data-thread="100000" data-num="100001">&gt;&gt;100001<br>@fixture_hidden_zq</a>
+            """);
+        // Перенос внутри подписи цитатной ссылки не открывает авторскую строку.
+        Assert.Empty(prepared.Contacts);
+        using var metadata = JsonDocument.Parse(prepared.Post.RetrievalMetadata);
+        Assert.Contains("fixture_hidden_zq", metadata.RootElement.GetProperty("quotes").ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("fixture_hidden_zq", metadata.RootElement.GetProperty("text").GetString()!, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -337,6 +368,9 @@ public sealed class DvachTests
         var other = DvachSnapshot.Parse(System.Text.Encoding.UTF8.GetBytes(
             SinglePostSnapshot.Replace("\"comment\":\"Текст\"", "\"comment\":\"Другой текст\"", StringComparison.Ordinal)), Thread);
         Assert.False(DvachIngestion.JournalMatches(journal, other.Posts));
+        var laterPost = DvachSnapshot.Parse(System.Text.Encoding.UTF8.GetBytes(
+            SinglePostSnapshot.Replace("\"timestamp\":0", "\"timestamp\":1", StringComparison.Ordinal)), Thread);
+        Assert.False(DvachIngestion.JournalMatches(journal, laterPost.Posts));
         Assert.False(DvachIngestion.JournalMatches(journal, []));
     }
 
@@ -349,13 +383,13 @@ public sealed class DvachTests
             return new HttpResponseMessage(HttpStatusCode.OK);
         });
         var adapter = new DvachClient(client, TimeProvider.System);
-        var started = System.Diagnostics.Stopwatch.StartNew();
-        var error = await Assert.ThrowsAsync<SourceFailure>(() => adapter.FetchAsync(
-            Thread, new() { RequestTimeoutSeconds = 1 }, null, TestContext.Current.CancellationToken));
-        started.Stop();
+        var fetch = adapter.FetchAsync(
+            Thread, new() { RequestTimeoutSeconds = 1 }, null, TestContext.Current.CancellationToken);
+        await Task.Delay(TimeSpan.FromMilliseconds(200), TestContext.Current.CancellationToken);
+        // До истечения срока запрос ещё активен: отмену вызвало ограничение времени.
+        Assert.False(fetch.IsCompleted);
+        var error = await Assert.ThrowsAsync<SourceFailure>(() => fetch);
         Assert.Equal("timeout", error.Category);
-        // Отмена вызвана сроком запроса: поздний тайм-аут не проходит проверку.
-        Assert.True(started.Elapsed < TimeSpan.FromSeconds(10), $"Отмена заняла {started.Elapsed}.");
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => adapter.FetchAsync(Thread, new(), null, new CancellationToken(true)));
     }
 

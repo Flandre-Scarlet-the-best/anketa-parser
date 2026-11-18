@@ -27,6 +27,7 @@ internal sealed partial class DvachMarkup
     private string? _activeHref;
     private int _linkOffset;
     private bool _linkRecorded;
+    private bool? _quoteLine;
 
     internal static DvachBody Parse(string html)
     {
@@ -73,9 +74,11 @@ internal sealed partial class DvachMarkup
             if (element.ClassList.Contains("post-reply-link"))
             {
                 // Цитатная строка может содержать такую же ссылку, как адресный ответ.
-                if (_line.ToString().TrimStart().StartsWith('>'))
+                if (IsQuoteLine())
                 {
-                    Append(element.TextContent);
+                    // Подпись внутри цитаты остаётся в цитате целиком: перенос внутри
+                    // подписи не открывает авторскую строку.
+                    _line.Append(element.TextContent.ReplaceLineEndings(" "));
                     return;
                 }
                 _replies.Add(ParseReply(element, href));
@@ -151,6 +154,18 @@ internal sealed partial class DvachMarkup
     private static bool TryNumber(string? value, out long number) =>
         long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out number) && number > 0;
 
+    /// <summary>Строка начинается с цитатной метки. Признак запоминается на строку.</summary>
+    private bool IsQuoteLine()
+    {
+        if (_quoteLine is { } known)
+            return known;
+        var trimmed = _line.ToString().TrimStart();
+        if (trimmed.Length == 0)
+            return false;
+        _quoteLine = trimmed[0] == '>';
+        return _quoteLine.Value;
+    }
+
     private void Append(string text)
     {
         var start = 0;
@@ -170,15 +185,17 @@ internal sealed partial class DvachMarkup
     private void FlushLine()
     {
         var text = _line.ToString();
-        if (!text.TrimStart().StartsWith('>'))
+        var quoted = IsQuoteLine();
+        if (!quoted)
             RecordActiveLink();
-        if (text.TrimStart().StartsWith('>'))
+        if (quoted)
             _quotes.Add(text);
         else if (text.Length != 0)
             _lines.Add(new BodyLine(text, _links.ToArray()));
         _line.Clear();
         _links.Clear();
         _linkOffset = 0;
+        _quoteLine = null;
     }
 
     private void RecordActiveLink()

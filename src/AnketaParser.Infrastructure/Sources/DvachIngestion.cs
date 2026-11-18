@@ -52,11 +52,26 @@ public sealed class DvachIngestion
             try
             {
                 var resuming = state.Pending is not null;
-                if (resuming && fixturePath is not null && !await IsSameFixtureAsync(fixturePath, state, thread, ct).ConfigureAwait(false))
+                if (resuming && fixturePath is not null)
                 {
-                    // Состояние одного треда разделяется между прогонами: остаток
-                    // другого файла нельзя применить вместо запрошенного.
-                    return Report("failed", "store", "fixture_conflict");
+                    bool sameFixture;
+                    try
+                    {
+                        sameFixture = await IsSameFixtureAsync(fixturePath, state, thread, ct).ConfigureAwait(false);
+                    }
+                    catch (SourceFailure error) when (!ct.IsCancellationRequested)
+                    {
+                        // Запрошенный файл не прочитан: сохранённый журнал и его задержка
+                        // не меняются, поэтому исправный повтор возможен сразу.
+                        return Report("failed", "fixture", error.Category);
+                    }
+
+                    if (!sameFixture)
+                    {
+                        // Состояние одного треда разделяется между прогонами: остаток
+                        // другого файла нельзя применить вместо запрошенного.
+                        return Report("failed", "store", "fixture_conflict");
+                    }
                 }
 
                 if (!resuming)
@@ -115,30 +130,17 @@ public sealed class DvachIngestion
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                if (db.Database.GetDbConnection().State == System.Data.ConnectionState.Open)
-                {
-                    using var recordDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-                    try
-                    {
-                        await store.MarkInterruptedAsync(state.SourceId, _clock.GetUtcNow(), recordDeadline.Token).ConfigureAwait(false);
-                    }
-                    catch (Exception error) when (error is OperationCanceledException || IsDatabaseError(error, CancellationToken.None))
-                    {
-                        // Журнал остаётся в PostgreSQL. Следующий процесс определит точку продолжения.
-                    }
-                }
+                await MarkInterruptedAsync(db, store, state.SourceId).ConfigureAwait(false);
                 throw;
             }
             catch (SourceFailure error)
             {
-                return await store.RecoverFailureAsync(state, _clock.GetUtcNow(), _settings.PollIntervalSeconds,
-                    error.Category, error.Phase, error.HttpStatus, error.RetryAt, ct).ConfigureAwait(false);
+                return await RecoverFailureAsync(db, store, state, error.Category, error.Phase, error.HttpStatus, error.RetryAt, ct).ConfigureAwait(false);
             }
             catch (Exception error) when (IsDatabaseError(error, ct) &&
                 db.Database.GetDbConnection().State == System.Data.ConnectionState.Open)
             {
-                return await store.RecoverFailureAsync(state, _clock.GetUtcNow(), _settings.PollIntervalSeconds,
-                    DatabaseFailure(error), state.Phase, null, null, ct).ConfigureAwait(false);
+                return await RecoverFailureAsync(db, store, state, DatabaseFailure(error), state.Phase, null, null, ct).ConfigureAwait(false);
             }
         }
         catch (Exception error) when (IsDatabaseError(error, ct))
@@ -178,7 +180,9 @@ public sealed class DvachIngestion
     private async Task<bool> IsSameFixtureAsync(string path, SourceScan state, DvachThread thread, CancellationToken ct)
     {
         var snapshot = await _client.FetchAsync(thread, _settings, path, ct).ConfigureAwait(false);
-        return JournalMatches(JsonSerializer.Deserialize<PreparedPost[]>(state.Pending!)!, snapshot.Posts);
+        var metrics = JsonSerializer.Deserialize<DvachScanMetrics>(state.Metrics) ?? new DvachScanMetrics();
+        return metrics.Closed == snapshot.Closed &&
+            JournalMatches(JsonSerializer.Deserialize<PreparedPost[]>(state.Pending!)!, snapshot.Posts);
     }
 
     /// <summary>Сохранённый журнал описывает тот же снимок, что и прочитанный файл.</summary>
@@ -188,10 +192,44 @@ public sealed class DvachIngestion
             return false;
         for (var index = 0; index < pending.Length; index++)
         {
-            if (pending[index].Post.Content != posts[index].Html)
+            if (pending[index].Post.ExternalId != DvachSnapshot.PostId(posts[index].Number) ||
+                pending[index].Post.PublishedAt != posts[index].PublishedAt ||
+                pending[index].Post.Content != posts[index].Html)
                 return false;
         }
         return true;
+    }
+
+    /// <summary>Записать отказ; отмена во время записи тоже помечает прерывание.</summary>
+    private async Task<DvachScanReport> RecoverFailureAsync(ProductDbContext db, DvachScanStore store, SourceScan state,
+        string category, string phase, int? httpStatus, DateTimeOffset? retryAt, CancellationToken ct)
+    {
+        try
+        {
+            return await store.RecoverFailureAsync(state, _clock.GetUtcNow(), _settings.PollIntervalSeconds,
+                category, phase, httpStatus, retryAt, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await MarkInterruptedAsync(db, store, state.SourceId).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>Отметить прерывание в пределах ограниченного времени.</summary>
+    private async Task MarkInterruptedAsync(ProductDbContext db, DvachScanStore store, Guid sourceId)
+    {
+        if (db.Database.GetDbConnection().State != System.Data.ConnectionState.Open)
+            return;
+        using var recordDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        try
+        {
+            await store.MarkInterruptedAsync(sourceId, _clock.GetUtcNow(), recordDeadline.Token).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is OperationCanceledException || IsDatabaseError(error, CancellationToken.None))
+        {
+            // Журнал остаётся в PostgreSQL. Следующий процесс определит точку продолжения.
+        }
     }
 
     private async Task StartAsync(DvachScanStore store, SourceScan state, CancellationToken ct)

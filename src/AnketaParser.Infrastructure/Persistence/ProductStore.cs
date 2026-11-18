@@ -360,16 +360,22 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
     public async Task<Guid> EnqueueAsync(Guid revisionId, string processorVersion, int maxAttempts, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(processorVersion);
+        // Блокировка поста отдельным оператором: проверка причины ревизии в следующем
+        // операторе увидит изменения, зафиксированные до получения этой блокировки.
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            SELECT 1 FROM product."OriginalPost" AS post
+            JOIN product."PostRevision" AS revision ON revision."PostId"=post."Id"
+            WHERE revision."Id"={revisionId}
+            FOR UPDATE OF post
+            """, cancellationToken).ConfigureAwait(false);
         var ids = await db.Database.SqlQuery<Guid>($"""
-            WITH eligible AS (
-                SELECT revision."Id" FROM product."PostRevision" AS revision
-                JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
-                WHERE revision."Id"={revisionId} AND NOT post."Excluded"
-                AND (post."IngestedRevisionId" IS NULL OR
-                    (post."IngestedRevisionId"=revision."Id" AND revision."IngestionReason"='candidate'))
-                FOR UPDATE OF post)
             INSERT INTO product."ProcessingJob" ("Id","RevisionId","ProcessorVersion","MaxAttempts","Attempts","State","AvailableAt")
-            SELECT {Guid.NewGuid()},"Id",{processorVersion},{maxAttempts},0,'pending',{Now} FROM eligible
+            SELECT {Guid.NewGuid()},revision."Id",{processorVersion},{maxAttempts},0,'pending',{Now}
+            FROM product."PostRevision" AS revision
+            JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
+            WHERE revision."Id"={revisionId} AND NOT post."Excluded"
+            AND (post."IngestedRevisionId" IS NULL OR
+                (post."IngestedRevisionId"=revision."Id" AND revision."IngestionReason"='candidate'))
             ON CONFLICT ("RevisionId","ProcessorVersion") DO UPDATE SET "ProcessorVersion"=EXCLUDED."ProcessorVersion"
             RETURNING "Id" AS "Value"
             """).ToListAsync(cancellationToken).ConfigureAwait(false);
@@ -417,12 +423,18 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         foreach (var candidate in jobs)
         {
             // Задание перечитывается под собственной блокировкой: аренда выдаётся только
-            // заданию, которое всё ещё ожидает и не исчерпало попытки.
+            // заданию, которое всё ещё ожидает и не исчерпало попытки, а пост и ревизия
+            // проверяются заново и видят зафиксированные изменения.
             var locked = await db.Set<ProcessingJob>().FromSqlInterpolated($"""
-                SELECT * FROM product."ProcessingJob"
-                WHERE "Id"={candidate} AND "State"='pending'
-                AND "Attempts"<"MaxAttempts" AND "AvailableAt"<={Now}
-                FOR UPDATE
+                SELECT job.* FROM product."ProcessingJob" AS job
+                JOIN product."PostRevision" AS revision ON revision."Id"=job."RevisionId"
+                JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
+                WHERE job."Id"={candidate} AND job."State"='pending'
+                AND job."Attempts"<job."MaxAttempts" AND job."AvailableAt"<={Now}
+                AND NOT post."Excluded"
+                AND (post."IngestedRevisionId" IS NULL OR
+                    (post."IngestedRevisionId"=revision."Id" AND revision."IngestionReason"='candidate'))
+                FOR UPDATE OF job
                 """).ToListAsync(cancellationToken).ConfigureAwait(false);
             if (locked.Count == 0)
                 continue;

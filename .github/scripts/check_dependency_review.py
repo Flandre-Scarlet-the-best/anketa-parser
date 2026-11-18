@@ -43,9 +43,11 @@ ACTION_USE = re.compile(
 # Интервал NuGet начинается с `[` или `(`, поэтому эти символы входят в набор.
 IMPRECISE = re.compile(r"^[<>=~^*\[(]")
 # Разрешённая версия NuGet: `major.minor[.patch[.revision]]`, необязательные
-# суффиксы предварительной версии и метаданных сборки.
+# суффиксы предварительной версии и метаданных сборки без пустых компонентов.
 NUGET_VERSION = re.compile(
-    r"^\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+    r"^\d+(?:\.\d+){1,3}"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 MAX_DIAGNOSTIC = 2000
 NUGET = "NuGet"
@@ -127,25 +129,22 @@ def project_locks(root: Path, revision: str) -> dict[str, str | None]:
     Приоритет именованного файла определяется по файлам конкретной ревизии.
     """
     locks = {name for name in tree_files(root, revision) if LOCKFILE.search(name)}
-    projects = project_files(root, revision)
-    per_directory: dict[str, int] = {}
-    for name in projects:
-        directory = PurePosixPath(name).parent.as_posix()
-        per_directory[directory] = per_directory.get(directory, 0) + 1
+    projects = [PurePosixPath(name) for name in project_files(root, revision)]
     chosen: dict[str, str | None] = {}
-    for name in projects:
-        project = PurePosixPath(name)
-        directory = project.parent
+    remaining: dict[str, list[PurePosixPath]] = {}
+    for project in projects:
         named = (
-            directory / f"packages.{project.stem.replace(' ', '_')}.lock.json"
+            project.parent / f"packages.{project.stem.replace(' ', '_')}.lock.json"
         ).as_posix()
         if named in locks:
-            chosen[name] = named
-        elif per_directory[directory.as_posix()] == 1:
-            chosen[name] = (directory / "packages.lock.json").as_posix()
+            chosen[project.as_posix()] = named
         else:
-            # Единственный владелец записи общего lock-файла не доказан.
-            chosen[name] = None
+            remaining.setdefault(project.parent.as_posix(), []).append(project)
+    for directory, candidates in remaining.items():
+        manifest = (PurePosixPath(directory) / "packages.lock.json").as_posix()
+        # Общий файл принадлежит единственному проекту каталога без именованного файла.
+        for project in candidates:
+            chosen[project.as_posix()] = manifest if len(candidates) == 1 else None
     return chosen
 
 

@@ -409,7 +409,8 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
             await release.Task.WaitAsync(ct);
             return Response(Payload("tg @fixture_first_zq"));
         });
-        await using var provider = CreateService(database, handler, TimeProvider.System);
+        var clock = new TestClock();
+        await using var provider = CreateService(database, handler, clock);
         var ingestion = provider.GetRequiredService<DvachIngestion>();
         using var scanCancellation = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         var scan = ingestion.ScanAsync(null, scanCancellation.Token);
@@ -438,12 +439,13 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
             response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromMinutes(12));
             return Task.FromResult(response);
         });
-        await using var nextProvider = CreateService(database, unavailable, TimeProvider.System);
+        await using var nextProvider = CreateService(database, unavailable, clock);
         var next = nextProvider.GetRequiredService<DvachIngestion>();
         var rateLimited = await next.ScanAsync(null, Ct);
         Assert.Equal("rate_limited", rateLimited.Failure);
         Assert.Equal(429, rateLimited.HttpStatus);
-        Assert.True(rateLimited.RetryAt > DateTimeOffset.UtcNow.AddMinutes(11));
+        // Срок считается по тем же часам, что и у клиента, поэтому проверка не зависит от пауз процесса.
+        Assert.Equal(clock.GetUtcNow().AddMinutes(12).ToUnixTimeMilliseconds(), rateLimited.RetryAt!.Value.ToUnixTimeMilliseconds());
         Assert.Equal(success.LastSuccessAt!.Value.ToUnixTimeMilliseconds(), rateLimited.LastSuccessAt!.Value.ToUnixTimeMilliseconds());
         Assert.Equal("backoff", (await next.ScanAsync(null, Ct)).Status);
         Assert.Equal(1, (await next.QueueAsync(false, Ct)).Single().Count);

@@ -204,6 +204,20 @@ class DependencySetTests(RepositoryCase):
             {"src/Lib/First.csproj": None, "src/Lib/Second.csproj": None},
         )
 
+    def test_named_lock_owner_is_not_counted_for_the_shared_file(self) -> None:
+        self.write("src/Lib/First.csproj", "<Project />")
+        self.write("src/Lib/Second.csproj", "<Project />")
+        self.write("src/Lib/packages.First.lock.json", LOCK % ("Npgsql", "10.0.3"))
+        self.write("src/Lib/packages.lock.json", LOCK % ("Npgsql", "10.0.4"))
+        revision = self.commit("именованный lock одного из проектов")
+        self.assertEqual(
+            project_locks(self.root, revision),
+            {
+                "src/Lib/First.csproj": "src/Lib/packages.First.lock.json",
+                "src/Lib/Second.csproj": "src/Lib/packages.lock.json",
+            },
+        )
+
 
 class ChangeTests(RepositoryCase):
     def test_diverged_base_uses_merge_base(self) -> None:
@@ -501,7 +515,14 @@ class ComparisonTests(unittest.TestCase):
                 self.assertFalse(exact_version(value))
 
     def test_exact_version_rejects_text_that_is_not_a_version(self) -> None:
-        for value in ("not-a-version", "10", "v10.0.4", "10.0.4.5.6"):
+        for value in (
+            "not-a-version",
+            "10",
+            "v10.0.4",
+            "10.0.4.5.6",
+            "1.2.3-preview..1",
+            "1.2.3+build..1",
+        ):
             with self.subTest(value=value):
                 self.assertFalse(exact_version(value))
         for value in (
