@@ -387,7 +387,10 @@ class PythonAnalysisTests(unittest.TestCase):
         command = str(analysis["run"])
         self.assertEqual(analysis["shell"], "bash")
         self.assertEqual(command.count("basedpyright --project"), 1)
-        count = len(list((ROOT / ".github/scripts").rglob("*.py")))
+        count = sum(
+            len(list((ROOT / path).rglob("*.py")))
+            for path in (".github/scripts", ".agents/skills")
+        )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             checker = root / "basedpyright"

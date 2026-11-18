@@ -19,6 +19,8 @@ directory and an argument vector after `--`. Use a real executable, not a shell
 alias. For shell syntax, pass `powershell.exe -NoProfile -NonInteractive -Command`
 and the command as one argument. Do not put secrets in arguments: the command and
 its output are stored in the current user's Codex data directory.
+Implicit executable lookup searches absolute PATH entries except the helper's
+current directory. Specify a path explicitly to execute a file from that directory.
 UNC and Windows namespace paths require `--allow-unc`; use it only when the
 user has authorized access to the target. A command must wait for its own child
 processes before exiting: the helper tracks the launched process, not its tree.
@@ -52,8 +54,9 @@ directory (`python <skill-path>/scripts/background_wait.py cancel <job-directory
 This does not terminate the command. If notification was already
 submitted, it cannot be retracted. Do not use this mechanism for jobs requiring
 guaranteed process-tree cancellation or secure deletion of logs.
-Completed job directories are retained. After the user explicitly authorizes
-removing a particular completed job, `cleanup <job-directory>` removes only
+Job directories are retained. After the user explicitly authorizes removing a
+particular completed job or a job whose watcher failed to start,
+`cleanup <job-directory>` removes only
 known helper files from that job; unknown files or links block cleanup. It does
 not clean jobs automatically or establish a global storage quota.
 

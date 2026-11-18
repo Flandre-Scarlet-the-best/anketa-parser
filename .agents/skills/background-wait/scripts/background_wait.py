@@ -52,6 +52,20 @@ def owned_job(directory: Path) -> Path:
     return candidate
 
 
+def find_executable(command: str) -> str | None:
+    if os.path.dirname(command):
+        return shutil.which(command)
+    current = Path.cwd().resolve()
+    for entry in os.get_exec_path():
+        path = Path(entry)
+        if not path.is_absolute() or path.resolve() == current:
+            continue
+        found = shutil.which(str(path / command))
+        if found:
+            return str(Path(found).absolute())
+    return None
+
+
 def copy_bounded(
     source: BinaryIO, destination: BinaryIO, status: dict[str, object]
 ) -> None:
@@ -112,13 +126,13 @@ def start(args: argparse.Namespace) -> int:
         command = command[1:]
     if not command:
         raise ValueError("После -- необходимо указать исполняемый файл и аргументы")
-    executable = shutil.which(command[0])
+    executable = find_executable(command[0])
     if not executable or Path(executable).suffix.lower() in {".cmd", ".bat"}:
         raise ValueError(
             "Укажите доступный исполняемый файл, а не cmd/bat или псевдоним"
         )
     command[0] = str(Path(executable).absolute())
-    codex = shutil.which("codex.cmd") or shutil.which("codex.exe")
+    codex = find_executable("codex.cmd") or find_executable("codex.exe")
     if not codex:
         raise ValueError("Не найден исполняемый файл Codex CLI")
 
@@ -181,9 +195,10 @@ def start(args: argparse.Namespace) -> int:
 
 
 def worker(directory: Path) -> int:
-    job_id = str(uuid.UUID(directory.name))
-    if directory.name != job_id:
-        raise ValueError("Некорректный идентификатор задания")
+    directory = owned_job(directory)
+    job_id = directory.name
+    if (directory / "startup-error.json").exists():
+        raise ValueError("Наблюдатель для этого задания не был запущен")
     request = read_json(directory / "request.json")
     thread = str(uuid.UUID(str(request["thread"])))
     result: dict[str, object]
@@ -194,8 +209,8 @@ def worker(directory: Path) -> int:
             (directory / "stderr.log").open("wb", buffering=0) as stderr,
         ):
             process = subprocess.Popen(  # noqa: S603 - команда явно передана вызывающей стороной
-                request["command"],
-                cwd=request["cwd"],
+                cast(list[str], request["command"]),
+                cwd=cast(str, request["cwd"]),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -258,7 +273,7 @@ def worker(directory: Path) -> int:
         try:
             delivery = subprocess.run(  # noqa: S603 - фиксированные аргументы очереди и UUID
                 [
-                    request["codex"],
+                    cast(str, request["codex"]),
                     "queue",
                     "--resume",
                     "--thread",
@@ -336,13 +351,17 @@ def cleanup(directory: Path) -> int:
         "stderr.log",
     }
     with notification_lock(directory):
-        if (
-            not (directory / "request.json").is_file()
-            or not (directory / "result.json").is_file()
-            or not (directory / "delivery.json").is_file()
-        ):
+        names = {entry.name for entry in directory.iterdir()}
+        completed = {"result.json", "delivery.json"} <= names
+        startup_failed = "startup-error.json" in names and names <= {
+            "request.json",
+            "startup-error.json",
+            "cancel.json",
+            "notification.lock",
+        }
+        if "request.json" not in names or not (completed or startup_failed):
             raise ValueError(
-                "Удалять можно только завершённое задание с результатом доставки"
+                "Удалять можно только завершённое или не запущенное задание"
             )
         entries = list(directory.iterdir())
         if any(

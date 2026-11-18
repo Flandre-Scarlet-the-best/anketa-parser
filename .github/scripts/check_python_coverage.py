@@ -8,7 +8,9 @@ from typing import cast
 from check_pr_body import JSONValue
 
 
-def validate_coverage(report_text: str, config_path: Path) -> list[str]:
+def validate_coverage(
+    report_text: str, config_path: Path, required_roots: tuple[Path, ...] = ()
+) -> list[str]:
     """Конфигурация задаёт корни; исключения не разрешают терять их исходники.
 
     Поддерживаются явные каталоги include. Новая форма конфигурации требует
@@ -30,6 +32,10 @@ def validate_coverage(report_text: str, config_path: Path) -> list[str]:
         if not directory.is_dir():
             return ["Целевой каталог BasedPyright отсутствует"]
         expected.update(directory.rglob("*.py"))
+    for directory in required_roots:
+        if not directory.is_dir():
+            return ["Обязательный каталог исходников отсутствует"]
+        expected.update(directory.resolve().rglob("*.py"))
     count = summary.get("filesAnalyzed")
     if not expected or type(count) is not int or count != len(expected):
         return [f"Неполный охват BasedPyright: {count}; ожидается {len(expected)}"]
@@ -40,6 +46,7 @@ if __name__ == "__main__":
     errors = validate_coverage(
         Path(sys.argv[1]).read_text(encoding="utf-8"),
         Path(sys.argv[2]),
+        (Path(".agents/skills"),),
     )
     for error in errors:
         print(error, file=sys.stderr)

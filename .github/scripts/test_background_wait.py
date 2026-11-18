@@ -271,8 +271,8 @@ class BackgroundWaitTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())["state"], "start_failed")
 
     def test_worker_waits_when_started_metadata_write_fails(self) -> None:
-        job = self.root / str(uuid.uuid4())
-        job.mkdir()
+        job = Path(self.env["CODEX_HOME"]) / "background-wait" / str(uuid.uuid4())
+        job.mkdir(parents=True)
         background_wait.write_json(
             job / "request.json",
             {
@@ -301,6 +301,7 @@ class BackgroundWaitTests(unittest.TestCase):
             return subprocess.CompletedProcess([], 0, "queued", "")
 
         with (
+            mock.patch.dict(os.environ, self.env),
             mock.patch.object(background_wait, "write_json", side_effect=write),
             mock.patch.object(subprocess, "Popen", return_value=process),
             mock.patch.object(
@@ -320,8 +321,8 @@ class BackgroundWaitTests(unittest.TestCase):
         self.assertEqual(events, ["wait", "queue"])
 
     def test_queue_timeout_is_uncertain(self) -> None:
-        job = self.root / str(uuid.uuid4())
-        job.mkdir()
+        job = Path(self.env["CODEX_HOME"]) / "background-wait" / str(uuid.uuid4())
+        job.mkdir(parents=True)
         background_wait.write_json(
             job / "request.json",
             {
@@ -338,6 +339,7 @@ class BackgroundWaitTests(unittest.TestCase):
             stderr=io.BytesIO(),
         )
         with (
+            mock.patch.dict(os.environ, self.env),
             mock.patch.object(subprocess, "Popen", return_value=process),
             mock.patch.object(
                 subprocess,
@@ -351,6 +353,216 @@ class BackgroundWaitTests(unittest.TestCase):
             json.loads((job / "delivery.json").read_text(encoding="utf-8")),
         )
         self.assertEqual(delivery["state"], "uncertain")
+
+    def test_worker_rejects_foreign_uuid_directory_before_writing(self) -> None:
+        job = self.root / str(uuid.uuid4())
+        job.mkdir()
+        log = job / "stdout.log"
+        _ = log.write_text("valuable", encoding="utf-8")
+        result = self.call("worker", str(job))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotEqual(self.call("cleanup", str(job)).returncode, 0)
+        self.assertEqual(log.read_text(encoding="utf-8"), "valuable")
+        self.assertEqual({p.name for p in job.iterdir()}, {"stdout.log"})
+
+    def test_implicit_lookup_ignores_current_directory_for_command_and_codex(
+        self,
+    ) -> None:
+        _ = (self.root / "codex.cmd").write_text(
+            "@echo off\r\nexit /b 44\r\n", encoding="ascii"
+        )
+        _ = shutil.copy2(sys.executable, self.root / "python.exe")
+        self.env["PATH"] = os.pathsep.join(
+            (str(self.root), str(self.bin), str(Path(sys.executable).parent))
+        )
+        result = subprocess.run(  # noqa: S603 - запуск проверяемого локального сценария
+            [
+                sys.executable,
+                str(SCRIPT),
+                "start",
+                "--cwd",
+                str(self.root),
+                "--",
+                "python",
+                "-c",
+                "print('ok')",
+            ],
+            cwd=self.root,
+            env=self.env,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=25,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        job = Path(cast(dict[str, str], json.loads(result.stdout))["job_dir"])
+        request = cast(
+            dict[str, object],
+            json.loads((job / "request.json").read_text(encoding="utf-8")),
+        )
+        self.assertEqual(
+            Path(cast(list[str], request["command"])[0]).resolve(),
+            Path(sys.executable).resolve(),
+        )
+        self.assertEqual(Path(cast(str, request["codex"])), self.queue)
+        self.assertEqual(self.wait_for(job / "delivery.json")["state"], "queued")
+
+    def test_explicit_absolute_executable_in_current_directory_is_allowed(self) -> None:
+        result = subprocess.run(  # noqa: S603 - запуск проверяемого локального сценария
+            [
+                sys.executable,
+                str(SCRIPT),
+                "start",
+                "--cwd",
+                str(self.root),
+                "--",
+                sys.executable,
+                "-c",
+                "print('explicit')",
+            ],
+            cwd=Path(sys.executable).parent,
+            env=self.env,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=25,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        job = Path(cast(dict[str, str], json.loads(result.stdout))["job_dir"])
+        request = cast(
+            dict[str, object],
+            json.loads((job / "request.json").read_text(encoding="utf-8")),
+        )
+        self.assertEqual(
+            Path(cast(list[str], request["command"])[0]), Path(sys.executable)
+        )
+        self.assertEqual(self.wait_for(job / "delivery.json")["state"], "queued")
+
+    def test_lookup_does_not_fall_back_to_current_directory(self) -> None:
+        marker = self.root / "executed"
+        _ = (self.root / "codex.cmd").write_text(
+            f'@echo off\r\necho bad > "{marker}"\r\n', encoding="utf-8"
+        )
+        self.env["PATH"] = str(self.root)
+        result = subprocess.run(  # noqa: S603 - запуск проверяемого локального сценария
+            [
+                sys.executable,
+                str(SCRIPT),
+                "start",
+                "--cwd",
+                str(self.root),
+                "--",
+                sys.executable,
+            ],
+            cwd=self.root,
+            env=self.env,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=25,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(marker.exists())
+        self.assertFalse((Path(self.env["CODEX_HOME"]) / "background-wait").exists())
+
+    def test_command_lookup_does_not_fall_back_to_current_directory(self) -> None:
+        _ = shutil.copy2(sys.executable, self.root / "python.exe")
+        self.env["PATH"] = os.pathsep.join((str(self.root), str(self.bin)))
+        result = subprocess.run(  # noqa: S603 - запуск проверяемого локального сценария
+            [
+                sys.executable,
+                str(SCRIPT),
+                "start",
+                "--cwd",
+                str(self.root),
+                "--",
+                "python",
+            ],
+            cwd=self.root,
+            env=self.env,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=25,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((Path(self.env["CODEX_HOME"]) / "background-wait").exists())
+
+    def test_worker_and_cleanup_reject_junction_job(self) -> None:
+        root = Path(self.env["CODEX_HOME"]) / "background-wait"
+        root.mkdir(parents=True)
+        target = self.root / "target"
+        target.mkdir()
+        marker = target / "stdout.log"
+        _ = marker.write_text("valuable", encoding="utf-8")
+        job = root / str(uuid.uuid4())
+        result = subprocess.run(  # noqa: S603 - создание изолированного junction
+            [os.environ["COMSPEC"], "/c", "mklink", "/J", str(job), str(target)],
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0)
+        for action in ("worker", "cleanup"):
+            self.assertNotEqual(self.call(action, str(job)).returncode, 0)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "valuable")
+        job.rmdir()
+
+    def test_cleanup_rejects_junction_inside_failed_job(self) -> None:
+        root = Path(self.env["CODEX_HOME"]) / "background-wait"
+        job = root / str(uuid.uuid4())
+        job.mkdir(parents=True)
+        target = self.root / "target"
+        target.mkdir()
+        marker = target / "valuable"
+        _ = marker.write_text("data", encoding="utf-8")
+        for name in ("request.json", "startup-error.json"):
+            _ = (job / name).write_text("{}", encoding="utf-8")
+        link = job / "stdout.log"
+        result = subprocess.run(  # noqa: S603 - создание изолированного junction
+            [os.environ["COMSPEC"], "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertNotEqual(self.call("cleanup", str(job)).returncode, 0)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "data")
+        link.rmdir()
+
+    def test_cleanup_removes_confirmed_watcher_start_failure(self) -> None:
+        args = argparse.Namespace(
+            thread=self.env["CODEX_THREAD_ID"],
+            cwd=str(self.root),
+            command=[sys.executable],
+        )
+        with (
+            mock.patch.dict(os.environ, self.env),
+            mock.patch.object(subprocess, "Popen", side_effect=OSError("failed")),
+            mock.patch("sys.stdout", new_callable=io.StringIO) as output,
+        ):
+            self.assertEqual(background_wait.start(args), 1)
+        response = cast(dict[str, str], json.loads(output.getvalue()))
+        self.assertEqual(response["state"], "startup_failed")
+        job = Path(response["job_dir"])
+        self.assertNotEqual(self.call("worker", str(job)).returncode, 0)
+        self.assertFalse((job / "stdout.log").exists())
+        result = self.call("cleanup", str(job))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(job.exists())
+
+    def test_cleanup_rejects_uncertain_or_contaminated_start_failure(self) -> None:
+        for extra in (None, "started.json", "user-data.txt"):
+            with self.subTest(extra=extra):
+                job = (
+                    Path(self.env["CODEX_HOME"]) / "background-wait" / str(uuid.uuid4())
+                )
+                job.mkdir(parents=True, exist_ok=True)
+                _ = (job / "request.json").write_text("{}", encoding="utf-8")
+                if extra is not None:
+                    _ = (job / "startup-error.json").write_text("{}", encoding="utf-8")
+                    _ = (job / extra).write_text("valuable", encoding="utf-8")
+                result = self.call("cleanup", str(job))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(job.exists())
 
     def test_log_output_is_bounded_without_blocking_command(self) -> None:
         job = self.start(
