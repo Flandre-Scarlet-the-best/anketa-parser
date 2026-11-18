@@ -51,7 +51,8 @@ public sealed class DvachIngestion
 
             try
             {
-                if (state.Pending is null)
+                var resuming = state.Pending is not null;
+                if (!resuming)
                 {
                     await StartAsync(store, state, ct).ConfigureAwait(false);
                     var snapshot = await _client.FetchAsync(thread, _settings, fixturePath, ct).ConfigureAwait(false);
@@ -78,9 +79,21 @@ public sealed class DvachIngestion
                     await ResumeAsync(store, state, ct).ConfigureAwait(false);
                 }
 
-                var pending = JsonSerializer.Deserialize<PreparedPost[]>(state.Pending)!;
+                var pending = JsonSerializer.Deserialize<PreparedPost[]>(state.Pending!)!;
                 for (var index = state.Applied; index < pending.Length; index++)
-                    await store.ApplyAsync(state, pending[index], ct).ConfigureAwait(false);
+                {
+                    // Журнал может быть сохранён предыдущей версией фильтра. Исходный HTML
+                    // и идентификатор позволяют применить действующие правила без HTTP.
+                    var prepared = pending[index];
+                    if (resuming)
+                    {
+                        var saved = prepared.Post;
+                        var number = long.Parse(saved.ExternalId, System.Globalization.CultureInfo.InvariantCulture);
+                        var post = new DvachPost(number, number == thread.Number ? 0 : thread.Number, saved.Content, saved.PublishedAt);
+                        prepared = DvachFilter.Prepare(thread, post, key);
+                    }
+                    await store.ApplyAsync(state, prepared, ct).ConfigureAwait(false);
+                }
 
                 state.Pending = null;
                 state.LastSuccessAt = state.FinishedAt = _clock.GetUtcNow();

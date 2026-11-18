@@ -25,12 +25,12 @@ public sealed class DvachTests
             ("none", "telegram:fixture_test_25_zq"),
             ("none", "discord:fixture_test_26_zq"),
             ("op_reply", "telegram:fixture_test_35_zq"),
-            ("none", ""),
+            ("none", "telegram:fixture_test_43_zq"),
             ("none", "email:Fixture.Test.50@example.invalid"),
-            ("op_reply", ""),
+            ("op_reply", "telegram:fixture_test_57_zq"),
             ("op_reply", "telegram:fixture_test_77_zq"),
             ("none", "telegram:fixture_test_79_zq"),
-            ("none", ""),
+            ("none", "telegram:fixture_test_101_zq"),
             ("none", "telegram:fixture_test_117_zq"),
             ("none", "discord:fixture_test_146_zq"),
             ("none", ""),
@@ -40,13 +40,13 @@ public sealed class DvachTests
             ("none", ""),
             ("other_reply", ""),
             ("op_reply", "telegram:fixture_test_395_zq"),
-            ("op_reply", ""),
-            ("op_reply", ""),
+            ("op_reply", "telegram:fixture_test_411_zq"),
+            ("op_reply", "discord:fixture_427_zq"),
             ("none", "email:fixture.test.445@example.invalid"),
-            ("none", ""),
+            ("none", "telegram:fixture_452_one_zq,telegram:fixture_452_two_zq,telegram:fixture_452_three_zq"),
             ("op_reply", "telegram:fixture_test_504_zq"),
-            ("other_reply", ""),
-            ("none", ""),
+            ("other_reply", "telegram:fixture_521_one_zq,telegram:fixture_521_two_zq,telegram:fixture_521_three_zq,telegram:fixture_521_four_zq"),
+            ("none", "telegram:fixture_573_zq"),
             ("none", "telegram:fixture_test_622_zq,discord:fixture_discord_622_zq"),
             ("none", "telegram:fixture_test_624_zq"),
             ("none", "telegram:fixture_test_639_zq"),
@@ -60,11 +60,10 @@ public sealed class DvachTests
             var prepared = DvachFilter.Prepare(Thread, sourcePost, Thread.SourceKey);
             var (reply, contacts) = expected[i];
             Assert.Equal(reply, prepared.Reply);
-            var reason = reply == "op" ? "opening_post" : reply == "other_reply" ? "reply_to_other_post"
-                : contacts.Length == 0 ? "no_own_contact" : "candidate";
+            var reason = reply == "op" ? "opening_post" : contacts.Length == 0 ? "no_own_contact" : "candidate";
             Assert.Equal(reason, prepared.Reason);
             Assert.Equal(contacts, string.Join(',', prepared.Contacts.Select(c => $"{c.Platform}:{c.NormalizedValue}")));
-            Assert.False(prepared.Ambiguous);
+            Assert.Equal(i is 23 or 25, prepared.Ambiguous);
             Assert.Equal(sourcePost.Html, prepared.Post.Content);
             Assert.Equal(Thread.Url + "#" + prepared.Post.ExternalId, prepared.Post.Url);
             Assert.All(prepared.Contacts, c => Assert.StartsWith("dvach:body:", c.Provenance, StringComparison.Ordinal));
@@ -77,7 +76,7 @@ public sealed class DvachTests
     }
 
     [Fact]
-    public void QuotedReplyAndForeignContactStaySeparateFromOwnContacts()
+    public void StructuralQuotesStaySeparateFromAuthorContacts()
     {
         const string html = """
             <blockquote>
@@ -107,20 +106,104 @@ public sealed class DvachTests
     }
 
     [Theory]
-    [InlineData("@fixture_unspecified_zq")]
-    [InlineData("Мне переслали https://t.me/fixture_other_zq")]
-    [InlineData("Тг: мне переслали https://t.me/fixture_other_zq")]
-    [InlineData("Telegram: user@example.invalid")]
     [InlineData("Discord https://discord.gg/fixture_invite_zq")]
     [InlineData("https://t.me/+fixture_invite_zq")]
     [InlineData("https://t.me/fixture_channel_zq/44")]
     [InlineData("https://t.me/share")]
     [InlineData("Email: fixture@localhost")]
     [InlineData("Discord: fixture..test")]
-    public void NonPersonalOrUnattributedTokensAreNotContacts(string html)
+    public void UnsupportedAndInvalidTokensAreNotContacts(string html)
     {
         var prepared = Prepare(html);
         Assert.Equal("no_own_contact", prepared.Reason);
+        Assert.Empty(prepared.Contacts);
+    }
+
+    [Theory]
+    [InlineData("@sampleuser42", "telegram", "sampleuser42")]
+    [InlineData("Мне переслали @sampleuser42", "telegram", "sampleuser42")]
+    [InlineData("Привет, пиши в тг @sampleuser42, буду рад", "telegram", "sampleuser42")]
+    [InlineData("Тг<br>@sampleuser42", "telegram", "sampleuser42")]
+    [InlineData("писать в тг sampleuser42", "telegram", "sampleuser42")]
+    [InlineData("sampleuser42 телеграмм", "telegram", "sampleuser42")]
+    [InlineData("Discord: Sample.Name", "discord", "Sample.Name")]
+    [InlineData("Напиши в Discord Sample.Name", "discord", "Sample.Name")]
+    [InlineData("Email: Test.User@example.invalid и ещё текст", "email", "Test.User@example.invalid")]
+    [InlineData("Telegram: Test.User@example.invalid", "email", "Test.User@example.invalid")]
+    [InlineData("Мне переслали https://t.me/sampleuser42", "telegram", "sampleuser42")]
+    public void TechnicalContactsAreIndependentOfPositionAndMeaning(string html, string platform, string value)
+    {
+        var prepared = Prepare(html);
+        Assert.Equal("candidate", prepared.Reason);
+        var contact = Assert.Single(prepared.Contacts);
+        Assert.Equal(platform, contact.Platform);
+        Assert.Equal(value, contact.NormalizedValue);
+    }
+
+    [Theory]
+    [InlineData("Тг: firstuser42, seconduser42", "telegram", "firstuser42", "seconduser42")]
+    [InlineData("Discord: First.Name / Second.Name", "discord", "First.Name", "Second.Name")]
+    public void LabeledListsPreserveAllValues(string text, string platform, string first, string second)
+    {
+        var prepared = Prepare(text);
+        Assert.Equal("candidate", prepared.Reason);
+        Assert.True(prepared.Ambiguous);
+        Assert.Equal([first, second], prepared.Contacts.Select(contact => contact.NormalizedValue));
+        Assert.All(prepared.Contacts, contact => Assert.Equal(platform, contact.Platform));
+    }
+
+    [Fact]
+    public void MixedContactsAndCoordinatesRemainComplete()
+    {
+        var prepared = Prepare("<br>Тг: @sampleuser42 или почта Test.User@example.invalid<br>Контакты: @otheruser42 / Test.Two@example.invalid / xmpp:test@example.invalid");
+        Assert.Equal("candidate", prepared.Reason);
+        Assert.True(prepared.Ambiguous);
+        Assert.Equal(["telegram:sampleuser42", "email:Test.User@example.invalid", "telegram:otheruser42",
+            "email:Test.Two@example.invalid", "xmpp:test@example.invalid"],
+            prepared.Contacts.Select(c => $"{c.Platform}:{c.NormalizedValue}"));
+        using var metadata = JsonDocument.Parse(prepared.Post.RetrievalMetadata);
+        var lines = metadata.RootElement.GetProperty("text").GetString()!.Split('\n');
+        foreach (var contact in prepared.Contacts)
+        {
+            var parts = contact.Provenance.Split(':');
+            var line = int.Parse(parts[2], CultureInfo.InvariantCulture);
+            var offset = int.Parse(parts[3], CultureInfo.InvariantCulture);
+            Assert.StartsWith(contact.RawValue, lines[line - 1][offset..], StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void InlineLinksAndRepliesAreTechnicalSignals()
+    {
+        var prepared = Prepare("""
+            <a class="post-reply-link" href="/soc/res/100000.html#99999" data-thread="100000" data-num="99999">&gt;&gt;99999</a>
+            Связаться <a href="https://t.me/sampleuser42">сюда</a> или <a href="https://t.me/otheruser42">@otheruser42</a>.
+            """);
+        Assert.Equal("other_reply", prepared.Reply);
+        Assert.Equal("candidate", prepared.Reason);
+        Assert.Equal(["sampleuser42", "otheruser42"], prepared.Contacts.Select(c => c.NormalizedValue));
+        Assert.EndsWith(":href", prepared.Contacts[0].Provenance, StringComparison.Ordinal);
+        using var metadata = JsonDocument.Parse(prepared.Post.RetrievalMetadata);
+        Assert.Single(metadata.RootElement.GetProperty("replies").EnumerateArray());
+        var text = metadata.RootElement.GetProperty("text").GetString()!.Split('\n');
+        var coordinate = prepared.Contacts[0].Provenance.Split(':');
+        Assert.StartsWith("сюда", text[int.Parse(coordinate[2], CultureInfo.InvariantCulture) - 1]
+            [int.Parse(coordinate[3], CultureInfo.InvariantCulture)..], StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("/path/@sampleuser42")]
+    [InlineData("https://example.invalid/@sampleuser42")]
+    [InlineData("https://example.invalid/user@example.invalid")]
+    [InlineData("/path/user@example.invalid")]
+    [InlineData("Тг<br>https://example.invalid/path")]
+    [InlineData("<blockquote>@sampleuser42</blockquote><span hidden>@hiddenuser42</span>&gt; @quoteduser42")]
+    public void PathsAndStructuralQuotesDoNotProduceContacts(string html) => Assert.Empty(Prepare(html).Contacts);
+
+    [Fact]
+    public void LongWhitespaceAfterPlatformDoesNotProduceAContact()
+    {
+        var prepared = Prepare("Тг" + new string(' ', 4000));
         Assert.Empty(prepared.Contacts);
     }
 

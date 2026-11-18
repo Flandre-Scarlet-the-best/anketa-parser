@@ -43,25 +43,42 @@ internal sealed class DvachScanStore(ProductDbContext db)
         var (post, revision, newPost, newRevision) = await _product.ImportPostAsync(state.SourceId, input.Post, ct).ConfigureAwait(false);
         var changed = !newPost && (post.IngestedRevisionId is { } previous ? previous != revision.Id : newRevision);
         post.IngestedRevisionId = revision.Id;
-        var needsPreparation = revision.IngestionReason is null;
-        if (needsPreparation)
+        // Решение вычисляется при каждом наблюдении: отдельная версия правил не нужна,
+        // а возврат к старой ревизии и обновление кода используют одинаковый путь.
+        revision.IngestionReason = input.Reason;
+        revision.IngestionReply = input.Reply;
+        revision.IngestionContacts = input.Contacts.Count;
+        revision.IngestionAmbiguous = input.Ambiguous;
+        revision.RetrievalMetadata = input.Post.RetrievalMetadata;
+        var existing = await (from observation in db.Set<ContactObservation>()
+                              join contact in db.Set<Contact>() on observation.ContactId equals contact.Id
+                              where observation.RevisionId == revision.Id && observation.Provenance.StartsWith("dvach:body:")
+                              select new { observation, contact.Platform, contact.NormalizedValue }).ToListAsync(ct).ConfigureAwait(false);
+        // Исторические наблюдения сохраняются: они могут подтверждать существующие связи.
+        // Совпадение координат не зависит от названия старого правила обнаружения.
+        foreach (var contact in input.Contacts.OrderBy(c => c.Platform, StringComparer.Ordinal)
+                     .ThenBy(c => c.NormalizedValue, StringComparer.Ordinal))
         {
-            revision.IngestionReason = input.Reason;
-            revision.IngestionReply = input.Reply;
-            revision.IngestionContacts = input.Contacts.Count;
-            revision.IngestionAmbiguous = input.Ambiguous;
-            revision.RetrievalMetadata = input.Post.RetrievalMetadata;
-            // Упорядоченные ключи контактов позволяют разным тредам применять ревизии параллельно.
-            foreach (var contact in input.Contacts.OrderBy(c => c.Platform, StringComparer.Ordinal)
-                         .ThenBy(c => c.NormalizedValue, StringComparer.Ordinal))
+            var coordinate = contact.Provenance[..contact.Provenance.LastIndexOf(':')];
+            var found = existing.FirstOrDefault(item => item.Platform == contact.Platform &&
+                item.NormalizedValue == contact.NormalizedValue &&
+                item.observation.Provenance.StartsWith(coordinate + ":", StringComparison.Ordinal));
+            if (found is null)
             {
                 await _product.RegisterObservationAsync(new ContactInput(revision.Id, contact.Platform, contact.RawValue,
                     contact.NormalizedValue, contact.Confidence, contact.Provenance), ct).ConfigureAwait(false);
             }
+            else
+            {
+                found.observation.RawValue = contact.RawValue;
+                found.observation.Confidence = contact.Confidence;
+                found.observation.Provenance = contact.Provenance;
+            }
         }
 
         var reason = post.Excluded ? DvachFilter.Excluded : revision.IngestionReason;
-        if (needsPreparation && reason == DvachFilter.Candidate)
+        if (reason == DvachFilter.Candidate && !await db.Set<ProcessingJob>().AnyAsync(
+                job => job.RevisionId == revision.Id && job.ProcessorVersion == DvachFilter.ProcessorVersion, ct).ConfigureAwait(false))
         {
             await SaveAsync(ct).ConfigureAwait(false);
             await _product.EnqueueAsync(revision.Id, DvachFilter.ProcessorVersion, DvachFilter.MaxAttempts, ct).ConfigureAwait(false);
@@ -77,7 +94,7 @@ internal sealed class DvachScanStore(ProductDbContext db)
             Ambiguous = metrics.Ambiguous + (reason == DvachFilter.Candidate && revision.IngestionAmbiguous ? 1 : 0),
             Contacts = metrics.Contacts + revision.IngestionContacts,
             OpeningPosts = metrics.OpeningPosts + (reason == "opening_post" ? 1 : 0),
-            OtherReplies = metrics.OtherReplies + (reason == "reply_to_other_post" ? 1 : 0),
+            OtherReplies = metrics.OtherReplies + (input.Reply == "other_reply" ? 1 : 0),
             NoOwnContact = metrics.NoOwnContact + (reason == "no_own_contact" ? 1 : 0),
             Excluded = metrics.Excluded + (reason == DvachFilter.Excluded ? 1 : 0),
         });

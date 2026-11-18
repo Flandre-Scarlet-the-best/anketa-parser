@@ -92,6 +92,105 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
         Assert.Equal(3, await db.Set<ProcessingJob>().CountAsync(Ct));
     }
 
+    [Fact]
+    public async Task ReobservingLegacyDecisionsRefreshesContactsWithoutResettingJobsOrModeration()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var scanStore = new DvachScanStore(db);
+        var state = await scanStore.LoadAsync(Key, Key, Ct);
+        var thread = new DvachThread("soc", Thread);
+        const string first = """<a class="post-reply-link" href="/soc/res/100000.html#99999" data-thread="100000" data-num="99999">&gt;&gt;99999</a> @sampleuser42""";
+        const string partial = "Тг: @firstuser42 и @seconduser42";
+        const string active = "Discord: Sample.Name";
+        const string excluded = "@excludeduser42";
+
+        async Task Seed(long number, string html, bool oldCandidate)
+        {
+            var prepared = DvachFilter.Prepare(thread, new DvachPost(number, Thread, html, null), Key);
+            var contacts = oldCandidate ? prepared.Contacts.Take(1).ToArray() : [];
+            await scanStore.ApplyAsync(state, prepared with
+            {
+                Reason = oldCandidate ? "candidate" : number == Thread + 1 ? "reply_to_other_post" : "no_own_contact",
+                Contacts = contacts,
+                Ambiguous = false,
+            }, Ct);
+        }
+
+        await Seed(Thread + 1, first, false);
+        await Seed(Thread + 2, partial, true);
+        var product = new ProductStore(db);
+        var completed = await product.ClaimAsync(TimeSpan.FromMinutes(10), Ct);
+        Assert.Equal(await RevisionAsync(db, partial), completed!.RevisionId);
+        await product.CompleteAsync(completed, null, Ct);
+        await Seed(Thread + 3, active, true);
+        var lease = await product.ClaimAsync(TimeSpan.FromMinutes(10), Ct);
+        Assert.Equal(await RevisionAsync(db, active), lease!.RevisionId);
+        await Seed(Thread + 4, excluded, false);
+        var archived = await db.Set<OriginalPost>().SingleAsync(post => post.ExternalId == (Thread + 4).ToString(System.Globalization.CultureInfo.InvariantCulture), Ct);
+        archived.Excluded = true;
+        await db.SaveChangesAsync(Ct);
+        db.ChangeTracker.Clear();
+
+        using var handler = new ThreadHandler((_, _) => Task.FromResult(Response(Payload(first, partial, active, excluded))));
+        await using var provider = CreateService(database, handler, TimeProvider.System);
+        var scanner = provider.GetRequiredService<DvachIngestion>();
+        var scan = await scanner.ScanAsync(null, Ct);
+        Assert.Equal("complete", scan.Status);
+        Assert.Equal(1, scan.Metrics!.OtherReplies);
+        var replied = await scanner.PostAsync(false, Thread + 1, Ct);
+        Assert.Equal("candidate", replied.Reason);
+        Assert.Equal("other_reply", replied.Reply);
+        var updated = await scanner.PostAsync(false, Thread + 2, Ct);
+        Assert.Equal(2, updated.Contacts);
+        Assert.True(updated.Ambiguous);
+        Assert.Equal("succeeded", updated.JobState);
+        Assert.Equal("running", (await scanner.PostAsync(false, Thread + 3, Ct)).JobState);
+        Assert.Equal("moderation_excluded", (await scanner.PostAsync(false, Thread + 4, Ct)).Reason);
+        Assert.Null((await scanner.PostAsync(false, Thread + 4, Ct)).JobState);
+        Assert.Equal(5, await db.Set<PostRevision>().CountAsync(Ct));
+        Assert.Equal(5, await db.Set<ContactObservation>().CountAsync(Ct));
+        Assert.Equal(3, await db.Set<ProcessingJob>().CountAsync(Ct));
+        Assert.Equal(2, await db.Set<JobAttempt>().CountAsync(Ct));
+
+        Assert.Equal("complete", (await scanner.ScanAsync(null, Ct)).Status);
+        Assert.Equal(5, await db.Set<PostRevision>().CountAsync(Ct));
+        Assert.Equal(5, await db.Set<ContactObservation>().CountAsync(Ct));
+        Assert.Equal(3, await db.Set<ProcessingJob>().CountAsync(Ct));
+        await product.CompleteAsync(lease, null, Ct);
+        Assert.Equal("succeeded", (await scanner.PostAsync(false, Thread + 3, Ct)).JobState);
+    }
+
+    [Fact]
+    public async Task ResumingOldPendingSnapshotUsesCurrentFilterWithoutHttp()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using (var db = database.Open())
+        {
+            var store = new DvachScanStore(db);
+            var state = await store.LoadAsync(Key, Key, Ct);
+            var thread = new DvachThread("soc", Thread);
+            var original = DvachFilter.Prepare(thread, new DvachPost(Thread + 1, Thread, "@sampleuser42", null), Key);
+            var old = original with { Reason = "no_own_contact", Contacts = [] };
+            state.Pending = JsonSerializer.Serialize(new[] { old });
+            state.Metrics = JsonSerializer.Serialize(new DvachScanMetrics(1));
+            state.Applied = 0;
+            state.Status = "interrupted";
+            await store.SaveAsync(Ct);
+        }
+
+        using var offline = new ThreadHandler((_, _) => throw new InvalidOperationException("Снимок уже сохранён."));
+        await using var provider = CreateService(database, offline, TimeProvider.System);
+        var scanner = provider.GetRequiredService<DvachIngestion>();
+        Assert.Equal("complete", (await scanner.ScanAsync(null, Ct)).Status);
+        var post = await scanner.PostAsync(false, Thread + 1, Ct);
+        Assert.Equal("candidate", post.Reason);
+        Assert.Equal(1, post.Contacts);
+        Assert.Equal("pending", post.JobState);
+    }
+
     [Theory]
     [InlineData("revision")]
     [InlineData("contact")]

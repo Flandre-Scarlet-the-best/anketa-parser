@@ -8,6 +8,7 @@
   <ItemGroup>
     <ProjectReference Include="..\AnketaParser.Core\AnketaParser.Core.csproj" />
     <InternalsVisibleTo Include="AnketaParser.Tests" />
+    <InternalsVisibleTo Include="AnketaParser.DockerTests" />
   </ItemGroup>
 
   <ItemGroup>
