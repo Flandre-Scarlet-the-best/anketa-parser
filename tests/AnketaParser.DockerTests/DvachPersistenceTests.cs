@@ -93,6 +93,139 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
     }
 
     [Fact]
+    public async Task ExpiredCurrentLeaseRetriesUntilAttemptsAreExhausted()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        const string body = "tg @fixture_retry_zq";
+        using var handler = new ThreadHandler((_, _) => Task.FromResult(Response(Payload(body))));
+        await using var provider = CreateService(database, handler, TimeProvider.System);
+        var scanner = provider.GetRequiredService<DvachIngestion>();
+        Assert.Equal("complete", (await scanner.ScanAsync(null, Ct)).Status);
+
+        await using var db = database.Open();
+        var store = new ProductStore(db);
+        var duration = TimeSpan.FromMinutes(10);
+        var job = await db.Set<ProcessingJob>().AsNoTracking().SingleAsync(Ct);
+        Assert.True(job.MaxAttempts > 1);
+
+        var first = Assert.IsType<JobLease>(await store.ClaimAsync(duration, Ct));
+        Assert.Equal(await RevisionAsync(db, body), first.RevisionId);
+        Assert.Equal(1, first.Attempt);
+        Assert.Null(await store.ClaimAsync(duration, Ct));
+        var active = await db.Set<JobAttempt>().AsNoTracking().SingleAsync(Ct);
+        Assert.Equal(first.Token, active.Token);
+        Assert.Null(active.FinishedAt);
+
+        var lease = first;
+        for (var number = 2; number <= job.MaxAttempts; number++)
+        {
+            await ExpireLeaseAsync(db, lease);
+            var renewed = Assert.IsType<JobLease>(await store.ClaimAsync(duration, Ct));
+            Assert.Equal(first.JobId, renewed.JobId);
+            Assert.Equal(first.RevisionId, renewed.RevisionId);
+            Assert.Equal(number, renewed.Attempt);
+            Assert.NotEqual(lease.Token, renewed.Token);
+            lease = renewed;
+        }
+
+        Assert.Null(await store.ClaimAsync(duration, Ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.CompleteAsync(first, null, Ct));
+        await ExpireLeaseAsync(db, lease);
+        Assert.Null(await store.ClaimAsync(duration, Ct));
+        Assert.Null(await store.ClaimAsync(duration, Ct));
+
+        var failed = await db.Set<ProcessingJob>().AsNoTracking().SingleAsync(Ct);
+        Assert.Equal("failed", failed.State);
+        Assert.Equal(job.MaxAttempts, failed.Attempts);
+        Assert.Equal("lease_expired", failed.FailureCategory);
+        Assert.Null(failed.LeaseToken);
+        Assert.Null(failed.LeaseUntil);
+        var attempts = await db.Set<JobAttempt>().AsNoTracking().OrderBy(attempt => attempt.Number).ToArrayAsync(Ct);
+        Assert.Equal(Enumerable.Range(1, job.MaxAttempts), attempts.Select(attempt => attempt.Number));
+        Assert.All(attempts, attempt =>
+        {
+            Assert.NotNull(attempt.FinishedAt);
+            Assert.Equal("lease_expired", attempt.FailureCategory);
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExpiredIneligibleLeaseClosesAttemptAndLeavesJobUnleased(bool archived)
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        const string original = "tg @fixture_first_zq";
+        const string current = "Email: revision@example.invalid";
+        var body = Payload(original);
+        using var handler = new ThreadHandler((_, _) => Task.FromResult(Response(body)));
+        await using var provider = CreateService(database, handler, TimeProvider.System);
+        var scanner = provider.GetRequiredService<DvachIngestion>();
+        Assert.Equal("complete", (await scanner.ScanAsync(null, Ct)).Status);
+
+        await using var db = database.Open();
+        var store = new ProductStore(db);
+        var duration = TimeSpan.FromMinutes(10);
+        var old = Assert.IsType<JobLease>(await store.ClaimAsync(duration, Ct));
+        Assert.Equal(await RevisionAsync(db, original), old.RevisionId);
+        if (archived)
+        {
+            var profile = await store.AnalyzeAsync(Analysis(old.RevisionId), Ct);
+            await store.ArchiveAsync(profile, "оператор", "синтетический архив", Ct);
+            body = Payload(original, current);
+        }
+        else
+        {
+            body = Payload(current);
+        }
+
+        Assert.Equal("complete", (await scanner.ScanAsync(null, Ct)).Status);
+        var running = Assert.Single(await scanner.QueueAsync(false, Ct), row => !row.Current);
+        Assert.Equal("running", running.State);
+        await ExpireLeaseAsync(db, old);
+
+        var next = Assert.IsType<JobLease>(await store.ClaimAsync(duration, Ct));
+        Assert.Equal(await RevisionAsync(db, current), next.RevisionId);
+        var stale = await db.Set<ProcessingJob>().AsNoTracking().SingleAsync(job => job.Id == old.JobId, Ct);
+        Assert.Equal("pending", stale.State);
+        Assert.Equal(1, stale.Attempts);
+        Assert.True(stale.Attempts < stale.MaxAttempts);
+        Assert.Null(stale.LeaseToken);
+        Assert.Null(stale.LeaseUntil);
+        var closed = await db.Set<JobAttempt>().AsNoTracking().SingleAsync(attempt => attempt.JobId == old.JobId, Ct);
+        Assert.Equal(old.Token, closed.Token);
+        Assert.NotNull(closed.FinishedAt);
+        Assert.Equal("lease_expired", closed.FailureCategory);
+
+        Assert.Null(await store.ClaimAsync(duration, Ct));
+        var unchanged = await db.Set<JobAttempt>().AsNoTracking().SingleAsync(attempt => attempt.JobId == old.JobId, Ct);
+        Assert.Equal(closed.Id, unchanged.Id);
+        Assert.Equal(closed.FinishedAt, unchanged.FinishedAt);
+        Assert.Equal(2, await db.Set<ProcessingJob>().CountAsync(Ct));
+
+        body = Payload(original);
+        Assert.Equal("complete", (await scanner.ScanAsync(null, Ct)).Status);
+        var revisited = await store.ClaimAsync(duration, Ct);
+        if (archived)
+        {
+            Assert.Null(revisited);
+            Assert.Equal("moderation_excluded", (await scanner.PostAsync(false, Thread + 1, Ct)).Reason);
+        }
+        else
+        {
+            var retry = Assert.IsType<JobLease>(revisited);
+            Assert.Equal(old.JobId, retry.JobId);
+            Assert.Equal(old.RevisionId, retry.RevisionId);
+            Assert.Equal(old.Attempt + 1, retry.Attempt);
+            Assert.NotEqual(old.Token, retry.Token);
+        }
+
+        Assert.Equal(2, await db.Set<ProcessingJob>().CountAsync(Ct));
+    }
+
+    [Fact]
     public async Task ReobservingLegacyDecisionsRefreshesContactsWithoutResettingJobsOrModeration()
     {
         RequireDocker();
@@ -423,6 +556,16 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
 
     private static Task<Guid> RevisionAsync(ProductDbContext db, string body) =>
         db.Set<PostRevision>().Where(x => x.Content == body).Select(x => x.Id).SingleAsync(Ct);
+
+    private static async Task ExpireLeaseAsync(ProductDbContext db, JobLease lease)
+    {
+        var updated = await db.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            UPDATE product."ProcessingJob" SET "LeaseUntil"={DateTimeOffset.UtcNow.AddSeconds(-1)}
+            WHERE "Id"={lease.JobId} AND "LeaseToken"={lease.Token}
+            """, Ct);
+        Assert.Equal(1, updated);
+    }
 
     private static AnalysisInput Analysis(Guid id) =>
         new(id, "test", "test", null, null, null, null, null, "{}", "{}");

@@ -24,6 +24,9 @@ internal sealed partial class DvachMarkup
     private readonly List<BodyLink> _links = [];
     private readonly List<string> _quotes = [];
     private readonly List<ReplyTarget> _replies = [];
+    private string? _activeHref;
+    private int _linkOffset;
+    private bool _linkRecorded;
 
     internal static DvachBody Parse(string html)
     {
@@ -83,11 +86,13 @@ internal sealed partial class DvachMarkup
             {
                 // Подпись — только тот текст, который обход добавил для этой ссылки:
                 // TextContent включал бы скрытые и не выводимые узлы.
-                var offset = _line.Length;
+                _activeHref = href;
+                _linkOffset = _line.Length;
+                _linkRecorded = false;
                 foreach (var child in element.ChildNodes)
                     Visit(child, depth + 1);
-                var length = _line.Length - offset;
-                _links.Add(new BodyLink(offset, href, length > 0 ? _line.ToString(offset, length) : string.Empty));
+                RecordActiveLink();
+                _activeHref = null;
                 return;
             }
         }
@@ -147,12 +152,27 @@ internal sealed partial class DvachMarkup
     private void FlushLine()
     {
         var text = _line.ToString();
+        if (!text.TrimStart().StartsWith('>'))
+            RecordActiveLink();
         if (text.TrimStart().StartsWith('>'))
             _quotes.Add(text);
         else if (text.Length != 0)
             _lines.Add(new BodyLine(text, _links.ToArray()));
         _line.Clear();
         _links.Clear();
+        _linkOffset = 0;
+    }
+
+    private void RecordActiveLink()
+    {
+        if (_activeHref is null || _linkRecorded)
+            return;
+        var length = _line.Length - _linkOffset;
+        var label = _line.ToString(_linkOffset, length);
+        if (string.IsNullOrWhiteSpace(label))
+            return;
+        _links.Add(new BodyLink(_linkOffset, _activeHref, label));
+        _linkRecorded = true;
     }
 
     [GeneratedRegex(@"\A(?:https://2ch\.org)?/([a-z0-9]{1,16})/res/([0-9]+)\.html#([0-9]+)\z", RegexOptions.CultureInvariant)]

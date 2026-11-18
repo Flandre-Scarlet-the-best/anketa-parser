@@ -376,24 +376,26 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
     {
         if (lease <= TimeSpan.Zero || lease > TimeSpan.FromDays(1)) throw new ArgumentOutOfRangeException(nameof(lease));
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        // Истёкшая попытка закрывается всегда, даже если ревизия перестала быть
-        // актуальной: иначе задание навсегда остаётся в состоянии running.
+        // Закрываем просроченные попытки вместе со снятием аренды. При возврате
+        // ревизии незавершённое задание может продолжиться с оставшимися попытками.
+        var expirationCutoff = Now;
         await db.Database.ExecuteSqlInterpolatedAsync($"""
             WITH expired AS MATERIALIZED (
                 SELECT "Id" FROM product."ProcessingJob"
-                WHERE "State"='running' AND "LeaseUntil"<={Now}
+                WHERE "State"='running' AND "LeaseUntil"<={expirationCutoff}
                 FOR UPDATE SKIP LOCKED
-            ), exhausted AS (
+            ), released AS (
                 UPDATE product."ProcessingJob" AS job
-                SET "State"='failed',"LeaseToken"=NULL,"LeaseUntil"=NULL,"FailureCategory"='lease_expired'
-                FROM expired WHERE job."Id"=expired."Id" AND job."Attempts">=job."MaxAttempts"
+                SET "State"=CASE WHEN job."Attempts">=job."MaxAttempts" THEN 'failed' ELSE 'pending' END,
+                    "LeaseToken"=NULL,"LeaseUntil"=NULL,"FailureCategory"='lease_expired'
+                FROM expired WHERE job."Id"=expired."Id"
                 RETURNING job."Id")
-            UPDATE product."JobAttempt" SET "FinishedAt"={Now},"FailureCategory"='lease_expired'
-            WHERE "FinishedAt" IS NULL AND "JobId" IN (SELECT "Id" FROM expired)
+            UPDATE product."JobAttempt" SET "FinishedAt"={expirationCutoff},"FailureCategory"='lease_expired'
+            WHERE "FinishedAt" IS NULL AND "JobId" IN (SELECT "Id" FROM released)
             """, cancellationToken).ConfigureAwait(false);
         var jobs = await db.Set<ProcessingJob>().FromSqlInterpolated($"""
             SELECT * FROM product."ProcessingJob"
-            WHERE ("State"='pending' OR ("State"='running' AND "LeaseUntil"<={Now}))
+            WHERE "State"='pending'
             AND "Attempts"<"MaxAttempts" AND "AvailableAt"<={Now}
             AND EXISTS (
                 SELECT 1 FROM product."PostRevision" AS revision
@@ -406,8 +408,6 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         if (jobs.Count == 0) { await transaction.CommitAsync(cancellationToken).ConfigureAwait(false); return null; }
         var job = jobs[0];
         await db.Entry(job).ReloadAsync(cancellationToken).ConfigureAwait(false);
-        await db.Set<JobAttempt>().Where(x => x.JobId == job.Id && x.FinishedAt == null)
-            .ExecuteUpdateAsync(s => s.SetProperty(x => x.FinishedAt, Now).SetProperty(x => x.FailureCategory, "lease_expired"), cancellationToken).ConfigureAwait(false);
         job.Attempts++; job.State = "running"; job.LeaseToken = Guid.NewGuid(); job.LeaseUntil = Now + lease;
         db.Add(new JobAttempt { JobId = job.Id, Number = job.Attempts, Token = job.LeaseToken.Value, StartedAt = Now });
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);

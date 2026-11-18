@@ -358,6 +358,70 @@ public sealed class DvachTests
         Assert.Equal("fixture_visible_zq", Assert.Single(visible.Contacts).NormalizedValue);
     }
 
+    [Theory]
+    [InlineData("Написать<br>сюда", "Перед ссылкой Написать\nсюда после")]
+    [InlineData("Написать\nсюда", "Перед ссылкой Написать\nсюда после")]
+    [InlineData("Написать<div>сюда</div>", "Перед ссылкой Написать\nсюда\n после")]
+    public void ContactLinkAcrossLinesKeepsVisibleCoordinates(string caption, string expectedText)
+    {
+        var prepared = Prepare($"Перед ссылкой <a href=\"https://t.me/sampleuser42\">{caption}</a> после");
+        Assert.Equal("candidate", prepared.Reason);
+        var contact = Assert.Single(prepared.Contacts);
+        Assert.Equal("sampleuser42", contact.NormalizedValue);
+        using var metadata = JsonDocument.Parse(prepared.Post.RetrievalMetadata);
+        var text = metadata.RootElement.GetProperty("text").GetString();
+        Assert.Equal(expectedText, text);
+        var lines = text!.Split('\n');
+        Assert.Equal("Перед ссылкой Написать", lines[0]);
+        Assert.StartsWith("сюда", lines[1], StringComparison.Ordinal);
+        var parts = contact.Provenance.Split(':');
+        Assert.Equal("Написать", lines[int.Parse(parts[2], CultureInfo.InvariantCulture) - 1][int.Parse(parts[3], CultureInfo.InvariantCulture)..]);
+        Assert.Equal("href", parts[4]);
+    }
+
+    [Theory]
+    [InlineData("https://t.me/sampleuser42", "telegram", "https://t.me/sampleuser42", "sampleuser42")]
+    [InlineData("mailto:Second@EXAMPLE.INVALID", "email", "mailto:Second@EXAMPLE.INVALID", "Second@example.invalid")]
+    [InlineData("xmpp:Probe@EXAMPLE.INVALID", "xmpp", "xmpp:Probe@EXAMPLE.INVALID", "probe@example.invalid")]
+    public void ContactHrefsAcrossLineBreakKeepValuesAndCoordinates(string href, string platform, string rawValue, string normalizedValue)
+    {
+        var prepared = Prepare($"Перед ссылкой <a href=\"{href}\">Написать<br>сюда</a> после");
+
+        Assert.Equal("candidate", prepared.Reason);
+        var contact = Assert.Single(prepared.Contacts);
+        Assert.Equal(platform, contact.Platform);
+        Assert.Equal(rawValue, contact.RawValue);
+        Assert.Equal(normalizedValue, contact.NormalizedValue);
+        Assert.Equal(0.9m, contact.Confidence);
+        Assert.EndsWith(":href", contact.Provenance, StringComparison.Ordinal);
+        using var metadata = JsonDocument.Parse(prepared.Post.RetrievalMetadata);
+        Assert.Equal("Перед ссылкой Написать\nсюда после", metadata.RootElement.GetProperty("text").GetString());
+        var parts = contact.Provenance.Split(':');
+        var text = metadata.RootElement.GetProperty("text").GetString()!.Split('\n');
+        Assert.Equal("Написать", text[int.Parse(parts[2], CultureInfo.InvariantCulture) - 1][int.Parse(parts[3], CultureInfo.InvariantCulture)..]);
+    }
+
+    [Fact]
+    public void MultipleLinksAcrossLinesPreserveOrderAndIgnoreHiddenLinks()
+    {
+        var prepared = Prepare("""До <a href="https://t.me/sampleuser42">первая<br>ссылка</a> и <a href="mailto:second@example.invalid">вторая<br>ссылка</a><a href="https://t.me/hiddenuser42"><span hidden>скрыто</span></a> после""");
+        Assert.Equal(["sampleuser42", "second@example.invalid"], prepared.Contacts.Select(c => c.NormalizedValue));
+        Assert.All(prepared.Contacts, contact => Assert.EndsWith(":href", contact.Provenance, StringComparison.Ordinal));
+        using var metadata = JsonDocument.Parse(prepared.Post.RetrievalMetadata);
+        Assert.Equal("До первая\nссылка и вторая\nссылка после", metadata.RootElement.GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public void LongLinesRemainOutsideContactRecognition()
+    {
+        var withContact = Prepare("first@example.invalid " + new string('x', 4096));
+        Assert.Equal("no_own_contact", withContact.Reason);
+        Assert.Empty(withContact.Contacts);
+        var pathological = Prepare(new string('@', 8192));
+        Assert.Equal("no_own_contact", pathological.Reason);
+        Assert.Empty(pathological.Contacts);
+    }
+
     [Fact]
     public void ContactCoordinatesPointIntoTheSerializedText()
     {
