@@ -33,8 +33,14 @@ source guide `docs/dvach.md` to resolve the fixture identity. The tracked sample
    historical jobs independently.
 3. Rerun the same scan and compare repeated posts and queue counts. To reproduce
    malformed input, write a separate broken fixture and use a fresh test thread
-   or database if a prior failure is in backoff. Compare the failure phase and
-   last successful scan. Keep fixture contents out of reports.
+   or database if a prior failure is in backoff. The new target has no previous
+   successful scan, so run a successful scan there before breaking the fixture;
+   otherwise the comparison does not prove that the failing run kept the earlier
+   success. If the target is unchanged, wait out the backoff instead. Compare the
+   failure phase and last successful scan. Keep fixture contents out of reports.
+   If `source scan --fixture` reports `fixture_conflict`, the stored journal
+   belongs to another file of the same thread: rerun with that file instead of
+   switching fixtures mid-import.
 
 A zero exit code from `source status` proves that CLI read the stored status.
 Inspect the outcome and last success time to tell whether a scan succeeded.

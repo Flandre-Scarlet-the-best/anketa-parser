@@ -118,26 +118,16 @@ def project_files(root: Path, revision: str) -> list[str]:
     return [name for name in names if name and PROJFILE.search(name)]
 
 
-def project_locks(root: Path, base: str, head: str) -> dict[str, str | None]:
-    """Выбранный NuGet lock-файл каждого проекта обеих ревизий.
+def project_locks(root: Path, revision: str) -> dict[str, str | None]:
+    """Выбранный NuGet lock-файл каждого проекта указанной ревизии.
 
     Имя `packages.lock.json` не описывает владельца: NuGet предпочитает
     `packages.<имя проекта>.lock.json`, когда этот файл существует, а общий
     lock-файл каталога с несколькими проектами нельзя отнести к одному из них.
+    Приоритет именованного файла определяется по файлам конкретной ревизии.
     """
-    merge_base = git(root, "merge-base", base, head).strip()
-    if not merge_base:
-        raise CoverageError("Git не определил общую точку ветвей")
-    revisions = (merge_base, head)
-    locks = {
-        name
-        for revision in revisions
-        for name in tree_files(root, revision)
-        if LOCKFILE.search(name)
-    }
-    projects = {
-        name for revision in revisions for name in project_files(root, revision)
-    }
+    locks = {name for name in tree_files(root, revision) if LOCKFILE.search(name)}
+    projects = project_files(root, revision)
     per_directory: dict[str, int] = {}
     for name in projects:
         directory = PurePosixPath(name).parent.as_posix()
@@ -434,7 +424,8 @@ def exact_version(value: str) -> bool:
 def imprecise(
     reported_changes: list[Change],
     expected: list[Change],
-    chosen_locks: dict[str, str | None],
+    base_locks: dict[str, str | None],
+    head_locks: dict[str, str | None],
 ) -> list[str]:
     """Отчёт с диапазоном версии не доказывает анализ разрешённой версии."""
     lock_changes = {
@@ -450,12 +441,10 @@ def imprecise(
             continue
         project = PurePosixPath(change.manifest)
         # Особое значение графа для PackageReference без версии. Точная версия
-        # проверяется отдельным аудитом lock-файла, выбранного по правилам NuGet.
-        sibling = (
-            chosen_locks.get(project.as_posix())
-            if project.suffix == ".csproj"
-            else None
-        )
+        # проверяется отдельным аудитом lock-файла той ревизии, где изменение
+        # записано: удалённая версия принадлежит общей точке ветвей, добавленная — head.
+        locks = base_locks if change.kind == "removed" else head_locks
+        sibling = locks.get(project.as_posix()) if project.suffix == ".csproj" else None
         if (
             change.ecosystem.lower() == "nuget"
             and change.version == ">= 0"
@@ -499,12 +488,19 @@ def output_text(args: Arguments) -> str:
     return os.environ.get(args.changes_env, "")
 
 
+def merge_base(root: Path, base: str, head: str) -> str:
+    """Общая точка ветвей, с которой Dependency Graph сравнивает head."""
+    value = git(root, "merge-base", base, head).strip()
+    if not value:
+        raise CoverageError("Git не определил общую точку ветвей")
+    return value
+
+
 def expected_changes(root: Path, base: str, head: str) -> list[Change]:
     """Сравнить head с общей точкой, как Dependency Graph API."""
-    merge_base = git(root, "merge-base", base, head).strip()
-    if not merge_base:
-        raise CoverageError("Git не определил общую точку ветвей")
-    return changes(dependencies(root, merge_base), dependencies(root, head))
+    return changes(
+        dependencies(root, merge_base(root, base, head)), dependencies(root, head)
+    )
 
 
 def main() -> int:
@@ -522,7 +518,10 @@ def main() -> int:
         ):
             notes.append(nuget_audit_proof(root))
         gaps = imprecise(
-            reported_changes, expected, project_locks(root, args.base, args.head)
+            reported_changes,
+            expected,
+            project_locks(root, merge_base(root, args.base, args.head)),
+            project_locks(root, args.head),
         )
     except CoverageError as error:
         print(f"::error::Охват Dependency Review не доказан: {error}", file=sys.stderr)

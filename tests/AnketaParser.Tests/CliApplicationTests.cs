@@ -115,6 +115,20 @@ public sealed class CliApplicationTests
         Assert.Empty(result.Stderr);
     }
 
+    [Theory]
+    [InlineData("help")]
+    [InlineData("--help")]
+    public async Task SourceHelpStaysTextualWithJsonFlag(string command)
+    {
+        using var root = new Support.TemporaryContentRoot("""
+            { "Host": { "ShutdownTimeoutSeconds": 0 } }
+            """);
+        var result = await RunAsync(["source", command, "--json"], root.Path);
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains("source scan", result.Stdout, StringComparison.Ordinal);
+        Assert.Empty(result.Stderr);
+    }
+
     [Fact]
     public async Task StorageCancellationIsFailureExceptForBackupDaemonShutdown()
     {

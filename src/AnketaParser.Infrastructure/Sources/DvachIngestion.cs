@@ -52,6 +52,13 @@ public sealed class DvachIngestion
             try
             {
                 var resuming = state.Pending is not null;
+                if (resuming && fixturePath is not null && !await IsSameFixtureAsync(fixturePath, state, thread, ct).ConfigureAwait(false))
+                {
+                    // Состояние одного треда разделяется между прогонами: остаток
+                    // другого файла нельзя применить вместо запрошенного.
+                    return Report("failed", "store", "fixture_conflict");
+                }
+
                 if (!resuming)
                 {
                     await StartAsync(store, state, ct).ConfigureAwait(false);
@@ -165,6 +172,26 @@ public sealed class DvachIngestion
         {
             throw new DependencyUnavailableException(DatabaseFailure(error), error);
         }
+    }
+
+    /// <summary>Журнал режима фикстуры принадлежит конкретному файлу снимка.</summary>
+    private async Task<bool> IsSameFixtureAsync(string path, SourceScan state, DvachThread thread, CancellationToken ct)
+    {
+        var snapshot = await _client.FetchAsync(thread, _settings, path, ct).ConfigureAwait(false);
+        return JournalMatches(JsonSerializer.Deserialize<PreparedPost[]>(state.Pending!)!, snapshot.Posts);
+    }
+
+    /// <summary>Сохранённый журнал описывает тот же снимок, что и прочитанный файл.</summary>
+    internal static bool JournalMatches(PreparedPost[] pending, IReadOnlyList<DvachPost> posts)
+    {
+        if (pending.Length != posts.Count)
+            return false;
+        for (var index = 0; index < pending.Length; index++)
+        {
+            if (pending[index].Post.Content != posts[index].Html)
+                return false;
+        }
+        return true;
     }
 
     private async Task StartAsync(DvachScanStore store, SourceScan state, CancellationToken ct)

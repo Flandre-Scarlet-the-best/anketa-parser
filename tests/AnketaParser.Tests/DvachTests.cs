@@ -11,6 +11,13 @@ public sealed class DvachTests
 {
     private static readonly DvachThread Thread = new("soc", 100000);
 
+    // Минимальный согласованный снимок для проверок счётчиков и журнала фикстуры.
+    private const string SinglePostSnapshot = """
+        {"board":{"id":"soc"},"current_thread":100000,"is_board":false,"is_index":false,
+        "is_closed":0,"max_num":100000,"posts_count":1,
+        "threads":[{"posts":[{"board":"soc","num":100000,"number":1,"parent":0,"comment":"Текст","timestamp":0}]}]}
+        """;
+
     private static string Fixture => Path.Combine(AppContext.BaseDirectory, "fixtures", "dvach", "thread.json");
 
     [Fact]
@@ -158,6 +165,26 @@ public sealed class DvachTests
         Assert.Equal("sampleuser42", Assert.Single(prepared.Contacts).NormalizedValue);
     }
 
+    [Fact]
+    public void SlashSeparatedLabeledListYieldsEveryTelegramAddress()
+    {
+        var prepared = Prepare("Контакты: telegram: firstuser42/seconduser42");
+        Assert.Equal("candidate", prepared.Reason);
+        Assert.Equal(["firstuser42", "seconduser42"],
+            prepared.Contacts.Select(contact => contact.NormalizedValue));
+        // Слэш как часть пути не открывает список и не даёт контакт.
+        Assert.Empty(Prepare("Профиль: telegram: alice_name/path").Contacts);
+    }
+
+    [Fact]
+    public void ExplicitContactRightOfLabelSuppressesReverseMatch()
+    {
+        var prepared = Prepare("write telegram: https://t.me/alice_name");
+        Assert.Equal("candidate", prepared.Reason);
+        Assert.False(prepared.Ambiguous);
+        Assert.Equal("alice_name", Assert.Single(prepared.Contacts).NormalizedValue);
+    }
+
     [Theory]
     [InlineData("Тг: firstuser42, seconduser42", "telegram", "firstuser42", "seconduser42")]
     [InlineData("Discord: First.Name / Second.Name", "discord", "First.Name", "Second.Name")]
@@ -280,16 +307,37 @@ public sealed class DvachTests
     }
 
     [Fact]
-    public async Task SnapshotChecksCountsAndDistinguishesEmptyShape()
+    public void SnapshotChecksCountsAndDistinguishesEmptyShape()
     {
-        var json = await File.ReadAllTextAsync(Fixture, TestContext.Current.CancellationToken);
-        var partial = json.Replace("\"posts_count\": 31", "\"posts_count\": 32", StringComparison.Ordinal);
-        var error = Assert.Throws<SourceFailure>(() => DvachSnapshot.Parse(System.Text.Encoding.UTF8.GetBytes(partial), Thread));
+        // Явный документ не зависит от форматирования фикстуры: подстановка
+        // счётчика не может молча оставить валидный снимок.
+        var counted = SinglePostSnapshot.Replace("\"posts_count\":1", "\"posts_count\":2", StringComparison.Ordinal);
+        var error = Assert.Throws<SourceFailure>(() => DvachSnapshot.Parse(
+            System.Text.Encoding.UTF8.GetBytes(counted), Thread));
         Assert.Equal("incomplete_snapshot", error.Category);
+        var single = Assert.Single(DvachSnapshot.Parse(
+            System.Text.Encoding.UTF8.GetBytes(SinglePostSnapshot), Thread).Posts);
+        Assert.Equal(Thread.Number, single.Number);
         Assert.Empty(DvachSnapshot.Parse("""
             {"board":{"id":"soc"},"current_thread":100000,"is_board":false,"is_index":false,
             "is_closed":0,"max_num":0,"posts_count":0,"threads":[{"posts":[]}]}
             """u8, Thread).Posts);
+    }
+
+    [Fact]
+    public void JournalMatchesDetectsAnotherSnapshot()
+    {
+        var snapshot = DvachSnapshot.Parse(
+            System.Text.Encoding.UTF8.GetBytes(SinglePostSnapshot), Thread);
+        var journal = snapshot.Posts
+            .Select(post => DvachFilter.Prepare(Thread, post, Thread.SourceKey))
+            .ToArray();
+        Assert.True(DvachIngestion.JournalMatches(journal, snapshot.Posts));
+
+        var other = DvachSnapshot.Parse(System.Text.Encoding.UTF8.GetBytes(
+            SinglePostSnapshot.Replace("\"comment\":\"Текст\"", "\"comment\":\"Другой текст\"", StringComparison.Ordinal)), Thread);
+        Assert.False(DvachIngestion.JournalMatches(journal, other.Posts));
+        Assert.False(DvachIngestion.JournalMatches(journal, []));
     }
 
     [Fact]
@@ -301,10 +349,31 @@ public sealed class DvachTests
             return new HttpResponseMessage(HttpStatusCode.OK);
         });
         var adapter = new DvachClient(client, TimeProvider.System);
+        var started = System.Diagnostics.Stopwatch.StartNew();
         var error = await Assert.ThrowsAsync<SourceFailure>(() => adapter.FetchAsync(
             Thread, new() { RequestTimeoutSeconds = 1 }, null, TestContext.Current.CancellationToken));
+        started.Stop();
         Assert.Equal("timeout", error.Category);
+        // Отмена вызвана сроком запроса: поздний тайм-аут не проходит проверку.
+        Assert.True(started.Elapsed < TimeSpan.FromSeconds(10), $"Отмена заняла {started.Elapsed}.");
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => adapter.FetchAsync(Thread, new(), null, new CancellationToken(true)));
+    }
+
+    [Fact]
+    public async Task DuplicateSnapshotCountersAreRejected()
+    {
+        var json = SinglePostSnapshot.Replace(
+            "\"posts_count\":1", "\"posts_count\":2, \"posts_count\":1", StringComparison.Ordinal);
+        using var client = Client((_, _) =>
+        {
+            var content = new StringContent(json);
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+        });
+        var adapter = new DvachClient(client, TimeProvider.System);
+        var error = await Assert.ThrowsAsync<SourceFailure>(() => adapter.FetchAsync(
+            Thread, new(), null, TestContext.Current.CancellationToken));
+        Assert.Equal("invalid_json", error.Category);
     }
 
     [Theory]
@@ -325,23 +394,6 @@ public sealed class DvachTests
         var adapter = new DvachClient(client, TimeProvider.System);
         var snapshot = await adapter.FetchAsync(Thread, new(), null, TestContext.Current.CancellationToken);
         Assert.NotEmpty(snapshot.Posts);
-    }
-
-    [Fact]
-    public async Task DuplicateSnapshotCountersAreRejected()
-    {
-        var json = (await File.ReadAllTextAsync(Fixture, TestContext.Current.CancellationToken))
-            .Replace("\"posts_count\": 31", "\"posts_count\": 32, \"posts_count\": 31", StringComparison.Ordinal);
-        using var client = Client((_, _) =>
-        {
-            var content = new StringContent(json);
-            content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
-        });
-        var adapter = new DvachClient(client, TimeProvider.System);
-        var error = await Assert.ThrowsAsync<SourceFailure>(() => adapter.FetchAsync(
-            Thread, new(), null, TestContext.Current.CancellationToken));
-        Assert.Equal("invalid_json", error.Category);
     }
 
     [Fact]

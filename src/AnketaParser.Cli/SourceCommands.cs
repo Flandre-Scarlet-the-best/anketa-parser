@@ -32,15 +32,16 @@ internal static class SourceCommands
 
     public static async Task<int> RunAsync(string[] args, TextWriter stdout, TextWriter stderr, string? contentRoot, CancellationToken ct)
     {
-        if (args is ["source", "help" or "--help" or "-h"])
+        var arguments = args.Skip(1).ToArray();
+        if (arguments.LastOrDefault() == "--json")
+            arguments = arguments[..^1];
+        // Справка остаётся текстовой и распознаётся после удаления флага вывода.
+        if (arguments is ["help" or "--help" or "-h"])
         {
             await stdout.WriteLineAsync(Usage).ConfigureAwait(false);
             return ExitCodes.Success;
         }
 
-        var arguments = args.Skip(1).ToArray();
-        if (arguments.LastOrDefault() == "--json")
-            arguments = arguments[..^1];
         long postNumber = 0;
         var valid = arguments switch
         {

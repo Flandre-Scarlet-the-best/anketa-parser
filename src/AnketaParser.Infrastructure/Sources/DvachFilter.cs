@@ -97,6 +97,9 @@ internal static partial class DvachFilter
                 }
             }
 
+            // Явные контакты строки: они уже описывают значение справа от метки.
+            List<int> explicitOffsets = found.Select(item => item.Offset).ToList();
+
             foreach (Match match in LabeledValue().Matches(text))
             {
                 var platform = Platform(match.Groups["platform"].Value);
@@ -104,6 +107,12 @@ internal static partial class DvachFilter
                 if (InsideUrl(text, value.Index))
                     continue;
                 if (platform is not ("telegram" or "discord") || !IsLabeledValue(platform, value.Value))
+                    continue;
+                // Слэш допустим только как разделитель списка значений: остаток адреса
+                // (`tg: alice_name/path`) не должен давать первый контакт.
+                var afterValue = value.Index + value.Length;
+                if (text.Length > afterValue && text[afterValue] == '/' &&
+                    !IsLabeledListValue(platform, text, afterValue))
                     continue;
                 // Прямое правило связало метку со значением справа: обратное правило
                 // для этой метки больше не участвует в распознавании.
@@ -133,8 +142,10 @@ internal static partial class DvachFilter
             {
                 var value = match.Groups["value"];
                 // Слово перед меткой не является вторым контактом, если эта метка уже
-                // связана прямым правилом со значением справа от неё.
-                if (labeled.Any(span => match.Groups["label"].Index >= span.Start && match.Groups["label"].Index < span.End))
+                // связана прямым правилом со значением справа от неё или справа от неё
+                // распознан явный контакт.
+                if (labeled.Any(span => match.Groups["label"].Index >= span.Start && match.Groups["label"].Index < span.End) ||
+                    explicitOffsets.Any(offset => offset > match.Groups["label"].Index))
                     continue;
                 if (!InsideUrl(text, value.Index))
                     Record(value.Index, value.Length, "telegram", value.Value, value.Value.TrimStart('@'), 0.8m, "label");
@@ -174,6 +185,13 @@ internal static partial class DvachFilter
         "discord" => DiscordValue().IsMatch(value.TrimStart('@')),
         _ => false,
     };
+
+    /// <summary>Слэш открывает следующий элемент списка только с допустимым значением.</summary>
+    private static bool IsLabeledListValue(string platform, string text, int offset)
+    {
+        var item = LabeledListItem().Match(text, offset);
+        return item.Success && IsLabeledValue(platform, item.Groups["value"].Value);
+    }
 
     private static bool IsTelegramTarget(string target)
     {
@@ -249,7 +267,7 @@ internal static partial class DvachFilter
     [GeneratedRegex(@"(?<![\w@./:%+-])@" + TelegramId + @"(?![\w@/%+-]|\.[\w.])", RegexOptions.CultureInvariant)]
     private static partial Regex BareTelegram();
 
-    [GeneratedRegex(@"(?<![\w])(?<platform>" + Platforms + @")(?![\w])(?:\s*[:=—–-]\s*|\s+)[\""«]?(?<value>@?[A-Za-z0-9_.#-]+)[\""»]?(?![\w@./:%+#-])", IgnoreCase)]
+    [GeneratedRegex(@"(?<![\w])(?<platform>" + Platforms + @")(?![\w])(?:\s*[:=—–-]\s*|\s+)[\""«]?(?<value>@?[A-Za-z0-9_.#-]+)[\""»]?(?![\w@.:%+#-])", IgnoreCase)]
     private static partial Regex LabeledValue();
 
     [GeneratedRegex(@"\G[\""»]?\s*[,;|/]\s*[\""«]?(?<value>@?[A-Za-z0-9_.#-]+)(?![\w@./:%+#-])", RegexOptions.CultureInvariant)]
