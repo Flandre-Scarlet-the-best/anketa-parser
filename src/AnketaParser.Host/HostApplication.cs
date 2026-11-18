@@ -3,6 +3,7 @@ using AnketaParser.Core.Diagnostics;
 using AnketaParser.Infrastructure;
 using AnketaParser.Infrastructure.Configuration;
 using AnketaParser.Infrastructure.Persistence;
+using AnketaParser.Infrastructure.Sources;
 
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -100,6 +101,7 @@ public static class HostApplication
 
         builder.Services.AddHostedService<StartupDiagnosticsService>();
         builder.Services.AddHostedService<ReadinessMonitorService>();
+        builder.Services.AddHostedService<DvachPollingService>();
 
         var host = AnketaParserConfiguration.ExecuteWithConfigurationFileReadErrors(builder.Build);
         try
@@ -109,6 +111,7 @@ public static class HostApplication
             _ = host.Services.GetRequiredService<IOptions<DatabaseSettings>>().Value;
             _ = host.Services.GetRequiredService<IOptions<DiagnosticsSettings>>().Value;
             _ = host.Services.GetRequiredService<IOptions<BackupSettings>>().Value;
+            _ = host.Services.GetRequiredService<IOptions<DvachSettings>>().Value;
             return host;
         }
         catch

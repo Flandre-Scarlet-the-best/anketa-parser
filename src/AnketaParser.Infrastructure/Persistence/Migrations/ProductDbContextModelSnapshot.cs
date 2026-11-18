@@ -18,7 +18,7 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
 #pragma warning disable 612, 618
             modelBuilder
                 .HasDefaultSchema("product")
-                .HasAnnotation("ProductVersion", "10.0.14")
+                .HasAnnotation("ProductVersion", "10.0.15")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -349,6 +349,9 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<Guid?>("IngestedRevisionId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTimeOffset>("LastSeenAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -363,6 +366,8 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
                         .HasColumnType("text");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("IngestedRevisionId");
 
                     b.HasIndex("SourceId", "ExternalId")
                         .IsUnique();
@@ -382,6 +387,18 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("Hash")
                         .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IngestionAmbiguous")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("IngestionContacts")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("IngestionReason")
+                        .HasColumnType("text");
+
+                    b.Property<string>("IngestionReply")
                         .HasColumnType("text");
 
                     b.Property<Guid>("PostId")
@@ -556,6 +573,55 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
                     b.ToTable("Source", "product");
                 });
 
+            modelBuilder.Entity("AnketaParser.Infrastructure.Persistence.SourceScan", b =>
+                {
+                    b.Property<Guid>("SourceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Applied")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("ConsecutiveFailures")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Failure")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("FinishedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("HttpStatus")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("LastSuccessAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Metrics")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Pending")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Phase")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("RetryAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("StartedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("SourceId");
+
+                    b.ToTable("SourceScan", "product");
+                });
+
             modelBuilder.Entity("AnketaParser.Infrastructure.Persistence.TelegramAccount", b =>
                 {
                     b.Property<Guid>("Id")
@@ -711,6 +777,11 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("AnketaParser.Infrastructure.Persistence.OriginalPost", b =>
                 {
+                    b.HasOne("AnketaParser.Infrastructure.Persistence.PostRevision", null)
+                        .WithMany()
+                        .HasForeignKey("IngestedRevisionId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("AnketaParser.Infrastructure.Persistence.Source", null)
                         .WithMany()
                         .HasForeignKey("SourceId")
@@ -775,6 +846,15 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("VerificationId")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("AnketaParser.Infrastructure.Persistence.SourceScan", b =>
+                {
+                    b.HasOne("AnketaParser.Infrastructure.Persistence.Source", null)
+                        .WithMany()
+                        .HasForeignKey("SourceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("AnketaParser.Infrastructure.Persistence.TelegramUsername", b =>

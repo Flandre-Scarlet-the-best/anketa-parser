@@ -54,6 +54,10 @@ services:
       ANKETAPARSER_Database__ConnectionString: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-anketa_parser};Username=product_runtime;Timeout=5;Command Timeout=5"
       ANKETAPARSER_Database__Password: ${PRODUCT_RUNTIME_PASSWORD:-local-runtime-password}
       ANKETAPARSER_Database__Required: "true"
+      ANKETAPARSER_Dvach__ThreadUrl:
+      ANKETAPARSER_Dvach__PollIntervalSeconds:
+      ANKETAPARSER_Dvach__RequestTimeoutSeconds:
+      ANKETAPARSER_Dvach__MaxResponseBytes:
       ANKETAPARSER_Backup__Directory: /backups
       ANKETAPARSER_Backup__IntervalSeconds: ${BACKUP_INTERVAL_SECONDS:-86400}
       ANKETAPARSER_Logging__Console__FormatterName: json

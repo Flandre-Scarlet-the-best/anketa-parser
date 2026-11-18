@@ -3,6 +3,7 @@ using AnketaParser.Core.Persistence;
 using AnketaParser.Infrastructure.Configuration;
 using AnketaParser.Infrastructure.Diagnostics;
 using AnketaParser.Infrastructure.Persistence;
+using AnketaParser.Infrastructure.Sources;
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -70,6 +71,25 @@ public static class InfrastructureServiceCollectionExtensions
                 Options.DefaultName, configuration.GetSection(BackupSettings.SectionName)));
 
         services.TryAddSingleton(TimeProvider.System);
+        services.AddOptions<DvachSettings>()
+            .Configure(options => BindSettings(configuration.GetSection(DvachSettings.SectionName), options));
+        services.AddSingleton<IValidateOptions<DvachSettings>, DvachSettingsValidator>();
+        services.TryAddSingleton<HttpClient>(_ => new HttpClient(new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = System.Net.DecompressionMethods.All,
+            UseCookies = false,
+        })
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        });
+        services.TryAddSingleton(provider => new DvachClient(
+            provider.GetRequiredService<HttpClient>(), provider.GetRequiredService<TimeProvider>()));
+        services.AddSingleton(provider => new DvachIngestion(
+            provider.GetRequiredService<IOptions<DvachSettings>>(),
+            provider.GetRequiredService<IOptions<DatabaseSettings>>(),
+            provider.GetRequiredService<DvachClient>(),
+            provider.GetRequiredService<TimeProvider>()));
         services.AddDbContext<ProductDbContext>((provider, options) =>
             options.UseNpgsql(
                 provider.GetRequiredService<IOptions<DatabaseSettings>>().Value.ConnectionString,

@@ -66,18 +66,18 @@ or make their justified scope explicit.
 
 ## Scope and architecture
 
-This repository is a C#/.NET infrastructure foundation for anketa-parser. The
-implemented surface is a long-running Generic Host, a diagnostic CLI, shared
-configuration/readiness logic, PostgreSQL product persistence, controlled EF Core
-migrations and backup maintenance. Source parsing, Telegram clients and LLM
-integrations are not implemented. See docs/persistence.md for storage contracts.
+The repository implements a .NET Generic Host, a diagnostic CLI, a shared
+configuration and readiness pipeline, PostgreSQL product persistence and
+maintenance, and deterministic ingestion of one configured Dvach thread.
+Telegram clients and LLM integrations are outside the implemented surface.
+See [source ingestion](docs/dvach.md) and [storage](docs/persistence.md).
 Do not introduce fictitious domain entities or future frameworks.
 
 | Owner | Responsibility |
 | --- | --- |
 | [Core](src/AnketaParser.Core) | Package-free diagnostic contracts, `DiagnosticsRunner`, reports, status and exit codes. |
-| [Infrastructure](src/AnketaParser.Infrastructure) | Configuration pipeline and validators, Npgsql readiness probe, runtime snapshot and readiness state. |
-| [Host](src/AnketaParser.Host) | Executable composition, startup diagnostics, readiness monitor and shutdown. |
+| [Infrastructure](src/AnketaParser.Infrastructure) | Configuration, readiness, PostgreSQL adapters, and Dvach polling and filtering. |
+| [Host](src/AnketaParser.Host) | Executable composition, startup diagnostics, readiness monitor, scheduled ingestion and shutdown. |
 | [Cli](src/AnketaParser.Cli) | Executable composition, command parsing and diagnostic JSON presentation. |
 | [Unit tests](tests/AnketaParser.Tests) | Configuration, diagnostics, CLI, host and DI contracts without external services. |
 | [Docker smoke](tests/AnketaParser.DockerTests) | Opt-in isolated Docker/PostgreSQL integration. |

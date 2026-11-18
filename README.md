@@ -8,14 +8,15 @@
 Compose сохраняет данные PostgreSQL в именованном томе и по умолчанию не публикует
 порты. Есть модульные тесты и отдельно включаемая интеграционная проверка Docker.
 
-Реализованы [прикладная схема, миграции, контракты хранения и резервирование](docs/persistence.md).
-Парсер источников, Telegram-клиенты, вызовы LLM и HTTP API не реализованы.
+Реализованы [хранение и резервирование](docs/persistence.md), а также
+[регулярный сбор и предварительный отбор сообщений Двача](docs/dvach.md).
+Telegram-клиенты, вызовы LLM и HTTP API не реализованы.
 Диагностика проверяет соединение и совместимость схемы PostgreSQL.
 
 ## Быстрый старт
 
-Нужен SDK, совместимый с [global.json](global.json): `10.0.402` с
-`latestPatch`. Из корня в PowerShell или Bash/WSL:
+Используйте SDK, совместимый с [global.json](global.json).
+Команды выполняются из корня в PowerShell или Bash/WSL.
 
 ```sh
 dotnet restore --locked-mode
@@ -39,6 +40,7 @@ dotnet run --project src/AnketaParser.Host --no-restore
 | Все пользовательские задачи | [Документация](docs/README.md) |
 | Компоненты и зависимости | [Архитектура](docs/architecture.md) |
 | Команды, JSON, статусы и коды | [Диагностика](docs/diagnostics.md) |
+| Опрос треда и диагностика отбора | [Двач](docs/dvach.md) |
 | Источники, ключи, локальные значения | [Конфигурация](docs/configuration.md) |
 | Локальный запуск, Docker, остановка и ошибки | [Эксплуатация](docs/operations.md) |
 | Сборка, тесты и CI | [Разработка](docs/development.md) |

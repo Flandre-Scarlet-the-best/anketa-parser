@@ -8,6 +8,7 @@ using AnketaParser.Infrastructure;
 using AnketaParser.Infrastructure.Configuration;
 using AnketaParser.Infrastructure.Diagnostics;
 using AnketaParser.Infrastructure.Persistence;
+using AnketaParser.Infrastructure.Sources;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -48,6 +49,8 @@ public static class CliApplication
         ArgumentNullException.ThrowIfNull(stderr);
         if (args is ["storage", ..])
             return await StorageCommands.RunAsync(args, stdout, stderr, contentRootPath, cancellationToken).ConfigureAwait(false);
+        if (args is ["source", ..])
+            return await SourceCommands.RunAsync(args, stdout, stderr, contentRootPath, cancellationToken).ConfigureAwait(false);
 
         var info = ApplicationInfo.ForEntryAssembly();
         var invocation = CommandLineParser.Parse(args);
@@ -207,6 +210,7 @@ public static class CliApplication
             var databaseSettings = provider.GetRequiredService<IOptions<DatabaseSettings>>().Value;
             var diagnosticsSettings = provider.GetRequiredService<IOptions<DiagnosticsSettings>>().Value;
             _ = provider.GetRequiredService<IOptions<BackupSettings>>().Value;
+            _ = provider.GetRequiredService<IOptions<DvachSettings>>().Value;
 
             var runner = provider.GetRequiredService<DiagnosticsRunner>();
             DiagnosticReport report;

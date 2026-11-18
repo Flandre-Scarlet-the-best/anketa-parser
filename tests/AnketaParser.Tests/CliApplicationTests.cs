@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Text.Json;
 
 using AnketaParser.Cli;
@@ -7,6 +9,45 @@ namespace AnketaParser.Tests;
 
 public sealed class CliApplicationTests
 {
+    [Theory]
+    [InlineData("post", "секретное значение", ExitCodes.InvalidUsage, "invalid_usage")]
+    [InlineData("scan", "https://example.invalid", ExitCodes.InvalidUsage, "invalid_usage")]
+    [InlineData("status", "--json", ExitCodes.InvalidConfiguration, "not_configured")]
+    public async Task SourceErrorsHaveOneSafeMachineDocument(string command, string argument, int code, string status)
+    {
+        using var root = new Support.TemporaryContentRoot("{}");
+        var result = await RunAsync(["source", command, argument], root.Path);
+        Assert.Equal(code, result.ExitCode);
+        using var document = JsonDocument.Parse(result.Stdout);
+        Assert.Equal(code, document.RootElement.GetProperty("exitCode").GetInt32());
+        Assert.Equal(status, document.RootElement.GetProperty("status").GetString());
+        Assert.DoesNotContain(argument, result.Stdout + result.Stderr, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SourceReportsRefusedPostgresConnectionAsUnavailable()
+    {
+        using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        socket.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        var port = ((IPEndPoint)socket.LocalEndPoint!).Port;
+        using var root = new Support.TemporaryContentRoot($$"""
+            {
+              "Dvach": { "ThreadUrl": "https://2ch.org/soc/res/100000.html" },
+              "Database": { "ConnectionString": "Host=127.0.0.1;Port={{port}};Database=fixture;Username=fixture;Password=fixture_secret;Timeout=1" }
+            }
+            """);
+        foreach (var command in new[] { "status", "scan" })
+        {
+            var result = await RunAsync(["source", command], root.Path);
+            Assert.Equal(ExitCodes.DependencyUnavailable, result.ExitCode);
+            Assert.DoesNotContain("fixture_secret", result.Stdout + result.Stderr, StringComparison.Ordinal);
+            using var document = JsonDocument.Parse(result.Stdout);
+            var expected = command == "scan" ? document.RootElement.GetProperty("result").GetProperty("failure") :
+                document.RootElement.GetProperty("status");
+            Assert.Equal("database_unavailable", expected.GetString());
+        }
+    }
+
     [Fact]
     public async Task StorageHelpBypassesInvalidConfigurationAndUnknownCommandIsUsageError()
     {

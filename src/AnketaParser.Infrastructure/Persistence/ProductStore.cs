@@ -16,6 +16,8 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
     private async Task LockAsync(string key, CancellationToken ct) =>
         await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({key}, 0))", ct).ConfigureAwait(false);
 
+    internal Task LockSourceAsync(string key, CancellationToken ct) => LockAsync("source:" + key, ct);
+
     /// <summary>
     /// Блокировка строки поста. Триггер guard_profile тоже блокирует OriginalPost, поэтому изменение
     /// Profile обязано брать эту строку первой: иначе ArchiveAsync (пост → профиль) даёт взаимную блокировку.
@@ -40,37 +42,60 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         ArgumentException.ThrowIfNullOrWhiteSpace(input.Source);
         ArgumentException.ThrowIfNullOrWhiteSpace(input.ExternalId);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        await LockAsync("source:" + input.Source, cancellationToken).ConfigureAwait(false);
-        var source = await db.Set<Source>().SingleOrDefaultAsync(x => x.Key == input.Source, cancellationToken).ConfigureAwait(false);
+        var source = await EnsureSourceAsync(input.Source, input.Source, cancellationToken).ConfigureAwait(false);
+        var (_, revision, _, _) = await ImportPostAsync(source.Id, input, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return revision.Id;
+    }
+
+    internal async Task<Source> EnsureSourceAsync(string key, string url, CancellationToken ct)
+    {
+        await LockSourceAsync(key, ct).ConfigureAwait(false);
+        var source = await db.Set<Source>().SingleOrDefaultAsync(x => x.Key == key, ct).ConfigureAwait(false);
         if (source is null)
         {
-            source = new Source { Key = input.Source, Url = input.Source };
+            source = new Source { Key = key, Url = url };
             db.Add(source);
-            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
-        var post = await db.Set<OriginalPost>().SingleOrDefaultAsync(x => x.SourceId == source.Id && x.ExternalId == input.ExternalId, cancellationToken).ConfigureAwait(false);
+        return source;
+    }
+
+    internal async Task<(OriginalPost Post, PostRevision Revision, bool NewPost, bool NewRevision)> ImportPostAsync(
+        Guid sourceId, PostInput input, CancellationToken ct)
+    {
+        var post = await db.Set<OriginalPost>().SingleOrDefaultAsync(x => x.SourceId == sourceId && x.ExternalId == input.ExternalId, ct).ConfigureAwait(false);
+        var newPost = post is null;
         if (post is null)
         {
-            post = new OriginalPost { SourceId = source.Id, ExternalId = input.ExternalId, Url = input.Url, PublishedAt = input.PublishedAt };
+            post = new OriginalPost { SourceId = sourceId, ExternalId = input.ExternalId, Url = input.Url, PublishedAt = input.PublishedAt };
             db.Add(post);
+        }
+        else
+        {
+            await LockPostAsync(post.Id, ct).ConfigureAwait(false);
+            await db.Entry(post).ReloadAsync(ct).ConfigureAwait(false);
         }
         post.LastSeenAt = Now;
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(input.Content)));
-        var revision = await db.Set<PostRevision>().SingleOrDefaultAsync(x => x.PostId == post.Id && x.Hash == hash, cancellationToken).ConfigureAwait(false);
+        var revision = await db.Set<PostRevision>().SingleOrDefaultAsync(x => x.PostId == post.Id && x.Hash == hash, ct).ConfigureAwait(false);
+        var newRevision = revision is null;
         if (revision is null)
         {
             revision = new PostRevision { PostId = post.Id, Hash = hash, Content = input.Content, RetrievalMetadata = input.RetrievalMetadata, ReceivedAt = Now };
             db.Add(revision);
         }
-        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return revision.Id;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return (post, revision, newPost, newRevision);
     }
 
     public async Task<Guid> AnalyzeAsync(AnalysisInput input, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(input);
-        var revision = await db.Set<PostRevision>().SingleAsync(x => x.Id == input.RevisionId, cancellationToken).ConfigureAwait(false);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var revision = await db.Set<PostRevision>().AsNoTracking().SingleAsync(x => x.Id == input.RevisionId, cancellationToken).ConfigureAwait(false);
+        await LockPostAsync(revision.PostId, cancellationToken).ConfigureAwait(false);
+        await RequireCurrentIngestedRevisionAsync(revision.PostId, revision.Id, cancellationToken).ConfigureAwait(false);
         var analysis = new Analysis
         {
             RevisionId = input.RevisionId,
@@ -89,7 +114,15 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         db.Add(analysis);
         db.Add(profile);
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return profile.Id;
+    }
+
+    private async Task RequireCurrentIngestedRevisionAsync(Guid postId, Guid revisionId, CancellationToken ct)
+    {
+        if (await db.Set<OriginalPost>().AnyAsync(p => p.Id == postId && p.IngestedRevisionId != null &&
+            (p.Excluded || p.IngestedRevisionId != revisionId), ct).ConfigureAwait(false))
+            throw new InvalidOperationException("Ревизия исходного поста устарела или исключена.");
     }
 
     public async Task<Guid> RegisterContactAsync(ContactInput input, CancellationToken cancellationToken)
@@ -99,6 +132,13 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         ArgumentException.ThrowIfNullOrWhiteSpace(input.NormalizedValue);
         ArgumentException.ThrowIfNullOrWhiteSpace(input.Provenance);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var id = await RegisterObservationAsync(input, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return id;
+    }
+
+    internal async Task<Guid> RegisterObservationAsync(ContactInput input, CancellationToken cancellationToken)
+    {
         await LockAsync("contact:" + input.Platform + ":" + input.NormalizedValue, cancellationToken).ConfigureAwait(false);
         var contact = await db.Set<Contact>().SingleOrDefaultAsync(x => x.Platform == input.Platform && x.NormalizedValue == input.NormalizedValue, cancellationToken).ConfigureAwait(false);
         if (contact is null)
@@ -108,7 +148,6 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         }
         db.Add(new ContactObservation { ContactId = contact.Id, RevisionId = input.RevisionId, RawValue = input.RawValue, Confidence = input.Confidence, Provenance = input.Provenance, SeenAt = Now });
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return contact.Id;
     }
 
@@ -214,6 +253,9 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         var profile = await LockProfileAsync(profileId, cancellationToken).ConfigureAwait(false);
         if (profile.State == ProfileState.Rejected)
             throw new InvalidOperationException("Отклонённая анкета требует явной повторной проверки перед публикацией.");
+        var revisionId = await db.Set<Analysis>().Where(a => a.Id == profile.AnalysisId)
+            .Select(a => a.RevisionId).SingleAsync(cancellationToken).ConfigureAwait(false);
+        await RequireCurrentIngestedRevisionAsync(profile.PostId, revisionId, cancellationToken).ConfigureAwait(false);
         profile.State = ProfileState.Published;
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -315,12 +357,19 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(processorVersion);
         var ids = await db.Database.SqlQuery<Guid>($"""
+            WITH eligible AS (
+                SELECT revision."Id" FROM product."PostRevision" AS revision
+                JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
+                WHERE revision."Id"={revisionId} AND NOT post."Excluded"
+                AND (post."IngestedRevisionId" IS NULL OR
+                    (post."IngestedRevisionId"=revision."Id" AND revision."IngestionReason"='candidate'))
+                FOR UPDATE OF post)
             INSERT INTO product."ProcessingJob" ("Id","RevisionId","ProcessorVersion","MaxAttempts","Attempts","State","AvailableAt")
-            VALUES ({Guid.NewGuid()},{revisionId},{processorVersion},{maxAttempts},0,'pending',{Now})
+            SELECT {Guid.NewGuid()},"Id",{processorVersion},{maxAttempts},0,'pending',{Now} FROM eligible
             ON CONFLICT ("RevisionId","ProcessorVersion") DO UPDATE SET "ProcessorVersion"=EXCLUDED."ProcessorVersion"
             RETURNING "Id" AS "Value"
             """).ToListAsync(cancellationToken).ConfigureAwait(false);
-        return ids.Single();
+        return ids.Count == 1 ? ids[0] : throw new InvalidOperationException("Ревизия недоступна для постановки в очередь.");
     }
 
     public async Task<JobLease?> ClaimAsync(TimeSpan lease, CancellationToken cancellationToken)
@@ -345,6 +394,12 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
             SELECT * FROM product."ProcessingJob"
             WHERE ("State"='pending' OR ("State"='running' AND "LeaseUntil"<={Now}))
             AND "Attempts"<"MaxAttempts" AND "AvailableAt"<={Now}
+            AND EXISTS (
+                SELECT 1 FROM product."PostRevision" AS revision
+                JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
+                WHERE revision."Id"=product."ProcessingJob"."RevisionId" AND NOT post."Excluded"
+                AND (post."IngestedRevisionId" IS NULL OR
+                    (post."IngestedRevisionId"=revision."Id" AND revision."IngestionReason"='candidate')))
             ORDER BY "AvailableAt","Id" LIMIT 1 FOR UPDATE SKIP LOCKED
             """).ToListAsync(cancellationToken).ConfigureAwait(false);
         if (jobs.Count == 0) { await transaction.CommitAsync(cancellationToken).ConfigureAwait(false); return null; }

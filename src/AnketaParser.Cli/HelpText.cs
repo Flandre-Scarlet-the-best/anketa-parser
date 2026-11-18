@@ -18,6 +18,7 @@ internal static class HelpText
               version   Показать версию инструмента.
               help      Показать эту справку.
               storage   Обслуживание схемы и резервных копий; список операций: storage help.
+              source    Сбор Двача и диагностика отбора; список операций: source help.
 
             Параметры:
               --json         Машинный отчёт doctor/version: один JSON-документ в stdout,

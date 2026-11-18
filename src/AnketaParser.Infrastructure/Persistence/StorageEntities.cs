@@ -18,6 +18,7 @@ public sealed class OriginalPost
     public DateTimeOffset? PublishedAt { get; set; }
     public DateTimeOffset LastSeenAt { get; set; }
     public bool Excluded { get; set; }
+    public Guid? IngestedRevisionId { get; set; }
 }
 
 public sealed class PostRevision
@@ -28,6 +29,27 @@ public sealed class PostRevision
     public string Content { get; set; } = string.Empty;
     public string RetrievalMetadata { get; set; } = "{}";
     public DateTimeOffset ReceivedAt { get; set; }
+    public string? IngestionReason { get; set; }
+    public string? IngestionReply { get; set; }
+    public int IngestionContacts { get; set; }
+    public bool IngestionAmbiguous { get; set; }
+}
+
+internal sealed class SourceScan
+{
+    public Guid SourceId { get; set; }
+    public DateTimeOffset? StartedAt { get; set; }
+    public DateTimeOffset? FinishedAt { get; set; }
+    public DateTimeOffset? LastSuccessAt { get; set; }
+    public DateTimeOffset? RetryAt { get; set; }
+    public int ConsecutiveFailures { get; set; }
+    public string Status { get; set; } = "never_scanned";
+    public string Phase { get; set; } = "idle";
+    public string? Failure { get; set; }
+    public int? HttpStatus { get; set; }
+    public string? Pending { get; set; }
+    public int Applied { get; set; }
+    public string Metrics { get; set; } = "{}";
 }
 
 public sealed class Analysis

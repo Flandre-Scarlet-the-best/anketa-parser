@@ -2,14 +2,16 @@
 
 [Context index](INDEX.md) · [Human architecture guide](../../docs/architecture.md)
 
-The implemented surface is infrastructure: one long-running process and one
-database. Parsing, profiles, Telegram, LLM, domain persistence, migrations and
-HTTP APIs are absent. Inspect current owners before describing new behavior.
+The application uses one long-running host and one database. Its owners cover
+diagnostics, product persistence and maintenance, and ingestion of a configured
+Dvach thread. Telegram clients, LLM integrations and an HTTP API are outside
+this topology.
 
 | Area | Owner and entry points | Tests / explanation |
 | --- | --- | --- |
 | Package-free contracts | [Core](../../src/AnketaParser.Core/), especially `DiagnosticsRunner` and `ExitCodes` | [Runner tests](../../tests/AnketaParser.Tests/DiagnosticsRunnerTests.cs) |
 | Configuration and adapters | [Infrastructure](../../src/AnketaParser.Infrastructure/); `AddAnketaParserInfrastructure` registers adapters | [Configuration tests](../../tests/AnketaParser.Tests/ConfigurationTests.cs) |
+| Dvach source and filtering | [Source adapter](../../src/AnketaParser.Infrastructure/Sources/), [polling service](../../src/AnketaParser.Host/DvachPollingService.cs) | [Offline source tests](../../tests/AnketaParser.Tests/DvachTests.cs), [source guide](../../docs/dvach.md) |
 | Host composition and lifetime | [Program](../../src/AnketaParser.Host/Program.cs), [HostApplication](../../src/AnketaParser.Host/HostApplication.cs), startup and monitor services | [Host tests](../../tests/AnketaParser.Tests/HostApplicationTests.cs) |
 | CLI composition and presentation | [Program](../../src/AnketaParser.Cli/Program.cs), [CliApplication](../../src/AnketaParser.Cli/CliApplication.cs) | [CLI tests](../../tests/AnketaParser.Tests/CliApplicationTests.cs) |
 | Container runtime | [Dockerfile](../../Dockerfile), [Compose](../../compose.yaml), [debug override](../../compose.debug.yaml) | [Docker smoke](../../tests/AnketaParser.DockerTests/ComposeStackSmokeTests.cs), [operations](../../docs/operations.md) |
