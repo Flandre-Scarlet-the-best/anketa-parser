@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <None Include="../fixtures/dvach/thread.json" Link="fixtures/dvach/thread.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

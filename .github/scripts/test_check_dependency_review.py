@@ -8,6 +8,7 @@
 
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,9 +22,12 @@ from check_dependency_review import (
     CoverageError,
     changes,
     dependencies,
+    direct_dependencies,
+    exact_version,
     expected_changes,
     imprecise,
     nuget_audit_proof,
+    project_locks,
     reported,
     verify,
 )
@@ -42,6 +46,31 @@ LOCK = """{
 """
 CENTRAL = '<Project><ItemGroup>\n  <PackageVersion Include="%s" Version="%s" />\n</ItemGroup></Project>\n'
 WORKFLOW = "steps:\n  - uses: actions/checkout@%s\n"
+
+
+def imprecise_from_direct_changes(
+    reported_changes: list[Change],
+    direct_changes: list[Change],
+    base_locks: dict[str, str | None],
+    head_locks: dict[str, str | None],
+) -> list[str]:
+    """Фикстуры перечисляют прямые записи соответствующей ревизии."""
+
+    def entries(kind: str) -> set[tuple[str, str, str]]:
+        return {
+            (c.name.casefold(), c.version, c.manifest)
+            for c in direct_changes
+            if c.kind == kind and c.ecosystem.lower() == "nuget"
+        }
+
+    return imprecise(
+        reported_changes, base_locks, head_locks, entries("removed"), entries("added")
+    )
+
+
+def chosen_locks(project: str, lock: str | None) -> dict[str, str | None]:
+    """Выбранный NuGet lock-файл проекта для проверки сверки."""
+    return {project: lock}
 
 
 class RepositoryCase(unittest.TestCase):
@@ -171,6 +200,63 @@ class DependencySetTests(RepositoryCase):
         revision = self.commit("сломанный lock")
         with self.assertRaises(CoverageError):
             _ = dependencies(self.root, revision)
+
+    def test_lock_file_is_chosen_by_nuget_rules(self) -> None:
+        self.write("src/Lib/Lib.csproj", "<Project />")
+        self.write("src/Lib/packages.lock.json", LOCK % ("Npgsql", "10.0.3"))
+        base = self.commit("общий lock каталога")
+        self.assertEqual(
+            project_locks(self.root, base),
+            {"src/Lib/Lib.csproj": "src/Lib/packages.lock.json"},
+        )
+        self.write("src/Lib/packages.Lib.lock.json", LOCK % ("Npgsql", "10.0.4"))
+        named = self.commit("именованный lock проекта")
+        self.assertEqual(
+            project_locks(self.root, named),
+            {"src/Lib/Lib.csproj": "src/Lib/packages.Lib.lock.json"},
+        )
+
+    def test_direct_dependencies_exclude_transitive_entries(self) -> None:
+        self.write("src/Lib/Lib.csproj", "<Project />")
+        self.write("src/Lib/packages.lock.json", LOCK % ("Npgsql", "10.0.3"))
+        self.write("src/Lib/packages.Lib.lock.json", LOCK % ("Serilog", "4.0.0"))
+        revision = self.commit("прямые зависимости")
+        found = direct_dependencies(self.root, revision)
+        self.assertIn(("npgsql", "10.0.3", "src/Lib/packages.lock.json"), found)
+        self.assertIn(("serilog", "4.0.0", "src/Lib/packages.Lib.lock.json"), found)
+        self.write(
+            "src/Lib/packages.lock.json",
+            (LOCK % ("Npgsql", "10.0.3")).replace('"Direct"', '"Transitive"'),
+        )
+        transitive = self.commit("транзитивная запись")
+        self.assertNotIn(
+            ("npgsql", "10.0.3", "src/Lib/packages.lock.json"),
+            direct_dependencies(self.root, transitive),
+        )
+
+    def test_shared_lock_of_two_projects_has_no_proven_owner(self) -> None:
+        self.write("src/Lib/First.csproj", "<Project />")
+        self.write("src/Lib/Second.csproj", "<Project />")
+        self.write("src/Lib/packages.lock.json", LOCK % ("Npgsql", "10.0.3"))
+        revision = self.commit("общий lock двух проектов")
+        self.assertEqual(
+            project_locks(self.root, revision),
+            {"src/Lib/First.csproj": None, "src/Lib/Second.csproj": None},
+        )
+
+    def test_named_lock_owner_is_not_counted_for_the_shared_file(self) -> None:
+        self.write("src/Lib/First.csproj", "<Project />")
+        self.write("src/Lib/Second.csproj", "<Project />")
+        self.write("src/Lib/packages.First.lock.json", LOCK % ("Npgsql", "10.0.3"))
+        self.write("src/Lib/packages.lock.json", LOCK % ("Npgsql", "10.0.4"))
+        revision = self.commit("именованный lock одного из проектов")
+        self.assertEqual(
+            project_locks(self.root, revision),
+            {
+                "src/Lib/First.csproj": "src/Lib/packages.First.lock.json",
+                "src/Lib/Second.csproj": "src/Lib/packages.lock.json",
+            },
+        )
 
 
 class ChangeTests(RepositoryCase):
@@ -355,20 +441,241 @@ class ComparisonTests(unittest.TestCase):
                 _ = reported(text)
 
     def test_imprecise_versions_are_reported(self) -> None:
-        found = imprecise(
+        found = imprecise_from_direct_changes(
             [
                 Change("added", "NuGet", "Npgsql", ">= 0", "packages.lock.json"),
                 Change("added", "pip", "httpx", "0.28.0", "requirements.txt"),
-            ]
+            ],
+            [],
+            {},
+            {},
         )
         self.assertEqual(found, ["Npgsql >= 0"])
+
+    def test_nuget_project_placeholder_requires_matching_lock_change(self) -> None:
+        graph = Change("added", "nuget", "npgsql", ">= 0", "src/Lib/Lib.csproj")
+        lock = Change(
+            "added", "NuGet", "Npgsql", "10.0.4", "src/Lib/packages.lock.json"
+        )
+        chosen = chosen_locks("src/Lib/Lib.csproj", "src/Lib/packages.lock.json")
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [lock], chosen, chosen), []
+        )
+        for mismatch in (
+            Change(
+                "added", "NuGet", "Npgsql", "10.0.4", "src/Other/packages.lock.json"
+            ),
+            Change("removed", "NuGet", "Npgsql", "10.0.4", lock.manifest),
+            Change("added", "NuGet", "Other", "10.0.4", lock.manifest),
+            Change("added", "NuGet", "Npgsql", ">= 0", lock.manifest),
+        ):
+            with self.subTest(mismatch=mismatch):
+                self.assertEqual(
+                    imprecise_from_direct_changes([graph], [mismatch], chosen, chosen),
+                    ["npgsql >= 0"],
+                )
+
+        different_range = Change("added", "nuget", "npgsql", ">= 10", graph.manifest)
+        python_range = Change("added", "pip", "httpx", ">= 0", "requirements.txt")
+        self.assertEqual(
+            imprecise_from_direct_changes(
+                [different_range, python_range], [lock], chosen, chosen
+            ),
+            ["npgsql >= 10", "httpx >= 0"],
+        )
+
+    def test_named_lock_file_is_the_only_proof_for_its_project(self) -> None:
+        graph = Change("added", "nuget", "npgsql", ">= 0", "src/Lib/Lib.csproj")
+        named = Change(
+            "added", "NuGet", "Npgsql", "10.0.4", "src/Lib/packages.Lib.lock.json"
+        )
+        plain = Change(
+            "added", "NuGet", "Npgsql", "10.0.4", "src/Lib/packages.lock.json"
+        )
+        chosen = chosen_locks("src/Lib/Lib.csproj", "src/Lib/packages.Lib.lock.json")
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [named], chosen, chosen), []
+        )
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [plain], chosen, chosen),
+            ["npgsql >= 0"],
+        )
+
+    def test_direct_reference_closes_gap_without_version_change(self) -> None:
+        graph = Change("added", "nuget", "npgsql", ">= 0", "src/Lib/Lib.csproj")
+        chosen = chosen_locks("src/Lib/Lib.csproj", "src/Lib/packages.lock.json")
+        direct = {("npgsql", "10.0.4", "src/Lib/packages.lock.json")}
+        # Переход Transitive → Direct меняет только тип записи lock-файла.
+        self.assertEqual(imprecise([graph], chosen, chosen, set(), direct), [])
+        # Транзитивная запись подтверждением не служит.
+        self.assertEqual(
+            imprecise([graph], chosen, chosen, set(), set()), ["npgsql >= 0"]
+        )
+
+    def test_lock_choice_is_taken_from_the_revision_of_the_change(self) -> None:
+        graph = Change("removed", "nuget", "npgsql", ">= 0", "src/Lib/Lib.csproj")
+        lock = Change(
+            "removed", "NuGet", "Npgsql", "10.0.3", "src/Lib/packages.lock.json"
+        )
+        base_locks = chosen_locks("src/Lib/Lib.csproj", "src/Lib/packages.lock.json")
+        head_locks = chosen_locks(
+            "src/Lib/Lib.csproj", "src/Lib/packages.Lib.lock.json"
+        )
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [lock], base_locks, head_locks), []
+        )
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [lock], head_locks, base_locks),
+            ["npgsql >= 0"],
+        )
+        added = Change("added", "nuget", "npgsql", ">= 0", "src/Lib/Lib.csproj")
+        head_lock = Change(
+            "added", "NuGet", "Npgsql", "10.0.4", "src/Lib/packages.Lib.lock.json"
+        )
+        self.assertEqual(
+            imprecise_from_direct_changes([added], [head_lock], base_locks, head_locks),
+            [],
+        )
+        self.assertEqual(
+            imprecise_from_direct_changes([added], [head_lock], head_locks, base_locks),
+            ["npgsql >= 0"],
+        )
+
+    def test_shared_lock_without_proven_owner_is_not_a_proof(self) -> None:
+        graph = Change("added", "nuget", "npgsql", ">= 0", "src/Lib/Lib.csproj")
+        lock = Change(
+            "added", "NuGet", "Npgsql", "10.0.4", "src/Lib/packages.lock.json"
+        )
+        shared = chosen_locks("src/Lib/Lib.csproj", None)
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [lock], shared, shared),
+            ["npgsql >= 0"],
+        )
 
     def test_report_codes_are_distinct(self) -> None:
         self.assertNotEqual(CHECK_FINDINGS_CODE, CHECK_ERROR_CODE)
         self.assertNotEqual(CHECK_ERROR_CODE, 0)
 
+    def test_nuget_interval_is_not_mistaken_for_exact_version(self) -> None:
+        for version in ("[10.0,11.0)", "(10.0,11.0]", "[10.0]"):
+            with self.subTest(version=version):
+                interval = Change(
+                    "added", "NuGet", "Npgsql", version, "packages.lock.json"
+                )
+                self.assertEqual(
+                    imprecise_from_direct_changes([interval], [], {}, {}),
+                    [f"Npgsql {version}"],
+                )
+
+    def test_empty_lock_version_keeps_the_graph_gap(self) -> None:
+        graph = Change("added", "nuget", "npgsql", ">= 0", "src/Lib/Lib.csproj")
+        chosen = chosen_locks("src/Lib/Lib.csproj", "src/Lib/packages.lock.json")
+        empty = Change("added", "NuGet", "Npgsql", "", "src/Lib/packages.lock.json")
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [empty], chosen, chosen),
+            ["npgsql >= 0"],
+        )
+        spaced = Change("added", "NuGet", "Npgsql", "  ", empty.manifest)
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [spaced], chosen, chosen),
+            ["npgsql >= 0"],
+        )
+        resolved = Change("added", "NuGet", "Npgsql", "10.0.4", empty.manifest)
+        self.assertEqual(
+            imprecise_from_direct_changes([graph], [resolved], chosen, chosen), []
+        )
+
+    def test_floating_nuget_version_keeps_the_graph_gap(self) -> None:
+        for version in ("6.0.*", " [10.0,11.0)"):
+            with self.subTest(version=version):
+                floating = Change(
+                    "added", "NuGet", "Npgsql", version, "packages.lock.json"
+                )
+                self.assertEqual(
+                    imprecise_from_direct_changes([floating], [], {}, {}),
+                    [f"Npgsql {version}"],
+                )
+
+    def test_exact_version_rejects_ranges_and_empty_values(self) -> None:
+        self.assertTrue(exact_version("10.0.4"))
+        for value in ("", "   ", ">= 0", "[10.0,11.0)", "(10.0,11.0]"):
+            with self.subTest(value=value):
+                self.assertFalse(exact_version(value))
+
+    def test_exact_version_rejects_text_that_is_not_a_version(self) -> None:
+        for value in (
+            "not-a-version",
+            "10",
+            "v10.0.4",
+            "10.0.4.5.6",
+            "1.2.3-preview..1",
+            "1.2.3+build..1",
+        ):
+            with self.subTest(value=value):
+                self.assertFalse(exact_version(value))
+        for value in (
+            "10.0.4",
+            " 10.0.4 ",
+            "1.2.3.4",
+            "6.0.0-preview.1",
+            "1.0.0+build",
+        ):
+            with self.subTest(value=value):
+                self.assertTrue(exact_version(value))
+
 
 class NugetAuditTests(RepositoryCase):
+    def test_main_accepts_confirmed_direct_transition(self) -> None:
+        self.write("src/Lib/Lib.csproj", "<Project />")
+        self.write(
+            "src/Lib/packages.lock.json",
+            (LOCK % ("Npgsql", "10.0.3")).replace('"Direct"', '"Transitive"'),
+        )
+        base = self.commit("транзитивная зависимость")
+        self.write("src/Lib/packages.lock.json", LOCK % ("Npgsql", "10.0.3"))
+        head = self.commit("прямая зависимость той же версии")
+        self.write(
+            NUGET_AUDIT_WORKFLOW.as_posix(),
+            "on:\n  pull_request:\nsteps:\n"
+            "  - run: python .github/scripts/check_nuget_audit.py\n"
+            "  - run: python .github/scripts/check_osv.py\n",
+        )
+        head = self.commit("аудит зависимостей")
+        changes_file = self.root / "changes.json"
+        _ = changes_file.write_text(
+            json.dumps(
+                [
+                    {
+                        "change_type": "added",
+                        "ecosystem": "NuGet",
+                        "name": "Npgsql",
+                        "version": ">= 0",
+                        "manifest": "src/Lib/Lib.csproj",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        result = subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                str(Path(__file__).with_name("check_dependency_review.py")),
+                "--root",
+                str(self.root),
+                "--base",
+                base,
+                "--head",
+                head,
+                "--changes-file",
+                str(changes_file),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+
     def test_absent_workflow_blocks_unconfirmed_nuget(self) -> None:
         with self.assertRaisesRegex(CoverageError, "не удалось прочитать"):
             _ = nuget_audit_proof(self.root)

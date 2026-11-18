@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 
 using AnketaParser.Core.Persistence;
+using AnketaParser.Infrastructure.Sources;
 
 using Microsoft.EntityFrameworkCore;
 
@@ -13,8 +14,16 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
 {
     private static DateTimeOffset Now => DateTimeOffset.UtcNow;
 
+    // Псевдонимы post и revision общие для постановки и обоих этапов захвата.
+    private const string EligibleRevisionSql = """
+        NOT post."Excluded" AND (post."IngestedRevisionId" IS NULL OR
+        (post."IngestedRevisionId"=revision."Id" AND revision."IngestionReason"={0}))
+        """;
+
     private async Task LockAsync(string key, CancellationToken ct) =>
         await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({key}, 0))", ct).ConfigureAwait(false);
+
+    internal Task LockSourceAsync(string key, CancellationToken ct) => LockAsync("source:" + key, ct);
 
     /// <summary>
     /// Блокировка строки поста. Триггер guard_profile тоже блокирует OriginalPost, поэтому изменение
@@ -40,37 +49,60 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         ArgumentException.ThrowIfNullOrWhiteSpace(input.Source);
         ArgumentException.ThrowIfNullOrWhiteSpace(input.ExternalId);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        await LockAsync("source:" + input.Source, cancellationToken).ConfigureAwait(false);
-        var source = await db.Set<Source>().SingleOrDefaultAsync(x => x.Key == input.Source, cancellationToken).ConfigureAwait(false);
+        var source = await EnsureSourceAsync(input.Source, input.Source, cancellationToken).ConfigureAwait(false);
+        var (_, revision, _, _) = await ImportPostAsync(source.Id, input, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return revision.Id;
+    }
+
+    internal async Task<Source> EnsureSourceAsync(string key, string url, CancellationToken ct)
+    {
+        await LockSourceAsync(key, ct).ConfigureAwait(false);
+        var source = await db.Set<Source>().SingleOrDefaultAsync(x => x.Key == key, ct).ConfigureAwait(false);
         if (source is null)
         {
-            source = new Source { Key = input.Source, Url = input.Source };
+            source = new Source { Key = key, Url = url };
             db.Add(source);
-            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
-        var post = await db.Set<OriginalPost>().SingleOrDefaultAsync(x => x.SourceId == source.Id && x.ExternalId == input.ExternalId, cancellationToken).ConfigureAwait(false);
+        return source;
+    }
+
+    internal async Task<(OriginalPost Post, PostRevision Revision, bool NewPost, bool NewRevision)> ImportPostAsync(
+        Guid sourceId, PostInput input, CancellationToken ct)
+    {
+        var post = await db.Set<OriginalPost>().SingleOrDefaultAsync(x => x.SourceId == sourceId && x.ExternalId == input.ExternalId, ct).ConfigureAwait(false);
+        var newPost = post is null;
         if (post is null)
         {
-            post = new OriginalPost { SourceId = source.Id, ExternalId = input.ExternalId, Url = input.Url, PublishedAt = input.PublishedAt };
+            post = new OriginalPost { SourceId = sourceId, ExternalId = input.ExternalId, Url = input.Url, PublishedAt = input.PublishedAt };
             db.Add(post);
+        }
+        else
+        {
+            await LockPostAsync(post.Id, ct).ConfigureAwait(false);
+            await db.Entry(post).ReloadAsync(ct).ConfigureAwait(false);
         }
         post.LastSeenAt = Now;
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(input.Content)));
-        var revision = await db.Set<PostRevision>().SingleOrDefaultAsync(x => x.PostId == post.Id && x.Hash == hash, cancellationToken).ConfigureAwait(false);
+        var revision = await db.Set<PostRevision>().SingleOrDefaultAsync(x => x.PostId == post.Id && x.Hash == hash, ct).ConfigureAwait(false);
+        var newRevision = revision is null;
         if (revision is null)
         {
             revision = new PostRevision { PostId = post.Id, Hash = hash, Content = input.Content, RetrievalMetadata = input.RetrievalMetadata, ReceivedAt = Now };
             db.Add(revision);
         }
-        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return revision.Id;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return (post, revision, newPost, newRevision);
     }
 
     public async Task<Guid> AnalyzeAsync(AnalysisInput input, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(input);
-        var revision = await db.Set<PostRevision>().SingleAsync(x => x.Id == input.RevisionId, cancellationToken).ConfigureAwait(false);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var revision = await db.Set<PostRevision>().AsNoTracking().SingleAsync(x => x.Id == input.RevisionId, cancellationToken).ConfigureAwait(false);
+        await LockPostAsync(revision.PostId, cancellationToken).ConfigureAwait(false);
+        await RequireCurrentIngestedRevisionAsync(revision.PostId, revision.Id, cancellationToken).ConfigureAwait(false);
         var analysis = new Analysis
         {
             RevisionId = input.RevisionId,
@@ -89,7 +121,15 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         db.Add(analysis);
         db.Add(profile);
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return profile.Id;
+    }
+
+    private async Task RequireCurrentIngestedRevisionAsync(Guid postId, Guid revisionId, CancellationToken ct)
+    {
+        if (await db.Set<OriginalPost>().AnyAsync(p => p.Id == postId &&
+            (p.Excluded || (p.IngestedRevisionId != null && p.IngestedRevisionId != revisionId)), ct).ConfigureAwait(false))
+            throw new InvalidOperationException("Ревизия исходного поста устарела или исключена.");
     }
 
     public async Task<Guid> RegisterContactAsync(ContactInput input, CancellationToken cancellationToken)
@@ -99,6 +139,13 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         ArgumentException.ThrowIfNullOrWhiteSpace(input.NormalizedValue);
         ArgumentException.ThrowIfNullOrWhiteSpace(input.Provenance);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var id = await RegisterObservationAsync(input, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return id;
+    }
+
+    internal async Task<Guid> RegisterObservationAsync(ContactInput input, CancellationToken cancellationToken)
+    {
         await LockAsync("contact:" + input.Platform + ":" + input.NormalizedValue, cancellationToken).ConfigureAwait(false);
         var contact = await db.Set<Contact>().SingleOrDefaultAsync(x => x.Platform == input.Platform && x.NormalizedValue == input.NormalizedValue, cancellationToken).ConfigureAwait(false);
         if (contact is null)
@@ -108,7 +155,6 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         }
         db.Add(new ContactObservation { ContactId = contact.Id, RevisionId = input.RevisionId, RawValue = input.RawValue, Confidence = input.Confidence, Provenance = input.Provenance, SeenAt = Now });
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return contact.Id;
     }
 
@@ -117,7 +163,7 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         ArgumentException.ThrowIfNullOrWhiteSpace(provenance);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(technicalId);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        // Общая блокировка нужна для атомарной передачи username между аккаунтами.
+        // Общая блокировка нужна для атомарной передачи имени между аккаунтами.
         await LockAsync("telegram-identities", cancellationToken).ConfigureAwait(false);
         var contact = await db.Set<Contact>().SingleAsync(x => x.Id == contactId, cancellationToken).ConfigureAwait(false);
         if (contact.Platform != "telegram") throw new InvalidOperationException("Подтверждение Telegram недопустимо для другой платформы.");
@@ -125,7 +171,7 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         if (account is null) { account = new TelegramAccount { TechnicalId = technicalId }; db.Add(account); }
         username = username?.TrimStart('@').ToLowerInvariant();
         // Пустое значение означает «имя не передано»: отсутствие сведений не доказывает смену имени,
-        // поэтому история username не меняется, а новое доказательство сохраняется отдельной проверкой.
+        // поэтому история имён не меняется, а новое доказательство сохраняется отдельной проверкой.
         var requested = string.IsNullOrWhiteSpace(username) ? null : username;
         var open = requested is null
             ? await db.Set<TelegramUsername>().Where(x => x.ValidTo == null && x.AccountId == account.Id).ToListAsync(cancellationToken).ConfigureAwait(false)
@@ -214,6 +260,9 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         var profile = await LockProfileAsync(profileId, cancellationToken).ConfigureAwait(false);
         if (profile.State == ProfileState.Rejected)
             throw new InvalidOperationException("Отклонённая анкета требует явной повторной проверки перед публикацией.");
+        var revisionId = await db.Set<Analysis>().Where(a => a.Id == profile.AnalysisId)
+            .Select(a => a.RevisionId).SingleAsync(cancellationToken).ConfigureAwait(false);
+        await RequireCurrentIngestedRevisionAsync(profile.PostId, revisionId, cancellationToken).ConfigureAwait(false);
         profile.State = ProfileState.Published;
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -314,44 +363,109 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
     public async Task<Guid> EnqueueAsync(Guid revisionId, string processorVersion, int maxAttempts, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(processorVersion);
-        var ids = await db.Database.SqlQuery<Guid>($"""
+        // Обе команды выполняются в одной транзакции: иначе блокировка поста
+        // освобождается до вставки и архивирование может пройти между ними.
+        await using var transaction = db.Database.CurrentTransaction is null
+            ? await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+        // Блокировка поста отдельным оператором: проверка причины ревизии в следующем
+        // операторе увидит изменения, зафиксированные до получения этой блокировки.
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            SELECT 1 FROM product."OriginalPost" AS post
+            JOIN product."PostRevision" AS revision ON revision."PostId"=post."Id"
+            WHERE revision."Id"={revisionId}
+            FOR UPDATE OF post
+            """, cancellationToken).ConfigureAwait(false);
+        var ids = await db.Database.SqlQueryRaw<Guid>("""
             INSERT INTO product."ProcessingJob" ("Id","RevisionId","ProcessorVersion","MaxAttempts","Attempts","State","AvailableAt")
-            VALUES ({Guid.NewGuid()},{revisionId},{processorVersion},{maxAttempts},0,'pending',{Now})
+            SELECT {1},revision."Id",{2},{3},0,'pending',{4}
+            FROM product."PostRevision" AS revision
+            JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
+            WHERE revision."Id"={5} AND
+            """ + " " + EligibleRevisionSql + " " + """
+
             ON CONFLICT ("RevisionId","ProcessorVersion") DO UPDATE SET "ProcessorVersion"=EXCLUDED."ProcessorVersion"
             RETURNING "Id" AS "Value"
-            """).ToListAsync(cancellationToken).ConfigureAwait(false);
-        return ids.Single();
+            """, DvachFilter.Candidate, Guid.NewGuid(), processorVersion, maxAttempts, Now, revisionId).ToListAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null)
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return ids.Count == 1 ? ids[0] : throw new InvalidOperationException("Ревизия недоступна для постановки в очередь.");
     }
 
     public async Task<JobLease?> ClaimAsync(TimeSpan lease, CancellationToken cancellationToken)
     {
         if (lease <= TimeSpan.Zero || lease > TimeSpan.FromDays(1)) throw new ArgumentOutOfRangeException(nameof(lease));
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        // Исчерпанный последний захват после падения также становится терминальным.
-        await db.Database.ExecuteSqlInterpolatedAsync($"""
+        // Закрываем просроченные попытки вместе со снятием аренды. При возврате
+        // ревизии незавершённое задание может продолжиться с оставшимися попытками.
+        // Завершаем эту транзакцию до блокировки постов, чтобы не нарушить порядок
+        // «пост, затем задание» при одновременной постановке в очередь.
+        await using (var expiration = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var expirationCutoff = Now;
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
             WITH expired AS MATERIALIZED (
                 SELECT "Id" FROM product."ProcessingJob"
-                WHERE "State"='running' AND "LeaseUntil"<={Now} AND "Attempts">="MaxAttempts"
+                WHERE "State"='running' AND "LeaseUntil"<={expirationCutoff}
                 FOR UPDATE SKIP LOCKED
-            ), exhausted AS (
+            ), released AS (
                 UPDATE product."ProcessingJob" AS job
-                SET "State"='failed',"LeaseToken"=NULL,"LeaseUntil"=NULL,"FailureCategory"='lease_expired'
+                SET "State"=CASE WHEN job."Attempts">=job."MaxAttempts" THEN 'failed' ELSE 'pending' END,
+                    "LeaseToken"=NULL,"LeaseUntil"=NULL,"FailureCategory"='lease_expired'
                 FROM expired WHERE job."Id"=expired."Id"
                 RETURNING job."Id")
-            UPDATE product."JobAttempt" SET "FinishedAt"={Now},"FailureCategory"='lease_expired'
-            WHERE "FinishedAt" IS NULL AND "JobId" IN (SELECT "Id" FROM exhausted)
+            UPDATE product."JobAttempt" SET "FinishedAt"={expirationCutoff},"FailureCategory"='lease_expired'
+            WHERE "FinishedAt" IS NULL AND "JobId" IN (SELECT "Id" FROM released)
             """, cancellationToken).ConfigureAwait(false);
-        var jobs = await db.Set<ProcessingJob>().FromSqlInterpolated($"""
-            SELECT * FROM product."ProcessingJob"
-            WHERE ("State"='pending' OR ("State"='running' AND "LeaseUntil"<={Now}))
-            AND "Attempts"<"MaxAttempts" AND "AvailableAt"<={Now}
-            ORDER BY "AvailableAt","Id" LIMIT 1 FOR UPDATE SKIP LOCKED
-            """).ToListAsync(cancellationToken).ConfigureAwait(false);
-        if (jobs.Count == 0) { await transaction.CommitAsync(cancellationToken).ConfigureAwait(false); return null; }
-        var job = jobs[0];
+            await expiration.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var jobs = await db.Database.SqlQueryRaw<Guid>("""
+            SELECT job."Id" AS "Value"
+            FROM product."ProcessingJob" AS job
+            JOIN product."PostRevision" AS revision ON revision."Id"=job."RevisionId"
+            JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
+            WHERE job."State"='pending'
+            AND job."Attempts"<job."MaxAttempts" AND job."AvailableAt"<={1}
+            AND
+            """ + " " + EligibleRevisionSql + " " + """
+
+            ORDER BY job."AvailableAt", job."Id"
+            """, DvachFilter.Candidate, Now).ToListAsync(cancellationToken).ConfigureAwait(false);
+        // Блокировка берётся по одному кандидату и в порядке «пост, затем задание»:
+        // остальные готовые задания остаются доступными другим захватам.
+        ProcessingJob? job = null;
+        foreach (var candidate in jobs)
+        {
+            var posts = await db.Database.SqlQuery<int>($"""
+                SELECT 1 AS "Value" FROM product."ProcessingJob" AS job
+                JOIN product."PostRevision" AS revision ON revision."Id"=job."RevisionId"
+                JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
+                WHERE job."Id"={candidate}
+                FOR UPDATE OF post SKIP LOCKED
+                """).ToListAsync(cancellationToken).ConfigureAwait(false);
+            if (posts.Count == 0)
+                continue;
+            // Задание перечитывается под собственной блокировкой: аренда выдаётся только
+            // заданию, которое всё ещё ожидает и не исчерпало попытки, а пост и ревизия
+            // проверяются заново и видят зафиксированные изменения.
+            var locked = await db.Set<ProcessingJob>().FromSqlRaw("""
+                SELECT job.* FROM product."ProcessingJob" AS job
+                JOIN product."PostRevision" AS revision ON revision."Id"=job."RevisionId"
+                JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
+                WHERE job."Id"={1} AND job."State"='pending'
+                AND job."Attempts"<job."MaxAttempts" AND job."AvailableAt"<={2}
+                AND
+                """ + " " + EligibleRevisionSql + " " + """
+
+                FOR UPDATE OF job SKIP LOCKED
+                """, DvachFilter.Candidate, candidate, Now).ToListAsync(cancellationToken).ConfigureAwait(false);
+            if (locked.Count == 0)
+                continue;
+            job = locked[0];
+            break;
+        }
+        if (job is null) { await transaction.CommitAsync(cancellationToken).ConfigureAwait(false); return null; }
         await db.Entry(job).ReloadAsync(cancellationToken).ConfigureAwait(false);
-        await db.Set<JobAttempt>().Where(x => x.JobId == job.Id && x.FinishedAt == null)
-            .ExecuteUpdateAsync(s => s.SetProperty(x => x.FinishedAt, Now).SetProperty(x => x.FailureCategory, "lease_expired"), cancellationToken).ConfigureAwait(false);
         job.Attempts++; job.State = "running"; job.LeaseToken = Guid.NewGuid(); job.LeaseUntil = Now + lease;
         db.Add(new JobAttempt { JobId = job.Id, Number = job.Attempts, Token = job.LeaseToken.Value, StartedAt = Now });
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);

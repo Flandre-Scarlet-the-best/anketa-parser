@@ -1,0 +1,234 @@
+{
+  "board": {
+    "id": "soc"
+  },
+  "current_thread": 100000,
+  "is_board": false,
+  "is_index": false,
+  "is_closed": 0,
+  "max_num": 100030,
+  "posts_count": 31,
+  "threads": [
+    {
+      "posts": [
+        {
+          "board": "soc",
+          "num": 100000,
+          "number": 1,
+          "parent": 0,
+          "comment": "<style>.sample {width: 38em}</style><div style=\"width: 38em;\"><fieldset><legend>Порядок</legend><ol><li>Место</li><li>Описание</li><li>Контакты</li></ol>Пример: <a href=\"https://t.me/fixture_only_op_zq\">связь</a></fieldset></div>"
+        },
+        {
+          "board": "soc",
+          "num": 100001,
+          "number": 2,
+          "parent": 100000,
+          "comment": "Отметка в поле: <span class=\"spoiler\">пример</span> если понадобится"
+        },
+        {
+          "board": "soc",
+          "num": 100002,
+          "number": 3,
+          "parent": 100000,
+          "comment": "Тут. Кратко расскажу. Занятия и всё такое. Ищу общения<br>tg @Fixture_Test_25_zq "
+        },
+        {
+          "board": "soc",
+          "num": 100003,
+          "number": 4,
+          "parent": 100000,
+          "comment": "Место: скрыто<br>Год, занятие: убрано<br>Цели и прочее: ищу совместные занятия <br>Контакты: дискорд fixture_test_26_zq"
+        },
+        {
+          "board": "soc",
+          "num": 100004,
+          "number": 5,
+          "parent": 100000,
+          "comment": "<a href=\"/soc/res/100000.html#100000\" class=\"post-reply-link\" data-thread=\"100000\" data-num=\"100000\">&gt;&gt;100000 (OP)</a><br>Скрыто.<br>Люблю книги, игры, музыку, прогулки и чай.  Расскажу подробнее в переписке.<br><br>тг @fixture_test_35_zq"
+        },
+        {
+          "board": "soc",
+          "num": 100005,
+          "number": 6,
+          "parent": 100000,
+          "comment": "я, условно, город<br>ищу для общения&#47;переписки<br>@fixture_test_43_zq"
+        },
+        {
+          "board": "soc",
+          "num": 100006,
+          "number": 7,
+          "parent": 100000,
+          "comment": "место-на-карте<br>возраст скрыт<br>Ищу компанию (общение возможно)<br>Fixture.Test.50@example.invalid"
+        },
+        {
+          "board": "soc",
+          "num": 100007,
+          "number": 8,
+          "parent": 100000,
+          "comment": "<a href=\"/soc/res/100000.html#100000\" class=\"post-reply-link\" data-thread=\"100000\" data-num=\"100000\">&gt;&gt;100000 (OP)</a><br>условный город <br>прочее<br>Ищу друзей <br>@fixture_test_57_zq"
+        },
+        {
+          "board": "soc",
+          "num": 100008,
+          "number": 9,
+          "parent": 100000,
+          "comment": "<a href=\"/soc/res/100000.html#100000\" class=\"post-reply-link\" data-thread=\"100000\" data-num=\"100000\">&gt;&gt;100000 (OP)</a> <br>1. Место<br>2. О себе<br>3. Для переписки, если будет интересно. Читаю и гуляю. <br>4. tg fixture_test_77_zq "
+        },
+        {
+          "board": "soc",
+          "num": 100009,
+          "number": 10,
+          "parent": 100000,
+          "comment": "простое описание<br>tg fixture_test_79_zq"
+        },
+        {
+          "board": "soc",
+          "num": 100010,
+          "number": 11,
+          "parent": 100000,
+          "comment": "место, скрыто<br>@fixture_test_101_zq"
+        },
+        {
+          "board": "soc",
+          "num": 100011,
+          "number": 12,
+          "parent": 100000,
+          "comment": "поле убрано<br>Ищу компанию для разговоров про всё<br>Тг fixture_test_117_zq"
+        },
+        {
+          "board": "soc",
+          "num": 100012,
+          "number": 13,
+          "parent": 100000,
+          "comment": "Если хотите вместе играть и общаться, напишите, буду ждать пишите<br>Дискорд fixture&#95;test_146_zq"
+        },
+        {
+          "board": "soc",
+          "num": 100013,
+          "number": 14,
+          "parent": 100000,
+          "comment": "данные убраны<br>предпочтения разные, ищу собеседника <br>после этого дс"
+        },
+        {
+          "board": "soc",
+          "num": 100014,
+          "number": 15,
+          "parent": 100000,
+          "comment": "Пишите кому интересно (поле скрыто). Для беседы&#47;игр тоже можно.  <br>Дискорд: &quot;fixture_236_zq&quot;"
+        },
+        {
+          "board": "soc",
+          "num": 100015,
+          "number": 16,
+          "parent": 100000,
+          "comment": "<a href=\"/soc/res/100000.html#99999\" class=\"post-reply-link\" data-thread=\"100000\" data-num=\"99999\">&gt;&gt;99999</a><br>не согласен. Если есть телега, лучше отдельно написать."
+        },
+        {
+          "board": "soc",
+          "num": 100016,
+          "number": 17,
+          "parent": 100000,
+          "comment": "Ненадолго.<br>Цель: переписка, совместные игры.<br>Mailbox326@example.invalid"
+        },
+        {
+          "board": "soc",
+          "num": 100017,
+          "number": 18,
+          "parent": 100000,
+          "comment": "<span class=\"unkfunc\">&gt; 1. Место</span><br>неважно<br><span class=\"unkfunc\">&gt; 2. Описание (по желанию)</span><br>поля убраны<br><span class=\"unkfunc\">&gt; 3. Что ищете</span><br>ищу беседы. Ни с кем ещё не знаком<br><span class=\"unkfunc\">&gt; 4. Контакты</span><br><span class=\"unkfunc\">@fixture_quote_360_zq</span> <br> "
+        },
+        {
+          "board": "soc",
+          "num": 100018,
+          "number": 19,
+          "parent": 100000,
+          "comment": "<a href=\"/soc/res/100000.html#99998\" class=\"post-reply-link\" data-thread=\"100000\" data-num=\"99998\">&gt;&gt;99998</a><br>всё понятно"
+        },
+        {
+          "board": "soc",
+          "num": 100019,
+          "number": 20,
+          "parent": 100000,
+          "comment": "<a href=\"/soc/res/100000.html#100000\" class=\"post-reply-link\" data-thread=\"100000\" data-num=\"100000\">&gt;&gt;100000 (OP)</a><br>поля скрыты<br><br>Если будет интересно, можно писать, люблю игры и книги<br>апдейт: если сразу не отвечу, подождите.<br>И я пока только читаю.<br><br>тг:<span class=\"spoiler\"> @fixture_test_395_zq</span>"
+        },
+        {
+          "board": "soc",
+          "num": 100020,
+          "number": 21,
+          "parent": 100000,
+          "comment": "<a href=\"/soc/res/100000.html#100000\" class=\"post-reply-link\" data-thread=\"100000\" data-num=\"100000\">&gt;&gt;100000 (OP)</a><br><span class=\"unkfunc\">&gt; 1. Место</span><br>Не скажу<br><span class=\"unkfunc\">&gt; 2. Описание (по желанию)</span><br>поля убраны<br><span class=\"unkfunc\">&gt; 3. Что ищете</span><br>ищу компанию, пишите, если есть что обсудить.<br><span class=\"unkfunc\">&gt; 4. Контакты</span><br>@fixture_test_411_zq"
+        },
+        {
+          "board": "soc",
+          "num": 100021,
+          "number": 22,
+          "parent": 100000,
+          "comment": "<a href=\"/soc/res/100000.html#100000\" class=\"post-reply-link\" data-thread=\"100000\" data-num=\"100000\">&gt;&gt;100000 (OP)</a><br>Я ищу компанию для обсуждения игр и обмена советами. Discord fixture_427_zq"
+        },
+        {
+          "board": "soc",
+          "num": 100022,
+          "number": 23,
+          "parent": 100000,
+          "comment": "место на карте<br>поля убраны полностью<br>Ищу друзей по переписке<br>fixture.test.445@example.invalid"
+        },
+        {
+          "board": "soc",
+          "num": 100023,
+          "number": 24,
+          "parent": 100000,
+          "comment": "Мне хочется куда-нибудь выбираться<br>Я часто читаю и гуляю в парке<br>Уже есть друзья, иногда играем вместе<br>Я не всегда отвечаю, но перезахожу на сайт<br><br><span class=\"spoiler\">@fixture_452_one_zq</span> <span class=\"spoiler\">@fixture_452_two_zq</span> <span class=\"spoiler\">@fixture_452_three_zq</span>"
+        },
+        {
+          "board": "soc",
+          "num": 100024,
+          "number": 25,
+          "parent": 100000,
+          "comment": "<a href=\"/soc/res/100000.html#100000\" class=\"post-reply-link\" data-thread=\"100000\" data-num=\"100000\">&gt;&gt;100000 (OP)</a><br>поля убраны<br>ищу друзей для игр и разговоров<br>остальное в лс<br>предпочитаю спокойные занятия без обязательств<br>сразу могу пропустить<br>мой тг: @fixture_test_504_zq"
+        },
+        {
+          "board": "soc",
+          "num": 100025,
+          "number": 26,
+          "parent": 100000,
+          "comment": "<a href=\"/soc/res/100000.html#99997\" class=\"post-reply-link\" data-thread=\"100000\" data-num=\"99997\">&gt;&gt;99997</a><br>условно  &#47; скрыто. <br>О себе . опущено. <br><br>Люблю разные занятия, иногда читаю и играю, Я не всё время на сайте, иногда могу отвечать долго (почти 100&#37; дел).<br>Новые темы всегда приветствуются.<br>тг пишите @fixture_521_one_zq @fixture_521_two&#95;zq @fixture_521_three_zq @fixture_521_four_zq"
+        },
+        {
+          "board": "soc",
+          "num": 100026,
+          "number": 27,
+          "parent": 100000,
+          "comment": "ищу друзей, могу долго отвечать<br>@fixture_573&#95;zq"
+        },
+        {
+          "board": "soc",
+          "num": 100027,
+          "number": 28,
+          "parent": 100000,
+          "comment": "поля убраны<br>Ищу компанию для беседы<br>Можете написать в обе программы 🙏<br>Мне для общения, без других ожиданий.<br>тг fixture_test_622_zq<br>дискорд fixture_discord_622_zq"
+        },
+        {
+          "board": "soc",
+          "num": 100028,
+          "number": 29,
+          "parent": 100000,
+          "comment": "одно&#47;другое<br>место не указано<br>много читаю,общаюсь в свободное время<br>тг:fixture_test_624_zq"
+        },
+        {
+          "board": "soc",
+          "num": 100029,
+          "number": 30,
+          "parent": 100000,
+          "comment": "tg @fixture_test_639_zq"
+        },
+        {
+          "board": "soc",
+          "num": 100030,
+          "number": 31,
+          "parent": 100000,
+          "comment": "<a href=\"/soc/res/100000.html#99996\" class=\"post-reply-link\" data-thread=\"100000\" data-num=\"99996\">&gt;&gt;99996</a><br><span class=\"unkfunc\">&gt;место</span><br><span class=\"unkfunc\">&gt;поля убраны</span><br><span class=\"unkfunc\">&gt;увлечения в «описании».</span><br><span class=\"unkfunc\">&gt;обычно путешествую и читаю.</span><br><span class=\"unkfunc\">&gt;ищу знакомых для разговоров и настольных игр</span><br><span class=\"unkfunc\">&gt;пишу редко.</span><br><span class=\"unkfunc\">&gt;уточнение.</span><br><br>Да. Еще ищу.<br>условия <span class=\"spoiler\">как раньше</span>"
+        }
+      ]
+    }
+  ]
+}

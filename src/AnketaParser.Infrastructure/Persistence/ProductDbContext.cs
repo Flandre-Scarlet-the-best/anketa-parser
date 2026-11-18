@@ -36,6 +36,7 @@ public sealed class ProductDbContext(DbContextOptions<ProductDbContext> options)
         modelBuilder.HasDefaultSchema(Schema);
         modelBuilder.Entity<Source>().HasIndex(x => x.Key).IsUnique();
         modelBuilder.Entity<OriginalPost>().HasIndex(x => new { x.SourceId, x.ExternalId }).IsUnique();
+        modelBuilder.Entity<SourceScan>().HasKey(x => x.SourceId);
         modelBuilder.Entity<PostRevision>().HasIndex(x => new { x.PostId, x.Hash }).IsUnique();
         modelBuilder.Entity<Contact>().HasIndex(x => new { x.Platform, x.NormalizedValue }).IsUnique();
         modelBuilder.Entity<TelegramAccount>().ToTable("TelegramAccount", PrivateSchema);
@@ -54,6 +55,8 @@ public sealed class ProductDbContext(DbContextOptions<ProductDbContext> options)
         modelBuilder.Entity<ProfileLink>().HasIndex(x => new { x.AnonId, x.UnlinkedAt });
         modelBuilder.Entity<ContactObservation>().HasIndex(x => new { x.ContactId, x.RevisionId });
         Foreign<OriginalPost, Source>(modelBuilder, "SourceId");
+        Foreign<SourceScan, Source>(modelBuilder, "SourceId");
+        Foreign<OriginalPost, PostRevision>(modelBuilder, "IngestedRevisionId");
         Foreign<PostRevision, OriginalPost>(modelBuilder, "PostId");
         Foreign<Analysis, PostRevision>(modelBuilder, "RevisionId");
         Foreign<Profile, Analysis>(modelBuilder, "AnalysisId");

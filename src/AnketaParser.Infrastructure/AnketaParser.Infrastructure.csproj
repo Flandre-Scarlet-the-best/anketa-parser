@@ -8,9 +8,11 @@
   <ItemGroup>
     <ProjectReference Include="..\AnketaParser.Core\AnketaParser.Core.csproj" />
     <InternalsVisibleTo Include="AnketaParser.Tests" />
+    <InternalsVisibleTo Include="AnketaParser.DockerTests" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="AngleSharp" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />
     <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" />

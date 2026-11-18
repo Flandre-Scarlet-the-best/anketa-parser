@@ -18,13 +18,16 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 from xml.etree import ElementTree
 
 CHECK_FINDINGS_CODE = 1
 CHECK_ERROR_CODE = 2
-LOCKFILE = re.compile(r"(?:^|/)packages\.lock\.json$")
+# NuGet использует `packages.<имя проекта>.lock.json`, если такой файл есть рядом
+# с проектом, и `packages.lock.json` иначе.
+LOCKFILE = re.compile(r"(?:^|/)packages(?:\.[^/]+)?\.lock\.json$")
+PROJFILE = re.compile(r"\.csproj$")
 REQUIREMENTS = re.compile(r"(?:^|/)requirements(?:[-.][^/]*)?\.txt$")
 CENTRAL = re.compile(r"(?:^|/)Directory\.Packages\.props$")
 WORKFLOW = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$")
@@ -37,7 +40,15 @@ ACTION_USE = re.compile(
 )
 # GitHub Dependency Graph возвращает для части NuGet-зависимостей диапазон
 # вместо разрешённой версии; такое значение не доказывает анализ версии.
-IMPRECISE = re.compile(r"^[<>=~^*]")
+# Интервал NuGet начинается с `[` или `(`, поэтому эти символы входят в набор.
+IMPRECISE = re.compile(r"^[<>=~^*\[(]")
+# Разрешённая версия NuGet: `major.minor[.patch[.revision]]`, необязательные
+# суффиксы предварительной версии и метаданных сборки без пустых компонентов.
+NUGET_VERSION = re.compile(
+    r"^\d+(?:\.\d+){1,3}"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
 MAX_DIAGNOSTIC = 2000
 NUGET = "NuGet"
 PIP = "pip"
@@ -103,6 +114,40 @@ def file_text(root: Path, revision: str, name: str) -> str:
     return git(root, "show", f"{revision}:{name}")
 
 
+def project_files(root: Path, revision: str) -> list[str]:
+    """Отслеживаемые проекты MSBuild в указанной ревизии."""
+    names = git(root, "ls-tree", "-r", "-z", "--name-only", revision).split("\0")
+    return [name for name in names if name and PROJFILE.search(name)]
+
+
+def project_locks(root: Path, revision: str) -> dict[str, str | None]:
+    """Выбранный NuGet lock-файл каждого проекта указанной ревизии.
+
+    Имя `packages.lock.json` не описывает владельца: NuGet предпочитает
+    `packages.<имя проекта>.lock.json`, когда этот файл существует, а общий
+    lock-файл каталога с несколькими проектами нельзя отнести к одному из них.
+    Приоритет именованного файла определяется по файлам конкретной ревизии.
+    """
+    locks = {name for name in tree_files(root, revision) if LOCKFILE.search(name)}
+    projects = [PurePosixPath(name) for name in project_files(root, revision)]
+    chosen: dict[str, str | None] = {}
+    remaining: dict[str, list[PurePosixPath]] = {}
+    for project in projects:
+        named = (
+            project.parent / f"packages.{project.stem.replace(' ', '_')}.lock.json"
+        ).as_posix()
+        if named in locks:
+            chosen[project.as_posix()] = named
+        else:
+            remaining.setdefault(project.parent.as_posix(), []).append(project)
+    for directory, candidates in remaining.items():
+        manifest = (PurePosixPath(directory) / "packages.lock.json").as_posix()
+        # Общий файл принадлежит единственному проекту каталога без именованного файла.
+        for project in candidates:
+            chosen[project.as_posix()] = manifest if len(candidates) == 1 else None
+    return chosen
+
+
 def dependencies(root: Path, revision: str) -> set[tuple[str, str, str, str]]:
     """Зависимости ревизии как (экосистема, имя, версия, манифест)."""
     found: set[tuple[str, str, str, str]] = set()
@@ -140,8 +185,8 @@ def dependencies(root: Path, revision: str) -> set[tuple[str, str, str, str]]:
     return found
 
 
-def lock_entries(content: str) -> set[tuple[str, str, str]]:
-    """Разрешённые версии пакетов из packages.lock.json всех платформ."""
+def lock_items(content: str) -> list[tuple[str, str, str]]:
+    """Записи lock-файла как (пакет, разрешённая версия, тип ссылки)."""
     try:
         data = cast(object, json.loads(content))
     except json.JSONDecodeError as error:
@@ -153,7 +198,7 @@ def lock_entries(content: str) -> set[tuple[str, str, str]]:
     )
     if not isinstance(frameworks, dict):
         raise CoverageError("lock-файл в ревизии не содержит dependencies")
-    found: set[tuple[str, str, str]] = set()
+    found: list[tuple[str, str, str]] = []
     for entries in cast(dict[str, object], frameworks).values():
         if not isinstance(entries, dict):
             continue
@@ -161,11 +206,31 @@ def lock_entries(content: str) -> set[tuple[str, str, str]]:
             if not isinstance(details, dict):
                 continue
             item = cast(dict[str, object], details)
-            if item.get("type") == "Project":
-                continue
             version = item.get("resolved")
-            if isinstance(version, str):
-                found.add((NUGET, package, version))
+            kind = item.get("type")
+            if isinstance(version, str) and isinstance(kind, str):
+                found.append((package, version, kind))
+    return found
+
+
+def lock_entries(content: str) -> set[tuple[str, str, str]]:
+    """Разрешённые версии пакетов из packages.lock.json всех платформ."""
+    return {
+        (NUGET, package, version)
+        for package, version, kind in lock_items(content)
+        if kind != "Project"
+    }
+
+
+def direct_dependencies(root: Path, revision: str) -> set[tuple[str, str, str]]:
+    """Прямые ссылки ревизии как (пакет в нижнем регистре, версия, манифест)."""
+    found: set[tuple[str, str, str]] = set()
+    for name in tree_files(root, revision):
+        if not LOCKFILE.search(name):
+            continue
+        for package, version, kind in lock_items(file_text(root, revision, name)):
+            if kind == "Direct":
+                found.add((package.casefold(), version, name))
     return found
 
 
@@ -217,7 +282,7 @@ def reported(text: str) -> list[Change]:
 
 
 # Граф может перечислять ссылки Actions на SHA, но это не доказывает анализ
-# уязвимостей закреплённого кода: GitHub поддерживает alerts для семантических
+# уязвимостей закреплённого кода: GitHub поддерживает уведомления для семантических
 # версий Actions. Кроме того, снимок PR может не содержать часть новых ссылок.
 # Эти изменения перечисляются отдельно даже при наличии записи в графе.
 #
@@ -370,13 +435,56 @@ def nuget_audit_proof(root: Path) -> str:
     )
 
 
-def imprecise(reported_changes: list[Change]) -> list[str]:
+def exact_version(value: str) -> bool:
+    """Значение является точной разрешённой версией NuGet, а не диапазоном."""
+    return NUGET_VERSION.fullmatch(value.strip()) is not None
+
+
+def imprecise(
+    reported_changes: list[Change],
+    base_locks: dict[str, str | None],
+    head_locks: dict[str, str | None],
+    base_direct: set[tuple[str, str, str]],
+    head_direct: set[tuple[str, str, str]],
+) -> list[str]:
     """Отчёт с диапазоном версии не доказывает анализ разрешённой версии."""
-    return [
-        f"{change.name} {change.version}"
-        for change in reported_changes
-        if IMPRECISE.match(change.version)
-    ]
+    # Прямая ссылка с точной версией закрывает пробел и без смены версии: переход
+    # Transitive → Direct меняет только тип записи. Транзитивная запись не годится.
+    lock_changes = {
+        ("removed", package, manifest)
+        for package, version, manifest in base_direct
+        if exact_version(version)
+    }
+    lock_changes |= {
+        ("added", package, manifest)
+        for package, version, manifest in head_direct
+        if exact_version(version)
+    }
+    gaps: list[str] = []
+    for change in reported_changes:
+        is_nuget = change.ecosystem.lower() == "nuget"
+        # Для NuGet допустима только точная версия или служебный диапазон `>= 0`.
+        # Плавающая версия вида `6.0.*` и прочие формы пробел не закрывают.
+        if is_nuget:
+            if change.version != ">= 0" and exact_version(change.version):
+                continue
+        elif not IMPRECISE.match(change.version):
+            continue
+        project = PurePosixPath(change.manifest)
+        # Особое значение графа для PackageReference без версии. Точная версия
+        # проверяется отдельным аудитом lock-файла той ревизии, где изменение
+        # записано: удалённая версия принадлежит общей точке ветвей, добавленная — head.
+        locks = base_locks if change.kind == "removed" else head_locks
+        sibling = locks.get(project.as_posix()) if project.suffix == ".csproj" else None
+        if (
+            is_nuget
+            and change.version == ">= 0"
+            and sibling is not None
+            and (change.kind, change.name.casefold(), sibling) in lock_changes
+        ):
+            continue
+        gaps.append(f"{change.name} {change.version}")
+    return gaps
 
 
 class Arguments(argparse.Namespace):
@@ -411,21 +519,69 @@ def output_text(args: Arguments) -> str:
     return os.environ.get(args.changes_env, "")
 
 
+def merge_base(root: Path, base: str, head: str) -> str:
+    """Общая точка ветвей, с которой Dependency Graph сравнивает head."""
+    value = git(root, "merge-base", base, head).strip()
+    if not value:
+        raise CoverageError("Git не определил общую точку ветвей")
+    return value
+
+
 def expected_changes(root: Path, base: str, head: str) -> list[Change]:
     """Сравнить head с общей точкой, как Dependency Graph API."""
-    merge_base = git(root, "merge-base", base, head).strip()
-    if not merge_base:
-        raise CoverageError("Git не определил общую точку ветвей")
-    return changes(dependencies(root, merge_base), dependencies(root, head))
+    return changes(
+        dependencies(root, merge_base(root, base, head)), dependencies(root, head)
+    )
+
+
+def confirmed_direct_transitions(
+    reported_changes: list[Change],
+    head_locks: dict[str, str | None],
+    head_direct: set[tuple[str, str, str]],
+) -> list[Change]:
+    """Записи графа, подтверждённые прямой ссылкой head без смены версии."""
+    confirmed: list[Change] = []
+    for change in reported_changes:
+        if (
+            change.ecosystem.lower() != "nuget"
+            or change.kind != "added"
+            or change.version != ">= 0"
+        ):
+            continue
+        project = PurePosixPath(change.manifest)
+        sibling = (
+            head_locks.get(project.as_posix()) if project.suffix == ".csproj" else None
+        )
+        if sibling is None:
+            continue
+        if any(
+            package == change.name.casefold()
+            and manifest == sibling
+            and exact_version(version)
+            for package, version, manifest in head_direct
+        ):
+            confirmed.append(change)
+    return confirmed
 
 
 def main() -> int:
     args = build_parser().parse_args(namespace=Arguments())
     try:
         root = args.root.resolve()
-        expected = expected_changes(root, args.base, args.head)
+        base_sha = merge_base(root, args.base, args.head)
+        expected = expected_changes(root, base_sha, args.head)
         reported_changes = reported(output_text(args))
-        notes = verify(expected, reported_changes)
+        head_locks = project_locks(root, args.head)
+        head_direct = direct_dependencies(root, args.head)
+        # Переход Transitive → Direct не входит в изменения lock-файлов, поэтому
+        # подтверждённые им записи не считаются расхождением на этапе сверки.
+        transitions = confirmed_direct_transitions(
+            reported_changes, head_locks, head_direct
+        )
+        notes = verify(
+            expected,
+            [change for change in reported_changes if change not in transitions],
+        )
         # Неподтверждённые графом версии NuGet обязаны быть покрыты аудитом —
         # и когда они пришли из манифестов, и когда их обнаружило само действие.
         if any(
@@ -433,7 +589,13 @@ def main() -> int:
             for change in [*expected, *reported_changes]
         ):
             notes.append(nuget_audit_proof(root))
-        gaps = imprecise(reported_changes)
+        gaps = imprecise(
+            reported_changes,
+            project_locks(root, base_sha),
+            head_locks,
+            direct_dependencies(root, base_sha),
+            head_direct,
+        )
     except CoverageError as error:
         print(f"::error::Охват Dependency Review не доказан: {error}", file=sys.stderr)
         return CHECK_ERROR_CODE

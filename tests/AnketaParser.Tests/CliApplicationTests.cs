@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Text.Json;
 
 using AnketaParser.Cli;
@@ -5,8 +7,54 @@ using AnketaParser.Core;
 
 namespace AnketaParser.Tests;
 
+// Тесты читают конфигурацию из процесса, поэтому окружение изолируется исключительно.
+[Collection("Окружение процесса")]
 public sealed class CliApplicationTests
 {
+    [Theory]
+    [InlineData("post", "секретное значение", ExitCodes.InvalidUsage, "invalid_usage")]
+    [InlineData("scan", "https://example.invalid", ExitCodes.InvalidUsage, "invalid_usage")]
+    [InlineData("status", "--json", ExitCodes.InvalidConfiguration, "not_configured")]
+    public async Task SourceErrorsHaveOneSafeMachineDocument(string command, string argument, int code, string status)
+    {
+        using var root = new Support.TemporaryContentRoot("{}");
+        var result = await RunAsync(["source", command, argument], root.Path);
+        Assert.Equal(code, result.ExitCode);
+        using var document = JsonDocument.Parse(result.Stdout);
+        Assert.Equal(1, document.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal(code, document.RootElement.GetProperty("exitCode").GetInt32());
+        Assert.Equal(status, document.RootElement.GetProperty("status").GetString());
+        Assert.DoesNotContain(argument, result.Stderr, StringComparison.Ordinal);
+        // Отчёт сравнивается по разобранным строкам: сериализация экранирует
+        // не-ASCII значения, и поиск по необработанному JSON их не находит.
+        Assert.All(StringValues(document.RootElement),
+            value => Assert.DoesNotContain(argument, value, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task SourceReportsRefusedPostgresConnectionAsUnavailable()
+    {
+        using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        socket.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        var port = ((IPEndPoint)socket.LocalEndPoint!).Port;
+        using var root = new Support.TemporaryContentRoot($$"""
+            {
+              "Dvach": { "ThreadUrl": "https://2ch.org/soc/res/100000.html" },
+              "Database": { "ConnectionString": "Host=127.0.0.1;Port={{port}};Database=fixture;Username=fixture;Password=fixture_secret;Timeout=1" }
+            }
+            """);
+        foreach (var command in new[] { "status", "scan" })
+        {
+            var result = await RunAsync(["source", command], root.Path);
+            Assert.Equal(ExitCodes.DependencyUnavailable, result.ExitCode);
+            Assert.DoesNotContain("fixture_secret", result.Stdout + result.Stderr, StringComparison.Ordinal);
+            using var document = JsonDocument.Parse(result.Stdout);
+            var expected = command == "scan" ? document.RootElement.GetProperty("result").GetProperty("failure") :
+                document.RootElement.GetProperty("status");
+            Assert.Equal("database_unavailable", expected.GetString());
+        }
+    }
+
     [Fact]
     public async Task StorageHelpBypassesInvalidConfigurationAndUnknownCommandIsUsageError()
     {
@@ -36,6 +84,50 @@ public sealed class CliApplicationTests
         var result = await RunAsync(["storage", "backup-list"], root.Path);
         Assert.Equal(ExitCodes.InvalidConfiguration, result.ExitCode);
         Assert.Empty(result.Stdout);
+    }
+
+    [Theory]
+    [InlineData("Host", "ShutdownTimeoutSeconds")]
+    [InlineData("Database", "ConnectTimeoutSeconds")]
+    [InlineData("Diagnostics", "ProbeTimeoutSeconds")]
+    [InlineData("Backup", "TimeoutSeconds")]
+    [InlineData("Dvach", "PollIntervalSeconds")]
+    public async Task SourceUsesSharedTypedValidators(string section, string key)
+    {
+        using var root = new Support.TemporaryContentRoot($$"""
+            { "{{section}}": { "{{key}}": 0 } }
+            """);
+        var result = await RunAsync(["source", "status"], root.Path);
+        Assert.Equal(ExitCodes.InvalidConfiguration, result.ExitCode);
+        using var document = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("invalid_configuration", document.RootElement.GetProperty("status").GetString());
+        Assert.DoesNotContain(key, result.Stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SourceHelpStaysAvailableWithoutValidConfiguration()
+    {
+        using var root = new Support.TemporaryContentRoot("""
+            { "Host": { "ShutdownTimeoutSeconds": 0 } }
+            """);
+        var result = await RunAsync(["source", "help"], root.Path);
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains("source scan", result.Stdout, StringComparison.Ordinal);
+        Assert.Empty(result.Stderr);
+    }
+
+    [Theory]
+    [InlineData("help")]
+    [InlineData("--help")]
+    public async Task SourceHelpStaysTextualWithJsonFlag(string command)
+    {
+        using var root = new Support.TemporaryContentRoot("""
+            { "Host": { "ShutdownTimeoutSeconds": 0 } }
+            """);
+        var result = await RunAsync(["source", command, "--json"], root.Path);
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains("source scan", result.Stdout, StringComparison.Ordinal);
+        Assert.Empty(result.Stderr);
     }
 
     [Fact]
@@ -78,6 +170,8 @@ public sealed class CliApplicationTests
     {
         using var stdout = new StringWriter();
         using var stderr = new StringWriter();
+        // Настройки процесса не должны подменять конфигурацию теста.
+        using var environment = Support.ProcessEnvironment.Isolate();
 
         var exitCode = await CliApplication.RunAsync(
             args,
@@ -87,6 +181,32 @@ public sealed class CliApplicationTests
             contentRootPath);
 
         return (exitCode, stdout.ToString(), stderr.ToString());
+    }
+
+    /// <summary>Строковые значения документа, включая вложенные.</summary>
+    private static IEnumerable<string> StringValues(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                yield return property.Name;
+                foreach (var nested in StringValues(property.Value))
+                    yield return nested;
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                foreach (var nested in StringValues(item))
+                    yield return nested;
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.String)
+        {
+            yield return element.GetString()!;
+        }
     }
 
     [Fact]
@@ -117,6 +237,9 @@ public sealed class CliApplicationTests
 
         Assert.Equal(ExitCodes.Success, result.ExitCode);
         Assert.Contains("Коды завершения:", result.Stdout, StringComparison.Ordinal);
+        Assert.Contains("команда выполнена успешно; это само по себе не означает, что система здорова", result.Stdout, StringComparison.Ordinal);
+        Assert.Contains("Код 0 команды source status", result.Stdout, StringComparison.Ordinal);
+        Assert.Contains("а не наличие сохранённого опроса", result.Stdout, StringComparison.Ordinal);
         Assert.Contains("doctor", result.Stdout, StringComparison.Ordinal);
     }
 
