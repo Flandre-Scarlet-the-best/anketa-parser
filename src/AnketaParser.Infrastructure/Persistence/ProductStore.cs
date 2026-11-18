@@ -360,6 +360,11 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
     public async Task<Guid> EnqueueAsync(Guid revisionId, string processorVersion, int maxAttempts, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(processorVersion);
+        // Обе команды выполняются в одной транзакции: иначе блокировка поста
+        // освобождается до вставки и архивирование может пройти между ними.
+        await using var transaction = db.Database.CurrentTransaction is null
+            ? await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false)
+            : null;
         // Блокировка поста отдельным оператором: проверка причины ревизии в следующем
         // операторе увидит изменения, зафиксированные до получения этой блокировки.
         await db.Database.ExecuteSqlInterpolatedAsync($"""
@@ -379,6 +384,8 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
             ON CONFLICT ("RevisionId","ProcessorVersion") DO UPDATE SET "ProcessorVersion"=EXCLUDED."ProcessorVersion"
             RETURNING "Id" AS "Value"
             """).ToListAsync(cancellationToken).ConfigureAwait(false);
+        if (transaction is not null)
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return ids.Count == 1 ? ids[0] : throw new InvalidOperationException("Ревизия недоступна для постановки в очередь.");
     }
 

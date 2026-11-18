@@ -137,6 +137,9 @@ internal sealed partial class DvachMarkup
         if (element.LocalName is "script" or "style" or "template" or "svg" or "math" or "iframe" or "textarea" ||
             element.HasAttribute("hidden"))
             return string.Empty;
+        // Граница строки сохраняется: подпись `>>12` и `3` через `<br>` не равна `>>123`.
+        if (element.LocalName == "br")
+            return "\n";
         if (element.LocalName is "blockquote" or "q" || element.ClassList.Contains("unkfunc") || element.ClassList.Contains("quote"))
             return string.Empty;
         var builder = new StringBuilder();

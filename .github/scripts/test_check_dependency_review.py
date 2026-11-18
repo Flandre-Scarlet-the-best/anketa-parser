@@ -21,6 +21,7 @@ from check_dependency_review import (
     CoverageError,
     changes,
     dependencies,
+    direct_dependencies,
     exact_version,
     expected_changes,
     imprecise,
@@ -192,6 +193,24 @@ class DependencySetTests(RepositoryCase):
         self.assertEqual(
             project_locks(self.root, named),
             {"src/Lib/Lib.csproj": "src/Lib/packages.Lib.lock.json"},
+        )
+
+    def test_direct_dependencies_exclude_transitive_entries(self) -> None:
+        self.write("src/Lib/Lib.csproj", "<Project />")
+        self.write("src/Lib/packages.lock.json", LOCK % ("Npgsql", "10.0.3"))
+        self.write("src/Lib/packages.Lib.lock.json", LOCK % ("Serilog", "4.0.0"))
+        revision = self.commit("прямые зависимости")
+        found = direct_dependencies(self.root, revision)
+        self.assertIn(("npgsql", "10.0.3", "src/Lib/packages.lock.json"), found)
+        self.assertIn(("serilog", "4.0.0", "src/Lib/packages.Lib.lock.json"), found)
+        self.write(
+            "src/Lib/packages.lock.json",
+            (LOCK % ("Npgsql", "10.0.3")).replace('"Direct"', '"Transitive"'),
+        )
+        transitive = self.commit("транзитивная запись")
+        self.assertNotIn(
+            ("npgsql", "10.0.3", "src/Lib/packages.lock.json"),
+            direct_dependencies(self.root, transitive),
         )
 
     def test_shared_lock_of_two_projects_has_no_proven_owner(self) -> None:
@@ -450,6 +469,17 @@ class ComparisonTests(unittest.TestCase):
         chosen = chosen_locks("src/Lib/Lib.csproj", "src/Lib/packages.Lib.lock.json")
         self.assertEqual(imprecise([graph], [named], chosen, chosen), [])
         self.assertEqual(imprecise([graph], [plain], chosen, chosen), ["npgsql >= 0"])
+
+    def test_direct_reference_closes_gap_without_version_change(self) -> None:
+        graph = Change("added", "nuget", "npgsql", ">= 0", "src/Lib/Lib.csproj")
+        chosen = chosen_locks("src/Lib/Lib.csproj", "src/Lib/packages.lock.json")
+        direct = {("npgsql", "10.0.4", "src/Lib/packages.lock.json")}
+        # Переход Transitive → Direct меняет только тип записи lock-файла.
+        self.assertEqual(imprecise([graph], [], chosen, chosen, set(), direct), [])
+        # Транзитивная запись подтверждением не служит.
+        self.assertEqual(
+            imprecise([graph], [], chosen, chosen, set(), set()), ["npgsql >= 0"]
+        )
 
     def test_lock_choice_is_taken_from_the_revision_of_the_change(self) -> None:
         graph = Change("removed", "nuget", "npgsql", ">= 0", "src/Lib/Lib.csproj")

@@ -36,7 +36,7 @@ internal static class HelpText
             Для оценки готовности смотрите результат doctor. Код 0 команды source status
             подтверждает успешный запрос к хранилищу, а не наличие сохранённого опроса:
             в новой базе статус равен never_scanned. Наличие и результат опроса проверяйте
-            по полям status и lastSuccessAt.
+            по полю status в корне ответа и по полю lastSuccessAt внутри result.
 
             Конфигурация:
               appsettings.json, appsettings.<DOTNET_ENVIRONMENT>.json и appsettings.Local.json

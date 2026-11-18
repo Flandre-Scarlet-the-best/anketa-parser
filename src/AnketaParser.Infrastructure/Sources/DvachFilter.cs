@@ -285,7 +285,7 @@ internal static partial class DvachFilter
     [GeneratedRegex(@"(?<![\w])(?<platform>" + Platforms + @")(?![\w])(?:\s*[:=—–-]\s*|\s+)[\""«]?(?<value>@?[A-Za-z0-9_.#-]+)[\""»]?(?![\w@.:%+#-])", IgnoreCase)]
     private static partial Regex LabeledValue();
 
-    [GeneratedRegex(@"\G\s*/\s*[\""«]?(?<value>@?[A-Za-z0-9_.#-]+)", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\G\s*/\s*[\""«]?(?<value>@?[A-Za-z0-9_.#-]+)(?=/|\z)", RegexOptions.CultureInvariant)]
     private static partial Regex SlashValue();
 
     [GeneratedRegex(@"\G[\""»]?\s*[,;|/]\s*[\""«]?(?<value>@?[A-Za-z0-9_.#-]+)(?![\w@./:%+#-])", RegexOptions.CultureInvariant)]

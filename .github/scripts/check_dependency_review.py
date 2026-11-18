@@ -185,8 +185,8 @@ def dependencies(root: Path, revision: str) -> set[tuple[str, str, str, str]]:
     return found
 
 
-def lock_entries(content: str) -> set[tuple[str, str, str]]:
-    """Разрешённые версии пакетов из packages.lock.json всех платформ."""
+def lock_items(content: str) -> list[tuple[str, str, str]]:
+    """Записи lock-файла как (пакет, разрешённая версия, тип ссылки)."""
     try:
         data = cast(object, json.loads(content))
     except json.JSONDecodeError as error:
@@ -198,7 +198,7 @@ def lock_entries(content: str) -> set[tuple[str, str, str]]:
     )
     if not isinstance(frameworks, dict):
         raise CoverageError("lock-файл в ревизии не содержит dependencies")
-    found: set[tuple[str, str, str]] = set()
+    found: list[tuple[str, str, str]] = []
     for entries in cast(dict[str, object], frameworks).values():
         if not isinstance(entries, dict):
             continue
@@ -206,11 +206,31 @@ def lock_entries(content: str) -> set[tuple[str, str, str]]:
             if not isinstance(details, dict):
                 continue
             item = cast(dict[str, object], details)
-            if item.get("type") == "Project":
-                continue
             version = item.get("resolved")
-            if isinstance(version, str):
-                found.add((NUGET, package, version))
+            kind = item.get("type")
+            if isinstance(version, str) and isinstance(kind, str):
+                found.append((package, version, kind))
+    return found
+
+
+def lock_entries(content: str) -> set[tuple[str, str, str]]:
+    """Разрешённые версии пакетов из packages.lock.json всех платформ."""
+    return {
+        (NUGET, package, version)
+        for package, version, kind in lock_items(content)
+        if kind != "Project"
+    }
+
+
+def direct_dependencies(root: Path, revision: str) -> set[tuple[str, str, str]]:
+    """Прямые ссылки ревизии как (пакет в нижнем регистре, версия, манифест)."""
+    found: set[tuple[str, str, str]] = set()
+    for name in tree_files(root, revision):
+        if not LOCKFILE.search(name):
+            continue
+        for package, version, kind in lock_items(file_text(root, revision, name)):
+            if kind == "Direct":
+                found.add((package.casefold(), version, name))
     return found
 
 
@@ -425,6 +445,8 @@ def imprecise(
     expected: list[Change],
     base_locks: dict[str, str | None],
     head_locks: dict[str, str | None],
+    base_direct: set[tuple[str, str, str]] | None = None,
+    head_direct: set[tuple[str, str, str]] | None = None,
 ) -> list[str]:
     """Отчёт с диапазоном версии не доказывает анализ разрешённой версии."""
     lock_changes = {
@@ -433,6 +455,18 @@ def imprecise(
         if change.ecosystem.lower() == "nuget"
         and LOCKFILE.search(change.manifest)
         and exact_version(change.version)
+    }
+    # Прямая ссылка с точной версией закрывает пробел и без смены версии: переход
+    # Transitive → Direct меняет только тип записи. Транзитивная запись не годится.
+    lock_changes |= {
+        ("removed", package, manifest)
+        for package, version, manifest in base_direct or set()
+        if exact_version(version)
+    }
+    lock_changes |= {
+        ("added", package, manifest)
+        for package, version, manifest in head_direct or set()
+        if exact_version(version)
     }
     gaps: list[str] = []
     for change in reported_changes:
@@ -521,6 +555,8 @@ def main() -> int:
             expected,
             project_locks(root, merge_base(root, args.base, args.head)),
             project_locks(root, args.head),
+            direct_dependencies(root, merge_base(root, args.base, args.head)),
+            direct_dependencies(root, args.head),
         )
     except CoverageError as error:
         print(f"::error::Охват Dependency Review не доказан: {error}", file=sys.stderr)

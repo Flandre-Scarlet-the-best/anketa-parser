@@ -277,6 +277,22 @@ public sealed class DvachTests
             """));
     }
 
+    [Fact]
+    public void SlashListRejectsAddressRemainder()
+    {
+        // Остаток адреса не даёт ни первого, ни второго контакта.
+        Assert.Empty(Prepare("Контакты: tg: alice_name/bobby_name:443").Contacts);
+    }
+
+    [Fact]
+    public void ReplyLabelSplitAcrossLinesIsNotAVisibleReply()
+    {
+        // Видимая подпись `>>12` и `3` через перенос не равна номеру поста.
+        _ = Assert.Throws<SourceFailure>(() => Prepare("""
+            <a class="post-reply-link" href="/soc/res/100000.html#123" data-thread="100000" data-num="123">&gt;&gt;12<br>3</a>
+            """));
+    }
+
     [Theory]
     [InlineData("/path/@sampleuser42")]
     [InlineData("https://example.invalid/@sampleuser42")]
@@ -377,16 +393,18 @@ public sealed class DvachTests
     [Fact]
     public async Task RequestDeadlineIsDistinctFromCallerCancellation()
     {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var client = Client(async (_, ct) =>
         {
+            entered.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, ct);
             return new HttpResponseMessage(HttpStatusCode.OK);
         });
         var adapter = new DvachClient(client, TimeProvider.System);
         var fetch = adapter.FetchAsync(
             Thread, new() { RequestTimeoutSeconds = 1 }, null, TestContext.Current.CancellationToken);
-        await Task.Delay(TimeSpan.FromMilliseconds(200), TestContext.Current.CancellationToken);
-        // До истечения срока запрос ещё активен: отмену вызвало ограничение времени.
+        // Проверка выполняется сразу после входа в обработчик, а не по паузе планировщика.
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
         Assert.False(fetch.IsCompleted);
         var error = await Assert.ThrowsAsync<SourceFailure>(() => fetch);
         Assert.Equal("timeout", error.Category);
