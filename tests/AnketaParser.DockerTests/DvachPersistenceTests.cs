@@ -411,7 +411,8 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
         });
         await using var provider = CreateService(database, handler, TimeProvider.System);
         var ingestion = provider.GetRequiredService<DvachIngestion>();
-        var scan = ingestion.ScanAsync(null, Ct);
+        using var scanCancellation = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var scan = ingestion.ScanAsync(null, scanCancellation.Token);
         try
         {
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct);
@@ -420,9 +421,10 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
         }
         catch
         {
-            // Опрос обязан завершиться до удаления тестовой БД; отказ проверки
-            // остаётся исходной ошибкой теста.
+            // Опрос обязан завершиться до удаления тестовой БД: отмена и ожидание
+            // самой задачи не оставляют работу с закрытым соединением.
             release.TrySetResult();
+            await scanCancellation.CancelAsync();
             await DrainAsync(scan);
             throw;
         }
@@ -493,12 +495,14 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
             Assert.Skip("Требуется ANKETAPARSER_DOCKER_TESTS=1.");
     }
 
-    /// <summary>Дождаться завершения опроса, не скрывая исходную ошибку проверки.</summary>
+    /// <summary>Дождаться завершения отменённого опроса, не скрывая исходную ошибку проверки.</summary>
     private static async Task DrainAsync(Task scan)
     {
+        // Опрос уже отменён вызывающим кодом: ожидание заканчивается вместе с
+        // задачей и не оставляет её работающей с освобождённой тестовой БД.
         try
         {
-            await scan.WaitAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+            await scan;
         }
         catch (Exception)
         {

@@ -65,6 +65,7 @@ internal static partial class DvachFilter
             var text = line.Text;
             var number = index + 1;
             List<(int Start, int End)> occupied = [];
+            List<(int Start, int End)> labeled = [];
             List<(int Offset, DetectedContact Contact)> found = [];
 
             void Record(int offset, int length, string platform, string raw, string value, decimal confidence, string origin)
@@ -104,6 +105,9 @@ internal static partial class DvachFilter
                     continue;
                 if (platform is not ("telegram" or "discord") || !IsLabeledValue(platform, value.Value))
                     continue;
+                // Прямое правило связало метку со значением справа: обратное правило
+                // для этой метки больше не участвует в распознавании.
+                labeled.Add((match.Index, value.Index + value.Length));
                 Record(value.Index, value.Length, platform, value.Value, value.Value.TrimStart('@'), 0.8m, "label");
                 var next = value.Index + value.Length;
                 while (LabeledListItem().Match(text, next) is { Success: true } item)
@@ -128,6 +132,10 @@ internal static partial class DvachFilter
             foreach (Match match in ReverseTelegram().Matches(text))
             {
                 var value = match.Groups["value"];
+                // Слово перед меткой не является вторым контактом, если эта метка уже
+                // связана прямым правилом со значением справа от неё.
+                if (labeled.Any(span => match.Groups["label"].Index >= span.Start && match.Groups["label"].Index < span.End))
+                    continue;
                 if (!InsideUrl(text, value.Index))
                     Record(value.Index, value.Length, "telegram", value.Value, value.Value.TrimStart('@'), 0.8m, "label");
             }
@@ -142,6 +150,10 @@ internal static partial class DvachFilter
                     continue;
                 var match = ExplicitContact().Match(link.Target);
                 if (!match.Success || match.Length != link.Target.Length)
+                    continue;
+                // Схема в шаблоне необязательна, но адрес обязан вести на Telegram:
+                // `t.me/alice_name` без схемы разрешается относительно страницы треда.
+                if (match.Groups["telegram"].Success && !IsTelegramTarget(link.Target))
                     continue;
                 var platform = match.Groups["telegram"].Success ? "telegram" : match.Groups["xmpp"].Success ? "xmpp" : "email";
                 var value = match.Groups[platform == "telegram" ? "telegram" : platform == "xmpp" ? "xmpp" :
@@ -162,6 +174,16 @@ internal static partial class DvachFilter
         "discord" => DiscordValue().IsMatch(value.TrimStart('@')),
         _ => false,
     };
+
+    private static bool IsTelegramTarget(string target)
+    {
+        // Адрес ссылки обязан быть абсолютным http(s)-адресом Telegram: относительный
+        // `t.me/alice_name` разрешается браузером относительно страницы треда.
+        if (!Uri.TryCreate(target, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
+            return false;
+        return uri.Host.Equals("t.me", StringComparison.OrdinalIgnoreCase)
+            || uri.Host.Equals("telegram.me", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static bool InsideUrl(string text, int offset)
     {
@@ -239,7 +261,7 @@ internal static partial class DvachFilter
     [GeneratedRegex(@"\A" + DiscordId + @"\z", RegexOptions.CultureInvariant)]
     private static partial Regex DiscordValue();
 
-    [GeneratedRegex(@"(?<![\w@./:%+-])(?<value>@?" + TelegramId + @")\s+(?:telegram|телеграмм|телеграм|телега|tg|тг)(?!\w)", IgnoreCase)]
+    [GeneratedRegex(@"(?<![\w@./:%+-])(?<value>@?" + TelegramId + @")\s+(?<label>telegram|телеграмм|телеграм|телега|tg|тг)(?!\w)", IgnoreCase)]
     private static partial Regex ReverseTelegram();
 
     [GeneratedRegex(@"(?<!\w)(?<platform>" + Platforms + @")(?:\s*[:=—–-]\s*|\s*)\z", IgnoreCase)]

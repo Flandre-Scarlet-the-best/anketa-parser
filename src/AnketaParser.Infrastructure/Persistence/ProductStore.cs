@@ -13,6 +13,10 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
 {
     private static DateTimeOffset Now => DateTimeOffset.UtcNow;
 
+    // Сколько кандидатов рассматривается за один захват: пост, закрытый другой
+    // транзакцией, пропускается через SKIP LOCKED и не лишает захвата остальных.
+    private const int ClaimCandidates = 8;
+
     private async Task LockAsync(string key, CancellationToken ct) =>
         await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({key}, 0))", ct).ConfigureAwait(false);
 
@@ -393,20 +397,39 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
             UPDATE product."JobAttempt" SET "FinishedAt"={expirationCutoff},"FailureCategory"='lease_expired'
             WHERE "FinishedAt" IS NULL AND "JobId" IN (SELECT "Id" FROM released)
             """, cancellationToken).ConfigureAwait(false);
-        var jobs = await db.Set<ProcessingJob>().FromSqlInterpolated($"""
-            SELECT * FROM product."ProcessingJob"
-            WHERE "State"='pending'
-            AND "Attempts"<"MaxAttempts" AND "AvailableAt"<={Now}
-            AND EXISTS (
-                SELECT 1 FROM product."PostRevision" AS revision
-                JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
-                WHERE revision."Id"=product."ProcessingJob"."RevisionId" AND NOT post."Excluded"
-                AND (post."IngestedRevisionId" IS NULL OR
-                    (post."IngestedRevisionId"=revision."Id" AND revision."IngestionReason"='candidate')))
-            ORDER BY "AvailableAt","Id" LIMIT 1 FOR UPDATE SKIP LOCKED
+        var jobs = await db.Database.SqlQuery<Guid>($"""
+            SELECT job."Id" AS "Value"
+            FROM product."ProcessingJob" AS job
+            JOIN product."PostRevision" AS revision ON revision."Id"=job."RevisionId"
+            JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
+            WHERE job."State"='pending'
+            AND job."Attempts"<job."MaxAttempts" AND job."AvailableAt"<={Now}
+            AND NOT post."Excluded"
+            AND (post."IngestedRevisionId" IS NULL OR
+                (post."IngestedRevisionId"=revision."Id" AND revision."IngestionReason"='candidate'))
+            ORDER BY job."AvailableAt", job."Id" LIMIT {ClaimCandidates}
+            FOR UPDATE OF post SKIP LOCKED
             """).ToListAsync(cancellationToken).ConfigureAwait(false);
-        if (jobs.Count == 0) { await transaction.CommitAsync(cancellationToken).ConfigureAwait(false); return null; }
-        var job = jobs[0];
+        // Блокировка поста взята первой и в том же порядке, что в EnqueueAsync и ArchiveAsync.
+        // Решение о доступности поста и ревизии остаётся в силе до конца захвата, поэтому
+        // исключённый пост не получает аренду даже при одновременной архивации.
+        ProcessingJob? job = null;
+        foreach (var candidate in jobs)
+        {
+            // Задание перечитывается под собственной блокировкой: аренда выдаётся только
+            // заданию, которое всё ещё ожидает и не исчерпало попытки.
+            var locked = await db.Set<ProcessingJob>().FromSqlInterpolated($"""
+                SELECT * FROM product."ProcessingJob"
+                WHERE "Id"={candidate} AND "State"='pending'
+                AND "Attempts"<"MaxAttempts" AND "AvailableAt"<={Now}
+                FOR UPDATE
+                """).ToListAsync(cancellationToken).ConfigureAwait(false);
+            if (locked.Count == 0)
+                continue;
+            job = locked[0];
+            break;
+        }
+        if (job is null) { await transaction.CommitAsync(cancellationToken).ConfigureAwait(false); return null; }
         await db.Entry(job).ReloadAsync(cancellationToken).ConfigureAwait(false);
         job.Attempts++; job.State = "running"; job.LeaseToken = Guid.NewGuid(); job.LeaseUntil = Now + lease;
         db.Add(new JobAttempt { JobId = job.Id, Number = job.Attempts, Token = job.LeaseToken.Value, StartedAt = Now });

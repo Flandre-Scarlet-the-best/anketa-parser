@@ -107,11 +107,8 @@ public static class HostApplication
         try
         {
             // Проверяем настройки до запуска Generic Host, который логирует исключения старта целиком.
-            _ = host.Services.GetRequiredService<IOptions<HostSettings>>().Value;
-            _ = host.Services.GetRequiredService<IOptions<DatabaseSettings>>().Value;
-            _ = host.Services.GetRequiredService<IOptions<DiagnosticsSettings>>().Value;
-            _ = host.Services.GetRequiredService<IOptions<BackupSettings>>().Value;
-            _ = host.Services.GetRequiredService<IOptions<DvachSettings>>().Value;
+            // Состав проверок принадлежит общей точке входа CLI и Host.
+            host.Services.ValidateSettings();
             return host;
         }
         catch

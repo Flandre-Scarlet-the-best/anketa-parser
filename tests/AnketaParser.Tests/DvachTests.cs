@@ -65,7 +65,11 @@ public sealed class DvachTests
             Assert.Equal(contacts, string.Join(',', prepared.Contacts.Select(c => $"{c.Platform}:{c.NormalizedValue}")));
             Assert.Equal(i is 23 or 25, prepared.Ambiguous);
             Assert.Equal(sourcePost.Html, prepared.Post.Content);
-            Assert.Equal(Thread.Url + "#" + prepared.Post.ExternalId, prepared.Post.Url);
+            // Идентификатор и адрес сверяются с номером исходного сообщения фикстуры:
+            // ожидание не выводится из проверяемого результата фильтра.
+            var expectedId = sourcePost.Number.ToString(CultureInfo.InvariantCulture);
+            Assert.Equal(expectedId, prepared.Post.ExternalId);
+            Assert.Equal(Thread.Url + "#" + expectedId, prepared.Post.Url);
             Assert.All(prepared.Contacts, c => Assert.StartsWith("dvach:body:", c.Provenance, StringComparison.Ordinal));
         }
 
@@ -141,6 +145,20 @@ public sealed class DvachTests
     }
 
     [Theory]
+    [InlineData("profile telegram: @sampleuser42")]
+    [InlineData("write telegram @sampleuser42")]
+    [InlineData("support тг: sampleuser42")]
+    public void LabeledValueDoesNotRepeatTheWordBeforeItsLabel(string html)
+    {
+        // Прямое правило уже связало метку со значением справа: обратное правило
+        // не должно сообщать слово перед меткой как второй контакт.
+        var prepared = Prepare(html);
+        Assert.Equal("candidate", prepared.Reason);
+        Assert.False(prepared.Ambiguous);
+        Assert.Equal("sampleuser42", Assert.Single(prepared.Contacts).NormalizedValue);
+    }
+
+    [Theory]
     [InlineData("Тг: firstuser42, seconduser42", "telegram", "firstuser42", "seconduser42")]
     [InlineData("Discord: First.Name / Second.Name", "discord", "First.Name", "Second.Name")]
     public void LabeledListsPreserveAllValues(string text, string platform, string first, string second)
@@ -189,6 +207,16 @@ public sealed class DvachTests
         var coordinate = prepared.Contacts[0].Provenance.Split(':');
         Assert.StartsWith("сюда", text[int.Parse(coordinate[2], CultureInfo.InvariantCulture) - 1]
             [int.Parse(coordinate[3], CultureInfo.InvariantCulture)..], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void HiddenReplyLabelIsNotAVisibleReply()
+    {
+        // Подпись ответа берётся по видимому тексту, как и подпись обычной ссылки:
+        // скрытая подпись не подтверждает адресный ответ.
+        _ = Assert.Throws<SourceFailure>(() => Prepare("""
+            <a class="post-reply-link" href="/soc/res/100000.html#99999" data-thread="100000" data-num="99999"><span hidden>&gt;&gt;99999</span></a>
+            """));
     }
 
     [Theory]
@@ -399,6 +427,18 @@ public sealed class DvachTests
         var parts = contact.Provenance.Split(':');
         var text = metadata.RootElement.GetProperty("text").GetString()!.Split('\n');
         Assert.Equal("Написать", text[int.Parse(parts[2], CultureInfo.InvariantCulture) - 1][int.Parse(parts[3], CultureInfo.InvariantCulture)..]);
+    }
+
+    [Theory]
+    [InlineData("t.me/sampleuser42")]
+    [InlineData("/t.me/sampleuser42")]
+    public void HrefWithoutTelegramSchemeIsNotAContact(string href)
+    {
+        // Относительный адрес разрешается браузером относительно страницы треда:
+        // такая ссылка не ведёт на Telegram и не делает пост кандидатом.
+        var prepared = Prepare($"Связаться <a href=\"{href}\">профиль</a>");
+        Assert.Equal("no_own_contact", prepared.Reason);
+        Assert.Empty(prepared.Contacts);
     }
 
     [Fact]

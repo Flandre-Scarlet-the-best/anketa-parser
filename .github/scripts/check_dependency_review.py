@@ -24,7 +24,10 @@ from xml.etree import ElementTree
 
 CHECK_FINDINGS_CODE = 1
 CHECK_ERROR_CODE = 2
-LOCKFILE = re.compile(r"(?:^|/)packages\.lock\.json$")
+# NuGet использует `packages.<имя проекта>.lock.json`, если такой файл есть рядом
+# с проектом, и `packages.lock.json` иначе.
+LOCKFILE = re.compile(r"(?:^|/)packages(?:\.[^/]+)?\.lock\.json$")
+PROJFILE = re.compile(r"\.csproj$")
 REQUIREMENTS = re.compile(r"(?:^|/)requirements(?:[-.][^/]*)?\.txt$")
 CENTRAL = re.compile(r"(?:^|/)Directory\.Packages\.props$")
 WORKFLOW = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$")
@@ -39,6 +42,11 @@ ACTION_USE = re.compile(
 # вместо разрешённой версии; такое значение не доказывает анализ версии.
 # Интервал NuGet начинается с `[` или `(`, поэтому эти символы входят в набор.
 IMPRECISE = re.compile(r"^[<>=~^*\[(]")
+# Разрешённая версия NuGet: `major.minor[.patch[.revision]]`, необязательные
+# суффиксы предварительной версии и метаданных сборки.
+NUGET_VERSION = re.compile(
+    r"^\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+)
 MAX_DIAGNOSTIC = 2000
 NUGET = "NuGet"
 PIP = "pip"
@@ -102,6 +110,53 @@ def tree_files(root: Path, revision: str) -> list[str]:
 def file_text(root: Path, revision: str, name: str) -> str:
     """Содержимое файла в ревизии."""
     return git(root, "show", f"{revision}:{name}")
+
+
+def project_files(root: Path, revision: str) -> list[str]:
+    """Отслеживаемые проекты MSBuild в указанной ревизии."""
+    names = git(root, "ls-tree", "-r", "-z", "--name-only", revision).split("\0")
+    return [name for name in names if name and PROJFILE.search(name)]
+
+
+def project_locks(root: Path, base: str, head: str) -> dict[str, str | None]:
+    """Выбранный NuGet lock-файл каждого проекта обеих ревизий.
+
+    Имя `packages.lock.json` не описывает владельца: NuGet предпочитает
+    `packages.<имя проекта>.lock.json`, когда этот файл существует, а общий
+    lock-файл каталога с несколькими проектами нельзя отнести к одному из них.
+    """
+    merge_base = git(root, "merge-base", base, head).strip()
+    if not merge_base:
+        raise CoverageError("Git не определил общую точку ветвей")
+    revisions = (merge_base, head)
+    locks = {
+        name
+        for revision in revisions
+        for name in tree_files(root, revision)
+        if LOCKFILE.search(name)
+    }
+    projects = {
+        name for revision in revisions for name in project_files(root, revision)
+    }
+    per_directory: dict[str, int] = {}
+    for name in projects:
+        directory = PurePosixPath(name).parent.as_posix()
+        per_directory[directory] = per_directory.get(directory, 0) + 1
+    chosen: dict[str, str | None] = {}
+    for name in projects:
+        project = PurePosixPath(name)
+        directory = project.parent
+        named = (
+            directory / f"packages.{project.stem.replace(' ', '_')}.lock.json"
+        ).as_posix()
+        if named in locks:
+            chosen[name] = named
+        elif per_directory[directory.as_posix()] == 1:
+            chosen[name] = (directory / "packages.lock.json").as_posix()
+        else:
+            # Единственный владелец записи общего lock-файла не доказан.
+            chosen[name] = None
+    return chosen
 
 
 def dependencies(root: Path, revision: str) -> set[tuple[str, str, str, str]]:
@@ -372,12 +427,15 @@ def nuget_audit_proof(root: Path) -> str:
 
 
 def exact_version(value: str) -> bool:
-    """Значение является точной версией, а не диапазоном и не пустой строкой."""
-    text = value.strip()
-    return bool(text) and IMPRECISE.match(text) is None
+    """Значение является точной разрешённой версией NuGet, а не диапазоном."""
+    return NUGET_VERSION.fullmatch(value.strip()) is not None
 
 
-def imprecise(reported_changes: list[Change], expected: list[Change]) -> list[str]:
+def imprecise(
+    reported_changes: list[Change],
+    expected: list[Change],
+    chosen_locks: dict[str, str | None],
+) -> list[str]:
     """Отчёт с диапазоном версии не доказывает анализ разрешённой версии."""
     lock_changes = {
         (change.kind, change.name.casefold(), change.manifest)
@@ -392,9 +450,9 @@ def imprecise(reported_changes: list[Change], expected: list[Change]) -> list[st
             continue
         project = PurePosixPath(change.manifest)
         # Особое значение графа для PackageReference без версии. Точная версия
-        # проверяется отдельным аудитом соответствующего lock-файла.
+        # проверяется отдельным аудитом lock-файла, выбранного по правилам NuGet.
         sibling = (
-            project.with_name("packages.lock.json").as_posix()
+            chosen_locks.get(project.as_posix())
             if project.suffix == ".csproj"
             else None
         )
@@ -463,7 +521,9 @@ def main() -> int:
             for change in [*expected, *reported_changes]
         ):
             notes.append(nuget_audit_proof(root))
-        gaps = imprecise(reported_changes, expected)
+        gaps = imprecise(
+            reported_changes, expected, project_locks(root, args.base, args.head)
+        )
     except CoverageError as error:
         print(f"::error::Охват Dependency Review не доказан: {error}", file=sys.stderr)
         return CHECK_ERROR_CODE

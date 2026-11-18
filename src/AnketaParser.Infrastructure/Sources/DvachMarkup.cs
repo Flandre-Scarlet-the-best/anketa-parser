@@ -118,10 +118,28 @@ internal sealed partial class DvachMarkup
             !TryNumber(match.Groups[3].Value, out var number) ||
             !TryNumber(element.GetAttribute("data-thread"), out var dataThread) || thread != dataThread ||
             !TryNumber(element.GetAttribute("data-num"), out var dataNum) || number != dataNum ||
-            !IsReplyLabel(element.TextContent.Trim(), number, thread))
+            !IsReplyLabel(VisibleText(element).Trim(), number, thread))
             throw new SourceFailure("invalid_reply_link", "parse");
 
         return new ReplyTarget(match.Groups[1].Value, thread, number);
+    }
+
+    /// <summary>Видимый текст поддерева. Подпись ответа проверяется так же, как подпись обычной ссылки.</summary>
+    private static string VisibleText(INode node)
+    {
+        if (node is IText text)
+            return text.Data;
+        if (node is not IElement element)
+            return string.Empty;
+        if (element.LocalName is "script" or "style" or "template" or "svg" or "math" or "iframe" or "textarea" ||
+            element.HasAttribute("hidden"))
+            return string.Empty;
+        if (element.LocalName is "blockquote" or "q" || element.ClassList.Contains("unkfunc") || element.ClassList.Contains("quote"))
+            return string.Empty;
+        var builder = new StringBuilder();
+        foreach (var child in element.ChildNodes)
+            builder.Append(VisibleText(child));
+        return builder.ToString();
     }
 
     private static bool IsReplyLabel(string label, long number, long thread)

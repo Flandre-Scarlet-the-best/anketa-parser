@@ -58,6 +58,11 @@ internal static class SourceCommands
             return await WriteAsync(stdout, command, "invalid_usage", ExitCodes.InvalidUsage).ConfigureAwait(false);
         }
 
+        // Результат формируется внутри try/catch, а документ в stdout пишется один раз:
+        // отказ записи или сброса потока не добавляет второй JSON.
+        string status;
+        int code;
+        object? result = null;
         try
         {
             var environment = AnketaParserConfiguration.ResolveEnvironmentName();
@@ -74,33 +79,49 @@ internal static class SourceCommands
             provider.ValidateSettings();
             var ingestion = provider.GetRequiredService<DvachIngestion>();
             if (!ingestion.IsConfigured)
-                return await WriteAsync(stdout, command, "not_configured", ExitCodes.InvalidConfiguration).ConfigureAwait(false);
-
-            switch (command)
             {
-                case "scan":
-                    var outcome = await ingestion.ScanAsync(arguments.Length == 3 ? arguments[2] : null, ct).ConfigureAwait(false);
-                    var code = outcome.Status == "complete" ? ExitCodes.Success : ExitCodes.DependencyUnavailable;
-                    return await WriteAsync(stdout, command, outcome.Status, code, outcome).ConfigureAwait(false);
-                case "status":
-                    var state = await ingestion.StatusAsync(arguments.Length == 2, ct).ConfigureAwait(false);
-                    return await WriteAsync(stdout, command, state.Status, ExitCodes.Success, state).ConfigureAwait(false);
-                case "post":
-                    var report = await ingestion.PostAsync(arguments.Length == 3, postNumber, ct).ConfigureAwait(false);
-                    var reportCode = report.Status == "ok" ? ExitCodes.Success : ExitCodes.DependencyUnavailable;
-                    return await WriteAsync(stdout, command, report.Status, reportCode, report).ConfigureAwait(false);
-                default:
-                    var jobs = await ingestion.QueueAsync(arguments.Length == 2, ct).ConfigureAwait(false);
-                    return await WriteAsync(stdout, command, "ok", ExitCodes.Success, jobs).ConfigureAwait(false);
+                status = "not_configured";
+                code = ExitCodes.InvalidConfiguration;
+            }
+            else
+            {
+                switch (command)
+                {
+                    case "scan":
+                        var outcome = await ingestion.ScanAsync(arguments.Length == 3 ? arguments[2] : null, ct).ConfigureAwait(false);
+                        status = outcome.Status;
+                        code = outcome.Status == "complete" ? ExitCodes.Success : ExitCodes.DependencyUnavailable;
+                        result = outcome;
+                        break;
+                    case "status":
+                        var state = await ingestion.StatusAsync(arguments.Length == 2, ct).ConfigureAwait(false);
+                        status = state.Status;
+                        code = ExitCodes.Success;
+                        result = state;
+                        break;
+                    case "post":
+                        var report = await ingestion.PostAsync(arguments.Length == 3, postNumber, ct).ConfigureAwait(false);
+                        status = report.Status;
+                        code = report.Status == "ok" ? ExitCodes.Success : ExitCodes.DependencyUnavailable;
+                        result = report;
+                        break;
+                    default:
+                        result = await ingestion.QueueAsync(arguments.Length == 2, ct).ConfigureAwait(false);
+                        status = "ok";
+                        code = ExitCodes.Success;
+                        break;
+                }
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            return await WriteAsync(stdout, command, "cancelled", ExitCodes.UnexpectedError).ConfigureAwait(false);
+            status = "cancelled";
+            code = ExitCodes.UnexpectedError;
+            result = null;
         }
         catch (Exception error)
         {
-            var (status, code) = error switch
+            (status, code) = error switch
             {
                 DependencyUnavailableException { Message: "schema_unavailable" } => ("schema_unavailable", ExitCodes.DependencyUnavailable),
                 DependencyUnavailableException => ("database_unavailable", ExitCodes.DependencyUnavailable),
@@ -108,9 +129,12 @@ internal static class SourceCommands
                     ("invalid_configuration", ExitCodes.InvalidConfiguration),
                 _ => ("internal_error", ExitCodes.UnexpectedError),
             };
+            // Отчёт об ошибке не содержит частичного результата операции.
+            result = null;
             await stderr.WriteLineAsync("Операция источника не выполнена. Категория указана в отчёте.").ConfigureAwait(false);
-            return await WriteAsync(stdout, command, status, code).ConfigureAwait(false);
         }
+
+        return await WriteAsync(stdout, command, status, code, result).ConfigureAwait(false);
     }
 
     private static bool ParseNumber(string value, out long number) =>
