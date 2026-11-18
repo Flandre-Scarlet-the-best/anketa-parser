@@ -46,6 +46,11 @@ CENTRAL = '<Project><ItemGroup>\n  <PackageVersion Include="%s" Version="%s" />\
 WORKFLOW = "steps:\n  - uses: actions/checkout@%s\n"
 
 
+def chosen_locks(project: str, lock: str | None) -> dict[str, str | None]:
+    """Выбранный NuGet lock-файл проекта для проверки сверки."""
+    return {project: lock}
+
+
 class RepositoryCase(unittest.TestCase):
     def __init__(self, methodName: str = "runTest") -> None:
         super().__init__(methodName)
@@ -397,7 +402,7 @@ class ComparisonTests(unittest.TestCase):
         lock = Change(
             "added", "NuGet", "Npgsql", "10.0.4", "src/Lib/packages.lock.json"
         )
-        chosen = {"src/Lib/Lib.csproj": "src/Lib/packages.lock.json"}
+        chosen = chosen_locks("src/Lib/Lib.csproj", "src/Lib/packages.lock.json")
         self.assertEqual(imprecise([graph], [lock], chosen), [])
         for mismatch in (
             Change(
@@ -427,7 +432,7 @@ class ComparisonTests(unittest.TestCase):
         plain = Change(
             "added", "NuGet", "Npgsql", "10.0.4", "src/Lib/packages.lock.json"
         )
-        chosen = {"src/Lib/Lib.csproj": "src/Lib/packages.Lib.lock.json"}
+        chosen = chosen_locks("src/Lib/Lib.csproj", "src/Lib/packages.Lib.lock.json")
         self.assertEqual(imprecise([graph], [named], chosen), [])
         self.assertEqual(imprecise([graph], [plain], chosen), ["npgsql >= 0"])
 
@@ -437,7 +442,8 @@ class ComparisonTests(unittest.TestCase):
             "added", "NuGet", "Npgsql", "10.0.4", "src/Lib/packages.lock.json"
         )
         self.assertEqual(
-            imprecise([graph], [lock], {"src/Lib/Lib.csproj": None}), ["npgsql >= 0"]
+            imprecise([graph], [lock], chosen_locks("src/Lib/Lib.csproj", None)),
+            ["npgsql >= 0"],
         )
 
     def test_report_codes_are_distinct(self) -> None:
@@ -454,7 +460,7 @@ class ComparisonTests(unittest.TestCase):
 
     def test_empty_lock_version_keeps_the_graph_gap(self) -> None:
         graph = Change("added", "nuget", "npgsql", ">= 0", "src/Lib/Lib.csproj")
-        chosen = {"src/Lib/Lib.csproj": "src/Lib/packages.lock.json"}
+        chosen = chosen_locks("src/Lib/Lib.csproj", "src/Lib/packages.lock.json")
         empty = Change("added", "NuGet", "Npgsql", "", "src/Lib/packages.lock.json")
         self.assertEqual(imprecise([graph], [empty], chosen), ["npgsql >= 0"])
         spaced = Change("added", "NuGet", "Npgsql", "  ", empty.manifest)
