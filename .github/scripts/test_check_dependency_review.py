@@ -21,6 +21,7 @@ from check_dependency_review import (
     CoverageError,
     changes,
     dependencies,
+    exact_version,
     expected_changes,
     imprecise,
     nuget_audit_proof,
@@ -391,6 +392,29 @@ class ComparisonTests(unittest.TestCase):
     def test_report_codes_are_distinct(self) -> None:
         self.assertNotEqual(CHECK_FINDINGS_CODE, CHECK_ERROR_CODE)
         self.assertNotEqual(CHECK_ERROR_CODE, 0)
+
+    def test_nuget_interval_is_not_mistaken_for_exact_version(self) -> None:
+        for version in ("[10.0,11.0)", "(10.0,11.0]", "[10.0]"):
+            with self.subTest(version=version):
+                interval = Change(
+                    "added", "NuGet", "Npgsql", version, "packages.lock.json"
+                )
+                self.assertEqual(imprecise([interval], []), [f"Npgsql {version}"])
+
+    def test_empty_lock_version_keeps_the_graph_gap(self) -> None:
+        graph = Change("added", "nuget", "npgsql", ">= 0", "src/Lib/Lib.csproj")
+        empty = Change("added", "NuGet", "Npgsql", "", "src/Lib/packages.lock.json")
+        self.assertEqual(imprecise([graph], [empty]), ["npgsql >= 0"])
+        spaced = Change("added", "NuGet", "Npgsql", "  ", empty.manifest)
+        self.assertEqual(imprecise([graph], [spaced]), ["npgsql >= 0"])
+        resolved = Change("added", "NuGet", "Npgsql", "10.0.4", empty.manifest)
+        self.assertEqual(imprecise([graph], [resolved]), [])
+
+    def test_exact_version_rejects_ranges_and_empty_values(self) -> None:
+        self.assertTrue(exact_version("10.0.4"))
+        for value in ("", "   ", ">= 0", "[10.0,11.0)", "(10.0,11.0]"):
+            with self.subTest(value=value):
+                self.assertFalse(exact_version(value))
 
 
 class NugetAuditTests(RepositoryCase):

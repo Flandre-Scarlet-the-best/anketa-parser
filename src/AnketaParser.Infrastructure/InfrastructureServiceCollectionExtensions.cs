@@ -109,6 +109,23 @@ public static class InfrastructureServiceCollectionExtensions
         return services;
     }
 
+    /// <summary>
+    /// Разрешает типизированные настройки в том же составе, что и при старте Host:
+    /// обращение к значению запускает зарегистрированные валидаторы.
+    /// </summary>
+    /// <param name="provider">Поставщик служб с зарегистрированной инфраструктурой.</param>
+    /// <exception cref="OptionsValidationException">Конфигурация не прошла проверку.</exception>
+    public static void ValidateSettings(this IServiceProvider provider)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+
+        _ = provider.GetRequiredService<IOptions<HostSettings>>().Value;
+        _ = provider.GetRequiredService<IOptions<DatabaseSettings>>().Value;
+        _ = provider.GetRequiredService<IOptions<DiagnosticsSettings>>().Value;
+        _ = provider.GetRequiredService<IOptions<BackupSettings>>().Value;
+        _ = provider.GetRequiredService<IOptions<DvachSettings>>().Value;
+    }
+
     private static void BindSettings<T>(IConfigurationSection section, T options)
         where T : class
     {

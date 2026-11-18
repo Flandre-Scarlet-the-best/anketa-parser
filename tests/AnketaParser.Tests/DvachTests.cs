@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -193,6 +194,98 @@ public sealed class DvachTests
             Thread, new() { RequestTimeoutSeconds = 1 }, null, TestContext.Current.CancellationToken));
         Assert.Equal("timeout", error.Category);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => adapter.FetchAsync(Thread, new(), null, new CancellationToken(true)));
+    }
+
+    [Theory]
+    [InlineData("Application/JSON; charset=utf-8")]
+    [InlineData("application/json; charset=\"utf-8\"")]
+    [InlineData("application/json; charset=UTF-8")]
+    [InlineData("application/json")]
+    public async Task FetchAcceptsHttpEquivalentJsonContentTypes(string contentType)
+    {
+        var payload = await File.ReadAllBytesAsync(Fixture, TestContext.Current.CancellationToken);
+        using var client = Client((_, _) =>
+        {
+            var content = new ByteArrayContent(payload);
+            // HTTP сравнивает тип и кодировку без учёта регистра, а кавычки в charset эквивалентны.
+            content.Headers.TryAddWithoutValidation("Content-Type", contentType);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+        });
+        var adapter = new DvachClient(client, TimeProvider.System);
+        var snapshot = await adapter.FetchAsync(Thread, new(), null, TestContext.Current.CancellationToken);
+        Assert.NotEmpty(snapshot.Posts);
+    }
+
+    [Fact]
+    public async Task DuplicateSnapshotCountersAreRejected()
+    {
+        var json = (await File.ReadAllTextAsync(Fixture, TestContext.Current.CancellationToken))
+            .Replace("\"posts_count\": 31", "\"posts_count\": 32, \"posts_count\": 31", StringComparison.Ordinal);
+        using var client = Client((_, _) =>
+        {
+            var content = new StringContent(json);
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+        });
+        var adapter = new DvachClient(client, TimeProvider.System);
+        var error = await Assert.ThrowsAsync<SourceFailure>(() => adapter.FetchAsync(
+            Thread, new(), null, TestContext.Current.CancellationToken));
+        Assert.Equal("invalid_json", error.Category);
+    }
+
+    [Fact]
+    public void ContactLinkWhoseCaptionIsOnlyLeadIsRecognized()
+    {
+        var prepared = Prepare("""<a href="https://t.me/fixture_caption_zq">для связи</a>""");
+        Assert.Equal("candidate", prepared.Reason);
+        var contact = Assert.Single(prepared.Contacts);
+        Assert.Equal("telegram", contact.Platform);
+        Assert.Equal("fixture_caption_zq", contact.NormalizedValue);
+        Assert.EndsWith(":href", contact.Provenance, StringComparison.Ordinal);
+        // Тот же текст без ссылки контактом не становится.
+        Assert.Empty(Prepare("Для связи").Contacts);
+    }
+
+    [Fact]
+    public void SlashSeparatedContactListYieldsEveryAddress()
+    {
+        var prepared = Prepare("Контакты: first@example.invalid/second@example.invalid");
+        Assert.Equal("candidate", prepared.Reason);
+        Assert.Equal(["first@example.invalid", "second@example.invalid"],
+            prepared.Contacts.Select(c => c.NormalizedValue));
+    }
+
+    [Fact]
+    public void BlockquoteEndsTheAuthorLineBeforeFurtherText()
+    {
+        var prepared = Prepare("Тг: @fixture_handle_zq<blockquote>цитата</blockquote>Ещё текст");
+        Assert.Equal("candidate", prepared.Reason);
+        Assert.Equal("fixture_handle_zq", Assert.Single(prepared.Contacts).NormalizedValue);
+        using var metadata = JsonDocument.Parse(prepared.Post.RetrievalMetadata);
+        Assert.Equal("Тг: @fixture_handle_zq\nЕщё текст", metadata.RootElement.GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public void LinkCaptionIsTheVisibleTextOfThatLink()
+    {
+        var hidden = Prepare("""<a href="https://t.me/fixture_hidden_zq"><span hidden>сюда</span></a>сюда""");
+        Assert.Equal("no_own_contact", hidden.Reason);
+        Assert.Empty(hidden.Contacts);
+        var visible = Prepare("""<a href="https://t.me/fixture_visible_zq">сюда</a>""");
+        Assert.Equal("fixture_visible_zq", Assert.Single(visible.Contacts).NormalizedValue);
+    }
+
+    [Fact]
+    public void ContactCoordinatesPointIntoTheSerializedText()
+    {
+        var prepared = Prepare("<br>  Тг: @fixture_handle_zq");
+        var contact = Assert.Single(prepared.Contacts);
+        using var metadata = JsonDocument.Parse(prepared.Post.RetrievalMetadata);
+        var lines = metadata.RootElement.GetProperty("text").GetString()!.Split('\n');
+        var parts = contact.Provenance.Split(':');
+        var line = int.Parse(parts[2], CultureInfo.InvariantCulture);
+        var offset = int.Parse(parts[3], CultureInfo.InvariantCulture);
+        Assert.Equal("@fixture_handle_zq", lines[line - 1][offset..]);
     }
 
     private static PreparedPost Prepare(string html) =>

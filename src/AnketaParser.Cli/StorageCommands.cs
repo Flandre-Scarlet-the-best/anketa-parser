@@ -45,9 +45,8 @@ internal static partial class StorageCommands
             services.AddLogging();
             services.AddAnketaParserInfrastructure(config, environment, sources);
             await using var provider = services.BuildServiceProvider();
-            _ = provider.GetRequiredService<IOptions<HostSettings>>().Value;
+            provider.ValidateSettings();
             var database = provider.GetRequiredService<IOptions<DatabaseSettings>>().Value;
-            _ = provider.GetRequiredService<IOptions<DiagnosticsSettings>>().Value;
             var settings = provider.GetRequiredService<IOptions<BackupSettings>>().Value;
             switch (args)
             {

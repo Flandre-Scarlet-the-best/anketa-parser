@@ -12,7 +12,9 @@ internal sealed record BodyLink(int Offset, string Target, string Label);
 internal sealed record BodyLine(string Text, IReadOnlyList<BodyLink> Links);
 internal sealed record DvachBody(IReadOnlyList<BodyLine> Lines, IReadOnlyList<string> Quotes, IReadOnlyList<ReplyTarget> Replies)
 {
-    internal string Text => string.Join('\n', Lines.Select(line => line.Text)).Trim();
+    // Строки идут без пустых элементов: номер строки и смещение контакта в
+    // сериализованном тексте совпадают с координатами разбора.
+    internal string Text => string.Join('\n', Lines.Select(line => line.Text));
 }
 
 internal sealed partial class DvachMarkup
@@ -54,8 +56,12 @@ internal sealed partial class DvachMarkup
         if (element.LocalName is "blockquote" or "q" || element.ClassList.Contains("unkfunc") || element.ClassList.Contains("quote"))
         {
             _quotes.Add(element.TextContent);
-            // Пробел сохраняет границу слов вокруг удалённой inline-цитаты.
-            _line.Append(' ');
+            // Блочная цитата разделяет авторские строки, поэтому следующий текст не
+            // приклеивается к строке с контактом. Строчная цитата сохраняет границу слов.
+            if (element.LocalName == "blockquote")
+                FlushLine();
+            else
+                _line.Append(' ');
             return;
         }
         if (element.LocalName == "a")
@@ -74,7 +80,16 @@ internal sealed partial class DvachMarkup
                 return;
             }
             if (!string.IsNullOrWhiteSpace(href))
-                _links.Add(new BodyLink(_line.Length, href, element.TextContent));
+            {
+                // Подпись — только тот текст, который обход добавил для этой ссылки:
+                // TextContent включал бы скрытые и не выводимые узлы.
+                var offset = _line.Length;
+                foreach (var child in element.ChildNodes)
+                    Visit(child, depth + 1);
+                var length = _line.Length - offset;
+                _links.Add(new BodyLink(offset, href, length > 0 ? _line.ToString(offset, length) : string.Empty));
+                return;
+            }
         }
         if (element.LocalName == "br")
         {
@@ -134,7 +149,7 @@ internal sealed partial class DvachMarkup
         var text = _line.ToString();
         if (text.TrimStart().StartsWith('>'))
             _quotes.Add(text);
-        else
+        else if (text.Length != 0)
             _lines.Add(new BodyLine(text, _links.ToArray()));
         _line.Clear();
         _links.Clear();

@@ -206,11 +206,9 @@ public static class CliApplication
                 ValidateScopes = true,
             });
 
-            _ = provider.GetRequiredService<IOptions<HostSettings>>().Value;
+            provider.ValidateSettings();
             var databaseSettings = provider.GetRequiredService<IOptions<DatabaseSettings>>().Value;
             var diagnosticsSettings = provider.GetRequiredService<IOptions<DiagnosticsSettings>>().Value;
-            _ = provider.GetRequiredService<IOptions<BackupSettings>>().Value;
-            _ = provider.GetRequiredService<IOptions<DvachSettings>>().Value;
 
             var runner = provider.GetRequiredService<DiagnosticsRunner>();
             DiagnosticReport report;

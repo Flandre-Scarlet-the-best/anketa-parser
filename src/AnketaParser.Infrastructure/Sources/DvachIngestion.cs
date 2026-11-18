@@ -73,6 +73,10 @@ public sealed class DvachIngestion
                     // Журнал сохраняется до первого импорта. После сбоя он воспроизводится без HTTP.
                     await store.SaveAsync(ct).ConfigureAwait(false);
                 }
+                else
+                {
+                    await ResumeAsync(store, state, ct).ConfigureAwait(false);
+                }
 
                 var pending = JsonSerializer.Deserialize<PreparedPost[]>(state.Pending)!;
                 for (var index = state.Applied; index < pending.Length; index++)
@@ -161,6 +165,22 @@ public sealed class DvachIngestion
         state.RetryAt = null;
         state.Applied = 0;
         state.Metrics = "{}";
+        await store.SaveAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Возобновление сохранённого снимка: состояние снова становится `running`, но
+    /// позиция журнала, счётчики и отметка успеха сохраняются.
+    /// </summary>
+    private async Task ResumeAsync(DvachScanStore store, SourceScan state, CancellationToken ct)
+    {
+        state.StartedAt = _clock.GetUtcNow();
+        state.FinishedAt = null;
+        state.Status = "running";
+        state.Phase = "apply";
+        state.Failure = null;
+        state.HttpStatus = null;
+        state.RetryAt = null;
         await store.SaveAsync(ct).ConfigureAwait(false);
     }
 

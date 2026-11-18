@@ -70,6 +70,8 @@ internal static class SourceCommands
             services.AddLogging();
             services.AddAnketaParserInfrastructure(configuration, environment, sources);
             await using var provider = services.BuildServiceProvider();
+            // Команды источника используют тот же конвейер и те же типизированные проверки.
+            provider.ValidateSettings();
             var ingestion = provider.GetRequiredService<DvachIngestion>();
             if (!ingestion.IsConfigured)
                 return await WriteAsync(stdout, command, "not_configured", ExitCodes.InvalidConfiguration).ConfigureAwait(false);

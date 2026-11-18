@@ -20,6 +20,8 @@ internal static partial class DvachFilter
     private const string Address = @"[A-Za-z0-9_%+-]+(?:\.[A-Za-z0-9_%+-]+)*@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*";
     private const string TelegramId = @"[A-Za-z][A-Za-z0-9_]{4,31}";
     private const string DiscordId = @"(?:[a-z0-9_.]{2,32}|[A-Za-z0-9_.-]{2,32}#[0-9]{4})";
+    private const string TelegramLink = @"(?:https?://)?(?:t\.me|telegram\.me)/" + TelegramId + @"/?";
+    private const string MailLike = @"(?:xmpp:|mailto:)?" + Address;
     private static readonly HashSet<string> TelegramReserved = new(StringComparer.OrdinalIgnoreCase)
     {
         "addemoji", "addlist", "addstickers", "boost", "confirmphone", "contact", "giftcode", "invoice",
@@ -76,12 +78,15 @@ internal static partial class DvachFilter
             content = content.Trim();
             var number = index + 1;
 
-            if (content.Length == 0)
+            if (content.Length == 0 && line.Links.Count == 0)
                 continue;
 
-            foreach (Match match in ExplicitContact().Matches(content))
+            // Список разбирается целиком: границы одиночного адреса запрещают
+            // разделители, поэтому ExplicitContact не находит элементы списка.
+            var list = content.Length != 0 && ContactList().IsMatch(content);
+            foreach (Match match in (list ? ListElement() : ExplicitContact()).Matches(content))
             {
-                if (Standalone(content, match) || ContactList().IsMatch(content))
+                if (list || Standalone(content, match))
                     AddExplicit(result, match, platform, number, start + match.Index, "text");
             }
             if (platform is "telegram" or "discord" || platform == "xmpp" && !ExplicitContact().IsMatch(content))
@@ -99,11 +104,14 @@ internal static partial class DvachFilter
 
             foreach (var link in line.Links)
             {
-                if (link.Target.Length > 2048 || !content.Equals(link.Label.Trim(), StringComparison.Ordinal))
+                var caption = link.Label.Trim();
+                // Подписью ссылки может быть вся видимая строка, даже если OwnLead её поглотил.
+                var wholeLine = content.Length == 0 && line.Text.Trim().Equals(caption, StringComparison.Ordinal);
+                if (link.Target.Length > 2048 || !(wholeLine || content.Equals(caption, StringComparison.Ordinal)))
                     continue;
                 var match = ExplicitContact().Match(link.Target);
                 if (match.Success && match.Length == link.Target.Length && !match.Groups["email"].Success &&
-                    !link.Target.Equals(link.Label.Trim(), StringComparison.Ordinal))
+                    !link.Target.Equals(caption, StringComparison.Ordinal))
                     AddExplicit(result, match, platform, number, link.Offset, "href");
             }
         }
@@ -183,10 +191,16 @@ internal static partial class DvachFilter
         @"))(?![\w@/%+-]|\.[\w.])", IgnoreCase)]
     private static partial Regex ExplicitContact();
 
-    [GeneratedRegex(@"\A(?:\s*(?:(?:https?://)?(?:t\.me|telegram\.me)/" + TelegramId + @"/?|(?:xmpp:|mailto:)?" +
-        Address + @")\s*[,;|/]\s*)+(?:(?:https?://)?(?:t\.me|telegram\.me)/" + TelegramId + @"/?|(?:xmpp:|mailto:)?" +
-        Address + @")\s*\z", IgnoreCase)]
+    // Пробелы между элементами списка сопоставляются одним \s*: иначе два соседних
+    // \s* дают экспоненциальный перебор вариантов на длинной строке.
+    [GeneratedRegex(@"\A\s*(?:(?:" + TelegramLink + "|" + MailLike + @")\s*[,;|/]\s*)+(?:" + TelegramLink + "|" +
+        MailLike + @")\s*\z", IgnoreCase)]
     private static partial Regex ContactList();
+
+    // Элементы списка после проверки ContactList: границы строки уже доказаны.
+    [GeneratedRegex(@"(?:https?://)?(?:t\.me|telegram\.me)/(?<telegram>" + TelegramId + @")/?|xmpp:(?<xmpp>" +
+        Address + @")|mailto:(?<mailto>" + Address + @")|(?<email>" + Address + @")", IgnoreCase)]
+    private static partial Regex ListElement();
 
     [GeneratedRegex(@"\G\s*(?:[,;|/]\s*)?[""«]?(?<value>@?" + TelegramId + @")[""»]?(?=(?:\s*[,;|/]|\s+@|\z))", RegexOptions.CultureInvariant)]
     private static partial Regex LabeledTelegram();

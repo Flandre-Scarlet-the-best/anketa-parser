@@ -7,6 +7,8 @@ using AnketaParser.Core;
 
 namespace AnketaParser.Tests;
 
+// Тесты читают конфигурацию из процесса, поэтому окружение изолируется исключительно.
+[Collection("Окружение процесса")]
 public sealed class CliApplicationTests
 {
     [Theory]
@@ -21,7 +23,11 @@ public sealed class CliApplicationTests
         using var document = JsonDocument.Parse(result.Stdout);
         Assert.Equal(code, document.RootElement.GetProperty("exitCode").GetInt32());
         Assert.Equal(status, document.RootElement.GetProperty("status").GetString());
-        Assert.DoesNotContain(argument, result.Stdout + result.Stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain(argument, result.Stderr, StringComparison.Ordinal);
+        // Отчёт сравнивается по разобранным строкам: сериализация экранирует
+        // не-ASCII значения, и поиск по необработанному JSON их не находит.
+        Assert.All(StringValues(document.RootElement),
+            value => Assert.DoesNotContain(argument, value, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -79,6 +85,36 @@ public sealed class CliApplicationTests
         Assert.Empty(result.Stdout);
     }
 
+    [Theory]
+    [InlineData("Host", "ShutdownTimeoutSeconds")]
+    [InlineData("Database", "ConnectTimeoutSeconds")]
+    [InlineData("Diagnostics", "ProbeTimeoutSeconds")]
+    [InlineData("Backup", "TimeoutSeconds")]
+    [InlineData("Dvach", "PollIntervalSeconds")]
+    public async Task SourceUsesSharedTypedValidators(string section, string key)
+    {
+        using var root = new Support.TemporaryContentRoot($$"""
+            { "{{section}}": { "{{key}}": 0 } }
+            """);
+        var result = await RunAsync(["source", "status"], root.Path);
+        Assert.Equal(ExitCodes.InvalidConfiguration, result.ExitCode);
+        using var document = JsonDocument.Parse(result.Stdout);
+        Assert.Equal("invalid_configuration", document.RootElement.GetProperty("status").GetString());
+        Assert.DoesNotContain(key, result.Stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SourceHelpStaysAvailableWithoutValidConfiguration()
+    {
+        using var root = new Support.TemporaryContentRoot("""
+            { "Host": { "ShutdownTimeoutSeconds": 0 } }
+            """);
+        var result = await RunAsync(["source", "help"], root.Path);
+        Assert.Equal(ExitCodes.Success, result.ExitCode);
+        Assert.Contains("source scan", result.Stdout, StringComparison.Ordinal);
+        Assert.Empty(result.Stderr);
+    }
+
     [Fact]
     public async Task StorageCancellationIsFailureExceptForBackupDaemonShutdown()
     {
@@ -119,6 +155,8 @@ public sealed class CliApplicationTests
     {
         using var stdout = new StringWriter();
         using var stderr = new StringWriter();
+        // Настройки процесса не должны подменять конфигурацию теста.
+        using var environment = Support.ProcessEnvironment.Isolate();
 
         var exitCode = await CliApplication.RunAsync(
             args,
@@ -128,6 +166,32 @@ public sealed class CliApplicationTests
             contentRootPath);
 
         return (exitCode, stdout.ToString(), stderr.ToString());
+    }
+
+    /// <summary>Строковые значения документа, включая вложенные.</summary>
+    private static IEnumerable<string> StringValues(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                yield return property.Name;
+                foreach (var nested in StringValues(property.Value))
+                    yield return nested;
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                foreach (var nested in StringValues(item))
+                    yield return nested;
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.String)
+        {
+            yield return element.GetString()!;
+        }
     }
 
     [Fact]

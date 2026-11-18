@@ -7,7 +7,13 @@ namespace AnketaParser.Infrastructure.Sources;
 internal sealed record DvachPost(long Number, long Parent, string Html, DateTimeOffset? PublishedAt);
 internal sealed record DvachSnapshot(IReadOnlyList<DvachPost> Posts, bool Closed)
 {
-    private static readonly JsonSerializerOptions Options = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
+    // Повторяющееся свойство делает снимок противоречивым: значение последнего поля
+    // не доказывает, что сервер сообщил согласованные счётчики.
+    private static readonly JsonSerializerOptions Options = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        AllowDuplicateProperties = false,
+    };
 
     internal static DvachSnapshot Parse(ReadOnlySpan<byte> payload, DvachThread thread)
     {

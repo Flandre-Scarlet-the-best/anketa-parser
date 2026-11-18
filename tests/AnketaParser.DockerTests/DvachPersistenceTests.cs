@@ -186,11 +186,16 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
             Assert.Equal("busy", (await ingestion.ScanAsync(null, Ct)).Status);
             Assert.Equal("running", (await ingestion.StatusAsync(false, Ct)).Status);
         }
-        finally
+        catch
         {
+            // Опрос обязан завершиться до удаления тестовой БД; отказ проверки
+            // остаётся исходной ошибкой теста.
             release.TrySetResult();
+            await DrainAsync(scan);
+            throw;
         }
 
+        release.TrySetResult();
         var success = await scan;
         Assert.Equal("complete", success.Status);
         using var unavailable = new ThreadHandler((_, _) =>
@@ -254,6 +259,19 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
     {
         if (!PostgresTestCluster.Enabled)
             Assert.Skip("Требуется ANKETAPARSER_DOCKER_TESTS=1.");
+    }
+
+    /// <summary>Дождаться завершения опроса, не скрывая исходную ошибку проверки.</summary>
+    private static async Task DrainAsync(Task scan)
+    {
+        try
+        {
+            await scan.WaitAsync(TimeSpan.FromSeconds(30), CancellationToken.None);
+        }
+        catch (Exception)
+        {
+            // Отказ опроса не заменяет ошибку проверки, из-за которой тест уже падает.
+        }
     }
 
     private static ServiceProvider CreateService(TestDatabase database, HttpMessageHandler handler, TimeProvider clock)

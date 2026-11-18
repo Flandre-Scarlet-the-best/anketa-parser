@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text.Json;
 
 namespace AnketaParser.Infrastructure.Sources;
@@ -29,6 +30,11 @@ internal sealed class DvachClient(HttpClient client, TimeProvider clock)
             throw new SourceFailure("transport_error", phase);
         }
         catch (IOException)
+        {
+            throw new SourceFailure(fixturePath is null ? "transport_error" : "fixture_unavailable", phase);
+        }
+        // Повреждённое сжатие тела приходит как InvalidDataException, а не IOException.
+        catch (InvalidDataException)
         {
             throw new SourceFailure(fixturePath is null ? "transport_error" : "fixture_unavailable", phase);
         }
@@ -65,8 +71,7 @@ internal sealed class DvachClient(HttpClient client, TimeProvider clock)
         var contentType = response.Content.Headers.ContentType;
         if (response.Content.Headers.ContentRange is not null)
             throw new SourceFailure("incomplete_response", "fetch", status);
-        if (contentType?.MediaType != "application/json" ||
-            (contentType.CharSet is { } charset && !charset.Equals("utf-8", StringComparison.OrdinalIgnoreCase)))
+        if (contentType is null || !IsJson(contentType))
             throw new SourceFailure("unexpected_content_type", "fetch", status);
         if (response.Content.Headers.ContentLength > limit)
             throw new SourceFailure("response_too_large", "fetch", status);
@@ -85,6 +90,15 @@ internal sealed class DvachClient(HttpClient client, TimeProvider clock)
             throw new SourceFailure("response_too_large", "fetch");
         return await ReadAsync(input, limit, ct).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// HTTP сравнивает тип и кодировку без учёта регистра, а charset в кавычках
+    /// эквивалентен значению без них. .NET сохраняет исходное написание.
+    /// </summary>
+    private static bool IsJson(MediaTypeHeaderValue contentType) =>
+        string.Equals(contentType.MediaType, "application/json", StringComparison.OrdinalIgnoreCase) &&
+        (contentType.CharSet is not { } charset ||
+         charset.Trim().Trim('"').Equals("utf-8", StringComparison.OrdinalIgnoreCase));
 
     private static async Task<byte[]> ReadAsync(Stream input, int limit, CancellationToken ct)
     {

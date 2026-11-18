@@ -138,6 +138,10 @@ internal sealed class DvachScanStore(ProductDbContext db)
         int pollInterval, string category, string phase, int? status, DateTimeOffset? retryAt, CancellationToken ct)
     {
         db.ChangeTracker.Clear();
+        // Задержка считается по сохранённому счётчику: отслеживаемый объект мог
+        // сбросить значение перед неудачной финализацией успешного опроса.
+        var failures = await db.Set<SourceScan>().AsNoTracking().Where(x => x.SourceId == state.SourceId)
+            .Select(x => x.ConsecutiveFailures).SingleAsync(ct).ConfigureAwait(false);
         await db.Set<SourceScan>().Where(x => x.SourceId == state.SourceId)
             .ExecuteUpdateAsync(update => update
                 .SetProperty(x => x.Status, "failed")
@@ -146,7 +150,7 @@ internal sealed class DvachScanStore(ProductDbContext db)
                 .SetProperty(x => x.Failure, category)
                 .SetProperty(x => x.HttpStatus, status)
                 .SetProperty(x => x.ConsecutiveFailures, x => Math.Min(10, x.ConsecutiveFailures + 1))
-                .SetProperty(x => x.RetryAt, Backoff(now, pollInterval, state.ConsecutiveFailures, retryAt)), ct)
+                .SetProperty(x => x.RetryAt, Backoff(now, pollInterval, failures, retryAt)), ct)
             .ConfigureAwait(false);
         return Report(await db.Set<SourceScan>().AsNoTracking().SingleAsync(x => x.SourceId == state.SourceId, ct).ConfigureAwait(false));
     }

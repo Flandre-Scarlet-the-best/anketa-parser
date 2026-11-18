@@ -37,7 +37,8 @@ ACTION_USE = re.compile(
 )
 # GitHub Dependency Graph возвращает для части NuGet-зависимостей диапазон
 # вместо разрешённой версии; такое значение не доказывает анализ версии.
-IMPRECISE = re.compile(r"^[<>=~^*]")
+# Интервал NuGet начинается с `[` или `(`, поэтому эти символы входят в набор.
+IMPRECISE = re.compile(r"^[<>=~^*\[(]")
 MAX_DIAGNOSTIC = 2000
 NUGET = "NuGet"
 PIP = "pip"
@@ -370,6 +371,12 @@ def nuget_audit_proof(root: Path) -> str:
     )
 
 
+def exact_version(value: str) -> bool:
+    """Значение является точной версией, а не диапазоном и не пустой строкой."""
+    text = value.strip()
+    return bool(text) and IMPRECISE.match(text) is None
+
+
 def imprecise(reported_changes: list[Change], expected: list[Change]) -> list[str]:
     """Отчёт с диапазоном версии не доказывает анализ разрешённой версии."""
     lock_changes = {
@@ -377,7 +384,7 @@ def imprecise(reported_changes: list[Change], expected: list[Change]) -> list[st
         for change in expected
         if change.ecosystem.lower() == "nuget"
         and LOCKFILE.search(change.manifest)
-        and not IMPRECISE.match(change.version)
+        and exact_version(change.version)
     }
     gaps: list[str] = []
     for change in reported_changes:

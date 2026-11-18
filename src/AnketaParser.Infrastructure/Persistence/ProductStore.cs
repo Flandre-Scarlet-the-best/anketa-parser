@@ -376,19 +376,20 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
     {
         if (lease <= TimeSpan.Zero || lease > TimeSpan.FromDays(1)) throw new ArgumentOutOfRangeException(nameof(lease));
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        // Исчерпанный последний захват после падения также становится терминальным.
+        // Истёкшая попытка закрывается всегда, даже если ревизия перестала быть
+        // актуальной: иначе задание навсегда остаётся в состоянии running.
         await db.Database.ExecuteSqlInterpolatedAsync($"""
             WITH expired AS MATERIALIZED (
                 SELECT "Id" FROM product."ProcessingJob"
-                WHERE "State"='running' AND "LeaseUntil"<={Now} AND "Attempts">="MaxAttempts"
+                WHERE "State"='running' AND "LeaseUntil"<={Now}
                 FOR UPDATE SKIP LOCKED
             ), exhausted AS (
                 UPDATE product."ProcessingJob" AS job
                 SET "State"='failed',"LeaseToken"=NULL,"LeaseUntil"=NULL,"FailureCategory"='lease_expired'
-                FROM expired WHERE job."Id"=expired."Id"
+                FROM expired WHERE job."Id"=expired."Id" AND job."Attempts">=job."MaxAttempts"
                 RETURNING job."Id")
             UPDATE product."JobAttempt" SET "FinishedAt"={Now},"FailureCategory"='lease_expired'
-            WHERE "FinishedAt" IS NULL AND "JobId" IN (SELECT "Id" FROM exhausted)
+            WHERE "FinishedAt" IS NULL AND "JobId" IN (SELECT "Id" FROM expired)
             """, cancellationToken).ConfigureAwait(false);
         var jobs = await db.Set<ProcessingJob>().FromSqlInterpolated($"""
             SELECT * FROM product."ProcessingJob"
