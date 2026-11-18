@@ -146,6 +146,12 @@ python .github/scripts/check_markdown_links.py
 ```
 
 Choose checks proportionate to the change and run required repository checks.
+
+Which changes require proportional runtime acceptance, and when a motivated `N/A`
+is acceptable, is owned by the [verification map](.codex/context/03-VERIFICATION.md);
+the procedure for a selected runtime scenario belongs to the
+[live-testing skill](.agents/skills/anketa-live-testing/SKILL.md).
+
 Before running the Python contract suite, install the pinned checker dependency
 with `python -m pip install -r .github/scripts/requirements.txt`, preferably in a
 local virtual environment. PyYAML is used only for safe skill frontmatter parsing;
@@ -174,6 +180,10 @@ duplicate these procedures in README, another skill or a context index.
 For code changes, debugging, symbol impact or refactoring, consult
 [code-intelligence](.agents/skills/code-intelligence/SKILL.md) as needed; load
 only relevant references. Ordinary text and file lookup do not require it.
+
+Use [anketa-cli](.agents/skills/anketa-cli/SKILL.md) to invoke and interpret the
+real executable, and [anketa-live-testing](.agents/skills/anketa-live-testing/SKILL.md)
+to prove that changed runtime behavior actually ran.
 
 Discover repository skills under `.agents/skills/<name>/SKILL.md`, check their
 frontmatter and applicability, and read only relevant references. There is one
