@@ -58,7 +58,7 @@ USER $APP_UID
 ENTRYPOINT ["dotnet", "/app/host/AnketaParser.Host.dll"]
 
 FROM runtime AS llm-worker
-USER root
+USER 0
 # CPU-бэкенд llama.cpp в NuGet использует OpenMP. Пакет берётся из репозитория базового образа.
 # hadolint ignore=DL3008
 RUN apt-get update \
