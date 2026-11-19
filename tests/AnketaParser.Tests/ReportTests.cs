@@ -454,6 +454,22 @@ public sealed class ReportTests
         Assert.Equal(1, Regex.Count(html, Regex.Escape(metadataPath)));
     }
 
+    [Theory]
+    [InlineData(@"C:\Users\example\run\run-metadata.json")]
+    [InlineData("/home/example/run/run-metadata.json")]
+    [InlineData("run-metadata.json")]
+    public void MetadataFileNameIsShortenedRegardlessOfSeparator(string metadataPath)
+    {
+        // Отчёт переносим: путь мог быть записан в Windows-окружении и отрисован в Linux.
+        var revision = Revision();
+        var document = Compose(
+            Snapshot([Post("100", current: revision, analyses: [Analysis(revision.Id)])]),
+            new ReportRunMetadataView(metadataPath, true, [], []));
+        var html = ReportHtmlRenderer.Render(document);
+        Assert.Contains(">run-metadata.json</span>", html, StringComparison.Ordinal);
+        Assert.Contains("title=\"" + metadataPath + "\"", html, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void BadgesStayUnambiguousForModerationExcludedPost()
     {

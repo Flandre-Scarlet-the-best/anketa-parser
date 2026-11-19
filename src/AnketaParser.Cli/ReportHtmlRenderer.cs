@@ -326,7 +326,7 @@ public static class ReportHtmlRenderer
                 // В шапке — только имя файла: полный путь остаётся подсказкой, а сами факты
                 // приведены в разделе снимка, поэтому метаданные не теряются.
                 html.Append("<span title=\"").Append(Escape(metadataPath)).Append("\">")
-                    .Append(Escape(Path.GetFileName(metadataPath))).Append("</span>");
+                    .Append(Escape(FileName(metadataPath))).Append("</span>");
             }
             else
             {
@@ -957,6 +957,12 @@ public static class ReportHtmlRenderer
     private static string Number(long value) => value.ToString("N0", CultureInfo.InvariantCulture);
 
     private static string Number(int value) => Number((long)value);
+
+    /// <summary>
+    /// Имя файла из пути, записанного на любой платформе: отчёт переносим, а путь
+    /// метаданных однажды мог быть получен в Windows-окружении и отрисован в Linux.
+    /// </summary>
+    private static string FileName(string path) => path[(path.LastIndexOfAny(['/', '\\']) + 1)..];
 
     /// <summary>
     /// Смещение и длина в координатах UTF-16. Группировка разрядов здесь запрещена: «2128+134»
