@@ -218,7 +218,7 @@ public static partial class SemanticContract
         return !PartnerAgePrefix().IsMatch(sentence);
     }
 
-    [GeneratedRegex(@"(?:^|\s)(?:до|от|за|около|плюс-минус|under|over|around|from)\s*$|[0-9]\s*[-–—]\s*$",
+    [GeneratedRegex(@"(?:^|\s)(?:до|от|за|около|почти|примерно|плюс-минус|under|over|around|from)\s*$|[0-9]\s*[-–—]\s*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex ApproximateAgePrefix();
 

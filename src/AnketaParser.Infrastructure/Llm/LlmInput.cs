@@ -14,18 +14,16 @@ internal static partial class LlmInput
                 var found = text.IndexOf(token, offset, StringComparison.OrdinalIgnoreCase);
                 if (found < 0)
                     break;
-                offset = found + token.Length;
-                // Короткие идентификаторы могут совпасть с частью обычного слова.
-                if ((found == 0 || !IsWord(text[found - 1])) && (offset == text.Length || !IsWord(text[offset])))
-                    Array.Fill(buffer, SemanticContract.Redacted, found, token.Length);
+                // Конфиденциальность важнее сохранения обычного слова, совпавшего с контактом.
+                // Проверяем и перекрывающиеся вхождения, сохраняя координаты текста.
+                Array.Fill(buffer, SemanticContract.Redacted, found, token.Length);
+                offset = found + 1;
             }
         }
         foreach (Match match in Address().Matches(text))
             Array.Fill(buffer, SemanticContract.Redacted, match.Index, match.Length);
         return new string(buffer);
     }
-
-    private static bool IsWord(char character) => char.IsLetterOrDigit(character) || character == '_';
 
     [GeneratedRegex(@"(?:https?://|(?:telegram\.me|t\.me)/|(?:mailto|xmpp):)\S+|[\w.%+-]+@[\w.-]+|@[\w_]+",
         RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, 100)]

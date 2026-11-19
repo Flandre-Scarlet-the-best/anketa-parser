@@ -21,6 +21,7 @@ public sealed class OpenAiLlmEngine(LlmSettings settings, HttpClient client) : I
     public async Task<LlmResponse> GenerateAsync(LlmRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        LlmConfiguration.EnsureSecretTransport(settings.Endpoint!, settings.KeyVariable, settings.HeaderVariables);
         var body = new JsonObject
         {
             ["model"] = settings.Model,
@@ -124,6 +125,7 @@ public sealed class OpenAiLlmEngine(LlmSettings settings, HttpClient client) : I
             401 or 403 => "provider_auth",
             402 => "provider_payment_required",
             404 => "model_or_endpoint_unavailable",
+            405 => "endpoint_method_not_allowed",
             400 or 422 => "unsupported_request",
             _ => "provider_rejected",
         });

@@ -72,6 +72,80 @@ public sealed class LlmPersistenceTests(PostgresTestCluster cluster) : IClassFix
     }
 
     [Fact]
+    public async Task StoresExtractedValuesAndMasksContactInLinkLabel()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var fixture = JsonNode.Parse(await File.ReadAllTextAsync(FixturePath(), Ct))!;
+        fixture["threads"]![0]!["posts"]![7]!["comment"] =
+            "Мне 24, я девушка, живу в Омске. Ищу общение. <a href=\"https://t.me/alice_name\">тг_alice_name</a>";
+        var directory = Directory.CreateTempSubdirectory("anketa-llm-fields-");
+        try
+        {
+            var path = Path.Combine(directory.FullName, "thread.json");
+            await File.WriteAllTextAsync(path, fixture.ToJsonString(), Ct);
+            var revision = (await ImportAsync(db, path))["210007"];
+            string? sentText = null;
+            var engine = new FixtureEngine((request, _) =>
+            {
+                sentText = JsonNode.Parse(request.User)!["text"]!.GetValue<string>();
+                Assert.DoesNotContain("alice_name", sentText, StringComparison.OrdinalIgnoreCase);
+                return Task.FromResult(new LlmResponse(request.Operation == SemanticOperation.Classify
+                    ? """{"class":"profile","reason":"invitation","evidence":"Ищу общение"}"""
+                    : """{"age":{"value":"24","evidence":"Мне 24"},"gender":{"value":"девушка","evidence":"я девушка"},"location":{"value":"Омске","evidence":"живу в Омске"},"interests":null,"goals":null,"preferences":null,"description":null}"""));
+            });
+            Assert.Equal("profile", (await Worker(db, Settings(), engine).ProcessNextAsync(revision, Ct)).Status);
+            var analysis = await db.Set<Analysis>().AsNoTracking().SingleAsync(Ct);
+            Assert.Equal(24, analysis.Age);
+            Assert.Equal("Омске", analysis.Location);
+            Assert.Equal("девушка", analysis.GenderDescription);
+            using var observations = JsonDocument.Parse(analysis.Observations);
+            var fields = observations.RootElement.GetProperty("fields");
+            foreach (var (name, evidence) in new[] { ("age", "Мне 24"), ("gender", "я девушка"), ("location", "живу в Омске") })
+            {
+                var span = fields.GetProperty(name);
+                Assert.Equal(evidence, sentText!.Substring(span.GetProperty("start").GetInt32(), span.GetProperty("length").GetInt32()));
+            }
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task LatestOmitsManualProfileAfterNewIngestedRevision()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var fixture = JsonNode.Parse(await File.ReadAllTextAsync(FixturePath(), Ct))!;
+        var directory = Directory.CreateTempSubdirectory("anketa-llm-latest-");
+        try
+        {
+            var path = Path.Combine(directory.FullName, "thread.json");
+            await File.WriteAllTextAsync(path, fixture.ToJsonString(), Ct);
+            var revision = (await ImportAsync(db, path))["210007"];
+            var store = new ProductStore(db);
+            var profile = await store.AnalyzeAsync(new AnalysisInput(revision, "manual", "1", null, null, null, null, null, "{}", "{}"), Ct);
+            var contact = await db.Set<ContactObservation>().Where(x => x.RevisionId == revision).Select(x => x.ContactId).FirstAsync(Ct);
+            var link = await store.LinkAsync(profile, contact, Guid.Empty, LinkConfidence.Suggested, "проверка", Ct);
+            await store.PublishAsync(profile, Ct);
+            Assert.Equal(profile, (await store.LatestAsync(link.AnonId, Ct))!.Id);
+            fixture["threads"]![0]!["posts"]![7]!["comment"] = "Ищу общение, @another_fixture_user";
+            await File.WriteAllTextAsync(path, fixture.ToJsonString(), Ct);
+            var next = (await ImportAsync(db, path))["210007"];
+            Assert.NotEqual(revision, next);
+            Assert.Null(await store.LatestAsync(link.AnonId, Ct));
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task RollbackAfterProfileInsertLeavesNoResultAndExpiredLeaseCanBeReclaimed()
     {
         RequireDocker();
@@ -247,7 +321,7 @@ public sealed class LlmPersistenceTests(PostgresTestCluster cluster) : IClassFix
         var imported = await provider.GetRequiredService<DvachIngestion>().ScanAsync(path ?? FixturePath(), Ct);
         Assert.Equal("complete", imported.Status);
         Assert.Equal(23, imported.Metrics!.Candidates);
-        return await db.Set<OriginalPost>().Where(x => x.IngestedRevisionId != null)
+        return await db.Set<OriginalPost>().AsNoTracking().Where(x => x.IngestedRevisionId != null)
             .ToDictionaryAsync(x => x.ExternalId, x => x.IngestedRevisionId!.Value, Ct);
     }
 

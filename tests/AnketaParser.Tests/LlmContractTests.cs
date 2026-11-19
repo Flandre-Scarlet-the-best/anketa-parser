@@ -4,6 +4,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
+using AnketaParser.Cli;
+using AnketaParser.Core;
 using AnketaParser.Infrastructure.Llm;
 
 using Microsoft.Extensions.Configuration;
@@ -13,6 +15,21 @@ namespace AnketaParser.Tests;
 public sealed class LlmContractTests
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
+
+    [Theory]
+    [InlineData("cancelled", ExitCodes.UnexpectedError)]
+    [InlineData("profile", ExitCodes.Success)]
+    [InlineData("context_limit", ExitCodes.DependencyUnavailable)]
+    public void MapsSingleRunOutcomesToExitCodes(string status, int expected) =>
+        Assert.Equal(expected, LlmCommands.RunExitCode(status));
+
+    [Theory]
+    [InlineData("endpoint_method_not_allowed", true)]
+    [InlineData("context_limit", false)]
+    [InlineData("model_refusal", false)]
+    [InlineData("provider_rejected", false)]
+    public void StopsOnlyForIdentifiedFatalRouteFailures(string status, bool expected) =>
+        Assert.Equal(expected, LlmCommands.IsFatalRouteFailure(status));
 
     [Fact]
     public void PromptKeepsSpoofedRolesAndInstructionsInsideUserData()
@@ -77,11 +94,99 @@ public sealed class LlmContractTests
     [InlineData("ищу тян 22–24", "24")]
     [InlineData("Мне 24+", "24")]
     [InlineData("Кому за 24", "24")]
+    [InlineData("Мне почти 24. Ищу общение.", "24")]
+    [InlineData("Мне примерно 24. Ищу общение.", "24")]
     public void OmitsAgeThatIsOnlyAPreferenceOrApproximation(string text, string age)
     {
         var result = SemanticContract.ReadFacts(Fields(("age", age, age)), text);
         Assert.Empty(result.Facts);
         Assert.Equal("age", Assert.Single(result.UnsupportedFields));
+    }
+
+    [Fact]
+    public void RedactsKnownContactsInsideWordsAndPreservesOffsets()
+    {
+        const string text = "тг_alice_name, @fixture_user, повторю:fixture_userпишите; ababa";
+        var result = LlmInput.Redact(text, ["alice_name", "@fixture_user", "fixture_user", "aba"]);
+        Assert.Equal(text.Length, result.Length);
+        Assert.DoesNotContain("alice_name", result, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("fixture_user", result, StringComparison.OrdinalIgnoreCase);
+        Assert.EndsWith("█████", result, StringComparison.Ordinal);
+        Assert.StartsWith("тг_", result, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RejectsRemoteHttpSecretsBeforeSending(bool key)
+    {
+        var sent = false;
+        using var handler = new FixtureHandler((_, _) =>
+        {
+            sent = true;
+            return Task.FromResult(Reply(HttpStatusCode.OK, "{}"));
+        });
+        using var client = new HttpClient(handler);
+        var settings = Settings() with
+        {
+            Engine = LlmEngine.LlamaServer,
+            Endpoint = new Uri("http://192.0.2.10:8080/v1/chat/completions"),
+            KeyVariable = key ? "TEST_LLM_SECRET_NOT_RESOLVED" : null,
+            HeaderVariables = key ? new Dictionary<string, string>() : new Dictionary<string, string> { ["X-Token"] = "TEST_LLM_SECRET_NOT_RESOLVED" },
+        };
+        var error = await Assert.ThrowsAsync<LlmConfigurationException>(() =>
+            new OpenAiLlmEngine(settings, client).GenerateAsync(SemanticContract.Request(SemanticOperation.Classify, "данные"), Ct));
+        Assert.Equal("insecure_secret_transport", error.Category);
+        Assert.False(sent);
+    }
+
+    [Fact]
+    public async Task NativePrefillWaitsForInFlightDecodeThenStopsBeforeNextChunk()
+    {
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var task = NativeLlmEngine.DecodePromptAsync(130, 64, async (offset, count, _) =>
+        {
+            Assert.Equal(0, offset);
+            Assert.Equal(64, count);
+            calls++;
+            entered.SetResult();
+            await release.Task;
+        }, cancel.Token);
+        await entered.Task.WaitAsync(Ct);
+        await cancel.CancelAsync();
+        Assert.False(task.IsCompleted);
+        release.SetResult();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task NativeInferenceSupportsGenerationAndCancellationWithOptInModel()
+    {
+        var path = Environment.GetEnvironmentVariable("ANKETAPARSER_TEST_GGUF");
+        if (string.IsNullOrEmpty(path))
+            Assert.Skip("Задайте ANKETAPARSER_TEST_GGUF для проверки нативной модели.");
+        var settings = Settings() with
+        {
+            Engine = LlmEngine.Native,
+            ModelPath = path,
+            ContextTokens = 8192,
+            MaxOutputTokens = 256,
+            TimeoutSeconds = 180,
+            Threads = 4,
+        };
+        using var engine = await NativeLlmEngine.LoadAsync(settings, Ct);
+        var response = await engine.GenerateAsync(SemanticContract.Request(SemanticOperation.Classify, "Ищу общение."), Ct);
+        using var document = JsonDocument.Parse(response.Text);
+        Assert.True(document.RootElement.TryGetProperty("class", out _));
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        cancel.CancelAfter(TimeSpan.FromMilliseconds(200));
+        var longText = string.Concat(Enumerable.Repeat("Привет, ищу общение. ", 300));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            engine.GenerateAsync(SemanticContract.Request(SemanticOperation.Classify, longText), cancel.Token));
     }
 
     [Fact]
@@ -133,6 +238,7 @@ public sealed class LlmContractTests
     [InlineData(429, "{}", "rate_limited", true)]
     [InlineData(502, "секрет", "provider_unavailable", true)]
     [InlineData(404, "секрет", "model_or_endpoint_unavailable", false)]
+    [InlineData(405, "секрет", "endpoint_method_not_allowed", false)]
     [InlineData(402, "секрет", "provider_payment_required", false)]
     [InlineData(400, """{"error":{"code":"context_length_exceeded","message":"секрет"}}""", "context_limit", false)]
     [InlineData(400, "секрет", "unsupported_request", false)]
@@ -172,6 +278,43 @@ public sealed class LlmContractTests
         using var cancel = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         await cancel.CancelAsync();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => engine.GenerateAsync(request, cancel.Token));
+    }
+
+    [Fact]
+    public async Task ConfigurationRejectsRemoteHttpWithSecretsButKeepsSafeRoutes()
+    {
+        var root = Directory.CreateTempSubdirectory("anketa-llm-transport-");
+        var variable = "ANKETA_TEST_" + Guid.NewGuid().ToString("N");
+        Environment.SetEnvironmentVariable(variable, "fixture-secret");
+        try
+        {
+            using var config = new ConfigurationManager();
+            var path = Path.Combine(root.FullName, "llm.toml");
+            async Task<LlmSettings?> Load(string address, string secret)
+            {
+                await File.WriteAllTextAsync(path, $"""
+                    active_profile = "test"
+                    [profiles.test]
+                    engine = "llama_server"
+                    model = "test"
+                    base_url = "{address}"
+                    {secret}
+                    """, Ct);
+                return await LlmConfiguration.LoadAsync(config, root.FullName, Ct);
+            }
+            var key = $"key_env = \"{variable}\"";
+            var header = $"headers_env = {{ X-Token = \"{variable}\" }}";
+            Assert.Equal("insecure_secret_transport", (await Assert.ThrowsAsync<LlmConfigurationException>(() => Load("http://192.0.2.10/v1", key))).Category);
+            Assert.Equal("insecure_secret_transport", (await Assert.ThrowsAsync<LlmConfigurationException>(() => Load("http://192.0.2.10/v1", header))).Category);
+            Assert.NotNull(await Load("http://192.0.2.10/v1", ""));
+            Assert.NotNull(await Load("http://127.0.0.1/v1", key));
+            Assert.NotNull(await Load("https://example.invalid/v1", header));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variable, null);
+            root.Delete(recursive: true);
+        }
     }
 
     [Fact]

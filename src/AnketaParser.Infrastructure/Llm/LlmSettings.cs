@@ -146,6 +146,7 @@ public static class LlmConfiguration
                 baseUri.AbsolutePath.TrimEnd('/').EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase))
                 throw Invalid("invalid_base_url");
             endpoint = new Uri(baseUri.AbsoluteUri.TrimEnd('/') + "/chat/completions", UriKind.Absolute);
+            EnsureSecretTransport(endpoint, key, headerVariables);
             if (key is not null)
                 _ = ResolveSecret(key);
         }
@@ -196,6 +197,12 @@ public static class LlmConfiguration
         {
             throw Invalid("model_unavailable");
         }
+    }
+
+    internal static void EnsureSecretTransport(Uri endpoint, string? key, IReadOnlyDictionary<string, string> headers)
+    {
+        if (endpoint.Scheme != Uri.UriSchemeHttps && !endpoint.IsLoopback && (key is not null || headers.Count != 0))
+            throw Invalid("insecure_secret_transport");
     }
 
     internal static string ResolveSecret(string variable)

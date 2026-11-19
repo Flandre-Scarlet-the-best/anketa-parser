@@ -171,7 +171,7 @@ internal static class LlmCommands
         if (command == "run")
         {
             var outcome = await worker.ProcessNextAsync(revisionId, ct).ConfigureAwait(false);
-            return new(outcome.Status, IsSuccess(outcome.Status) ? ExitCodes.Success : ExitCodes.DependencyUnavailable,
+            return new(outcome.Status, RunExitCode(outcome.Status),
                 new { outcome.RevisionId, outcome.Attempt, settings.PipelineVersion });
         }
 
@@ -205,8 +205,7 @@ internal static class LlmCommands
             else if (!IsSuccess(outcome.Status) && outcome.Status != "cancelled")
             {
                 await stderr.WriteLineAsync($"Попытка LLM завершилась отказом ({outcome.Status}).").ConfigureAwait(false);
-                if (outcome.Status is "provider_auth" or "provider_payment_required" or "unsupported_request" or
-                    "model_or_endpoint_unavailable" or "secret_unavailable" or "native_inference_failed")
+                if (IsFatalRouteFailure(outcome.Status))
                     throw new LlmFailureException(outcome.Status);
                 if (outcome.Status is "database_unavailable" or "network_unavailable" or "timeout" or "rate_limited" or "provider_unavailable")
                 {
@@ -216,6 +215,13 @@ internal static class LlmCommands
             }
         }
     }
+
+    internal static int RunExitCode(string status) => status == "cancelled" ? ExitCodes.UnexpectedError :
+        IsSuccess(status) ? ExitCodes.Success : ExitCodes.DependencyUnavailable;
+
+    internal static bool IsFatalRouteFailure(string status) => status is
+        "provider_auth" or "provider_payment_required" or "unsupported_request" or "model_or_endpoint_unavailable" or
+        "endpoint_method_not_allowed" or "secret_unavailable" or "native_inference_failed";
 
     private static bool IsSuccess(string status) =>
         status is "idle" or SemanticContract.Profile or SemanticContract.NotProfile or SemanticContract.Uncertain;

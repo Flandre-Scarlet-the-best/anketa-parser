@@ -289,7 +289,7 @@ public sealed partial class ProductStore(ProductDbContext db) : IProductStore
          join post in db.Set<OriginalPost>() on profile.PostId equals post.Id
          join analysis in db.Set<Analysis>() on profile.AnalysisId equals analysis.Id
          where link.AnonId == anonId && link.UnlinkedAt == null && profile.State == ProfileState.Published && !post.Excluded
-            && (analysis.PipelineVersion == null || post.IngestedRevisionId == analysis.RevisionId)
+            && ((analysis.PipelineVersion == null && post.IngestedRevisionId == null) || post.IngestedRevisionId == analysis.RevisionId)
          orderby profile.CreatedAt descending, profile.Id descending
          select new PublicProfile(profile.Id, analysis.Age, analysis.Location, analysis.GenderDescription, analysis.Interests, analysis.Goals))
         .FirstOrDefaultAsync(cancellationToken);

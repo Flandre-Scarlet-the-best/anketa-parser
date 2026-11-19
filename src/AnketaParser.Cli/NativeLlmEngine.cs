@@ -69,28 +69,56 @@ internal sealed class NativeLlmEngine(LLamaWeights weights, ModelParams model, L
             var template = new LLamaTemplate(weights) { AddAssistant = true };
             template.Add("system", request.System).Add("user", request.User);
             var prompt = Encoding.UTF8.GetString(template.Apply());
-            var inputTokens = weights.Tokenize(prompt, true, true, Encoding.UTF8).Length;
+            cancellationToken.ThrowIfCancellationRequested();
+            var tokens = weights.Tokenize(prompt, true, true, Encoding.UTF8);
+            var inputTokens = tokens.Length;
             if (inputTokens + settings.MaxOutputTokens >= settings.ContextTokens)
                 throw new LlmFailureException("context_limit");
 
-            var executor = new StatelessExecutor(weights, model) { ApplyTemplate = false };
-            using var initialContext = executor.Context;
+            using var context = weights.CreateContext(model);
             using var sampler = new DefaultSamplingPipeline
             {
                 Temperature = settings.Temperature.GetValueOrDefault(),
                 Grammar = new Grammar(request.Grammar, "root"),
             };
-            var parameters = new InferenceParams { MaxTokens = settings.MaxOutputTokens, SamplingPipeline = sampler };
+            sampler.Reset();
+            var decoder = new StreamingTokenDecoder(context);
+            var batch = new LLamaBatch();
+            // StatelessExecutor выполняет prefill целиком без проверки отмены.
+            // Ожидаем каждый native-вызов до освобождения контекста и весов.
+            var chunkSize = Math.Min(64, checked((int)context.BatchSize));
+            await DecodePromptAsync(tokens.Length, chunkSize, async (offset, count, ct) =>
+            {
+                batch.Clear();
+                batch.AddRange(tokens.AsSpan(offset, count), offset, LLamaSeqId.Zero, offset + count == tokens.Length);
+                var result = await context.DecodeAsync(batch, ct).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+                if (result != DecodeResult.Ok)
+                    throw new LLamaDecodeError(result);
+            }, cancellationToken).ConfigureAwait(false);
+
             var output = new StringBuilder();
             var pieces = 0;
-            await foreach (var fragment in executor.InferAsync(prompt, parameters, cancellationToken).ConfigureAwait(false))
+            var position = inputTokens;
+            while (pieces < settings.MaxOutputTokens)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                var token = sampler.Sample(context.NativeHandle, batch.TokenCount - 1);
+                if (token.IsEndOfGeneration(weights.Vocab))
+                    break;
+                decoder.Add(token);
+                var fragment = decoder.Read();
                 pieces++;
                 if (output.Length + fragment.Length > SemanticContract.MaxResponseChars)
                     throw new LlmFailureException("output_limit");
                 output.Append(fragment);
+                batch.Clear();
+                batch.Add(token, position++, LLamaSeqId.Zero, true);
+                var result = await context.DecodeAsync(batch, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (result != DecodeResult.Ok)
+                    throw new LLamaDecodeError(result);
             }
-            cancellationToken.ThrowIfCancellationRequested();
             if (pieces >= settings.MaxOutputTokens || output.Length == 0)
                 throw new LlmFailureException("incomplete_output");
             return new(output.ToString(), new(inputTokens, pieces, null));
@@ -100,6 +128,18 @@ internal sealed class NativeLlmEngine(LLamaWeights weights, ModelParams model, L
         {
             cancellationToken.ThrowIfCancellationRequested();
             throw new LlmFailureException("native_inference_failed");
+        }
+    }
+
+    internal static async Task DecodePromptAsync(int tokenCount, int chunkSize,
+        Func<int, int, CancellationToken, Task> decode, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(chunkSize);
+        for (var offset = 0; offset < tokenCount; offset += chunkSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await decode(offset, Math.Min(chunkSize, tokenCount - offset), cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
         }
     }
 
