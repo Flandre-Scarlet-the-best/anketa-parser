@@ -348,6 +348,20 @@ public sealed class ReportTests
     }
 
     [Fact]
+    public void UnresolvedContactHasItsOwnCounterAndIsNotAdmitted()
+    {
+        var document = Compose(Snapshot([
+            Post("100", current: Revision(reason: DvachFilter.UnresolvedContact)),
+        ]));
+        var post = Assert.Single(document.Posts);
+        Assert.False(post.Filter.AdmittedToLlm);
+        Assert.Equal(1, Counter(document, "stage2", "filter.unresolved_contact"));
+        Assert.Equal(0, Counter(document, "stage2", "filter.no_own_contact"));
+        Assert.Equal(0, Counter(document, "stage2", "filter.unknown"));
+        Assert.Contains("возможный контакт не нормализован", ReportHtmlRenderer.Render(document), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EvidenceIsHighlightedOnlyWhenReproducedExactly()
     {
         const string text = "Ищу знакомства. Пишите: tg @nick";

@@ -207,6 +207,7 @@ public sealed class JobAttempt
     public DateTimeOffset StartedAt { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
     public string? FailureCategory { get; set; }
+    public string? Classification { get; set; }
     public string? BudgetKey { get; set; }
     public int ReservedRequests { get; set; }
     public int MeasuredRequests { get; set; }

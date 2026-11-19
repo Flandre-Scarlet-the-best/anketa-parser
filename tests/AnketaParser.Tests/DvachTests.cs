@@ -88,6 +88,35 @@ public sealed class DvachTests
     }
 
     [Fact]
+    public async Task SyntheticHoldoutHasIndependentLabelsAndIdenticalDuplicateInputs()
+    {
+        var root = Path.Combine(AppContext.BaseDirectory, "fixtures", "llm");
+        var bytes = await File.ReadAllBytesAsync(Path.Combine(root, "holdout-thread.json"), TestContext.Current.CancellationToken);
+        var thread = new DvachThread("soc", 220000);
+        var snapshot = DvachSnapshot.Parse(bytes, thread);
+        using var labels = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root, "holdout-labels.json"), TestContext.Current.CancellationToken));
+        var labeled = labels.RootElement.EnumerateArray().ToArray();
+        Assert.Equal(snapshot.Posts.Count - 1, labeled.Length);
+        Assert.Equal(labeled.Length, labeled.Select(item => item.GetProperty("post").GetInt64()).Distinct().Count());
+        var posts = snapshot.Posts.Skip(1).ToDictionary(post => post.Number);
+        var preparedTexts = new Dictionary<long, string>();
+        foreach (var label in labeled)
+        {
+            var number = label.GetProperty("post").GetInt64();
+            var prepared = DvachFilter.Prepare(thread, posts[number], thread.SourceKey);
+            Assert.Equal("candidate", prepared.Reason);
+            using var metadata = JsonDocument.Parse(prepared.Post.RetrievalMetadata);
+            var text = metadata.RootElement.GetProperty("text").GetString()!;
+            preparedTexts[number] = AnketaParser.Infrastructure.Llm.LlmInput.Redact(text,
+                prepared.Contacts.SelectMany(contact => new[] { contact.RawValue, contact.NormalizedValue }));
+        }
+        var unique = labeled.Where(item => item.GetProperty("independent").GetBoolean()).Select(item => item.GetProperty("post").GetInt64()).ToArray();
+        Assert.Equal(unique.Length, unique.Select(number => preparedTexts[number]).Distinct(StringComparer.Ordinal).Count());
+        foreach (var duplicate in labeled.Where(item => !item.GetProperty("independent").GetBoolean()))
+            Assert.Equal(preparedTexts[duplicate.GetProperty("duplicateOf").GetInt64()], preparedTexts[duplicate.GetProperty("post").GetInt64()]);
+    }
+
+    [Fact]
     public void StructuralQuotesStaySeparateFromAuthorContacts()
     {
         const string html = """
@@ -133,16 +162,19 @@ public sealed class DvachTests
 
     [Theory]
     [InlineData("@sampleuser42", "telegram", "sampleuser42")]
-    [InlineData("Мне переслали @sampleuser42", "telegram", "sampleuser42")]
     [InlineData("Привет, пиши в тг @sampleuser42, буду рад", "telegram", "sampleuser42")]
     [InlineData("Тг<br>@sampleuser42", "telegram", "sampleuser42")]
     [InlineData("писать в тг sampleuser42", "telegram", "sampleuser42")]
     [InlineData("sampleuser42 телеграмм", "telegram", "sampleuser42")]
+    [InlineData("Tг sampleuser42", "telegram", "sampleuser42")]
+    [InlineData("Тн: sampleuser42", "telegram", "sampleuser42")]
+    [InlineData("Дис sampleuser42", "discord", "sampleuser42")]
+    [InlineData("Дискорд для связи: sampleuser42", "discord", "sampleuser42")]
     [InlineData("Discord: Sample.Name", "discord", "Sample.Name")]
     [InlineData("Напиши в Discord Sample.Name", "discord", "Sample.Name")]
     [InlineData("Email: Test.User@example.invalid и ещё текст", "email", "Test.User@example.invalid")]
+    [InlineData("тгшку:Test.User@example.invalid", "email", "Test.User@example.invalid")]
     [InlineData("Telegram: Test.User@example.invalid", "email", "Test.User@example.invalid")]
-    [InlineData("Мне переслали https://t.me/sampleuser42", "telegram", "sampleuser42")]
     public void TechnicalContactsAreIndependentOfPositionAndMeaning(string html, string platform, string value)
     {
         var prepared = Prepare(html);
@@ -151,6 +183,84 @@ public sealed class DvachTests
         Assert.Equal(platform, contact.Platform);
         Assert.Equal(value, contact.NormalizedValue);
     }
+
+    [Theory]
+    [InlineData("Мне переслали @sampleuser42")]
+    [InlineData("Мне переслали https://t.me/sampleuser42")]
+    [InlineData("Контакт моего друга: @sampleuser42")]
+    [InlineData("Чужой контакт: <a href='https://t.me/sampleuser42'>ссылка</a>")]
+    public void ExplicitThirdPartyContactsAreNotTreatedAsAuthorContacts(string html) =>
+        Assert.Empty(Prepare(html).Contacts);
+
+    [Fact]
+    public void ForeignContactDoesNotSuppressSeparateAuthorContact()
+    {
+        var prepared = Prepare("Контакт друга: @sampleuser42. Мой тг: @ownuser42");
+        var contact = Assert.Single(prepared.Contacts);
+        Assert.Equal("ownuser42", contact.NormalizedValue);
+    }
+
+    [Theory]
+    [InlineData("a@sampleuser42", "ambiguous_at", "a@sampleuser42")]
+    [InlineData("tg @ sampleюser42", "mixed_alphabet", "@ sampleюser42")]
+    [InlineData("sampleuser42 дс", "discord_reverse", "sampleuser42")]
+    public void UnresolvedContactsKeepOriginalCoordinatesWithoutInventingAContact(string html, string kind, string raw)
+    {
+        var prepared = Prepare(html);
+        Assert.Equal(DvachFilter.UnresolvedContact, prepared.Reason);
+        Assert.Empty(prepared.Contacts);
+        using var metadata = JsonDocument.Parse(prepared.Post.RetrievalMetadata);
+        var text = metadata.RootElement.GetProperty("text").GetString()!;
+        var possible = Assert.Single(metadata.RootElement.GetProperty("possibleContacts").EnumerateArray());
+        Assert.Equal(kind, possible.GetProperty("Kind").GetString());
+        Assert.Equal(1, possible.GetProperty("Line").GetInt32());
+        Assert.Equal(raw, text.Substring(possible.GetProperty("Offset").GetInt32(), possible.GetProperty("Length").GetInt32()));
+    }
+
+    [Theory]
+    [InlineData("Тг@SampleUser42", "@SampleUser42")]
+    [InlineData("ТГ: @ sampleuser42", "@ sampleuser42")]
+    [InlineData("@ sampleuser42", "@ sampleuser42")]
+    [InlineData("4.@sampleuser42", "@sampleuser42")]
+    public void RecognizesTelegramSeparatorsWithoutLosingSourceSpan(string html, string raw)
+    {
+        var prepared = Prepare(html);
+        Assert.Equal("candidate", prepared.Reason);
+        var contact = Assert.Single(prepared.Contacts);
+        Assert.Equal(raw, contact.RawValue);
+        Assert.Equal("sampleuser42", contact.NormalizedValue);
+        using var metadata = JsonDocument.Parse(prepared.Post.RetrievalMetadata);
+        var text = metadata.RootElement.GetProperty("text").GetString()!;
+        var coordinate = contact.Provenance.Split(':');
+        var offset = int.Parse(coordinate[3], CultureInfo.InvariantCulture);
+        Assert.Equal(raw, text.Substring(offset, raw.Length));
+        var masked = AnketaParser.Infrastructure.Llm.LlmInput.Redact(text, [contact.RawValue, contact.NormalizedValue]);
+        Assert.DoesNotContain("sampleuser42", masked, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(text.Length, masked.Length);
+    }
+
+    [Theory]
+    [InlineData("@samp leuser42 (без пробела)", "@samp leuser42")]
+    [InlineData("тг @ sam ple_user42 (минус пробелы)", "@ sam ple_user42")]
+    public void JoinsSpacesOnlyWhenAuthorExplicitlyRequestsIt(string text, string raw)
+    {
+        var prepared = Prepare(text);
+        var contact = Assert.Single(prepared.Contacts);
+        Assert.Equal("sampleuser42", contact.NormalizedValue.Replace("_", "", StringComparison.Ordinal));
+        Assert.Equal(raw, contact.RawValue);
+        var masked = AnketaParser.Infrastructure.Llm.LlmInput.Redact(text, [contact.RawValue, contact.NormalizedValue]);
+        Assert.DoesNotContain(raw, masked, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("mail@example.invalid")]
+    [InlineData("https://example.invalid/4.@sampleuser42")]
+    [InlineData("тг @ sampleuser42я")]
+    [InlineData("a@sampleuser42")]
+    [InlineData("тн sampleuser42")]
+    [InlineData("Тн: sampleuser42/path")]
+    public void TelegramSeparatorsDoNotAcceptPartialOrForeignTokens(string text) =>
+        Assert.DoesNotContain(Prepare(text).Contacts, contact => contact.Platform == "telegram");
 
     [Theory]
     [InlineData("profile telegram: @sampleuser42")]

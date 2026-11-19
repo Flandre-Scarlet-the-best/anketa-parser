@@ -210,8 +210,8 @@ public static class ReportComposer
             : "значение в текущем тексте не найдено: контакт мог быть удалён правкой";
 
     /// <summary>
-    /// Реконструкция текста, подготовленного для модели. Отправленный текст и его хеш не сохраняются,
-    /// поэтому блок помечается как реконструкция и показывается только при выполнении инвариантов маски.
+    /// Реконструкция текста, подготовленного для модели. Отправленный текст не сохраняется,
+    /// а хеш контрольной точки этим отчётом не сверяется; блок остаётся реконструкцией.
     /// </summary>
     private static (string? Prepared, string Status, string Note) PrepareText(
         string? authorText, IReadOnlyList<ReportContactView> contacts)
@@ -244,7 +244,7 @@ public static class ReportComposer
         }
 
         return (prepared, "reconstructed",
-            "реконструкция маски по текущим наблюдениям контактов: текст, отправленный модели, и его хеш в БД не сохраняются");
+            "реконструкция маски по текущим наблюдениям контактов: отправленный текст не сохраняется, хеш контрольной точки в отчёте не сверяется");
     }
 
     /// <summary>Проверяет сохранённые координаты и возвращает фрагмент только при точном воспроизведении.</summary>
@@ -573,7 +573,8 @@ public static class ReportComposer
         var candidate = Of(post => post.Filter.Reason == DvachFilter.Candidate);
         var opening = Of(post => post.Filter.Reason == DvachFilter.OpeningPost);
         var noContact = Of(post => post.Filter.Reason == DvachFilter.NoOwnContact);
-        var unknownReason = total - candidate - opening - noContact;
+        var unresolved = Of(post => post.Filter.Reason == DvachFilter.UnresolvedContact);
+        var unknownReason = total - candidate - opening - noContact - unresolved;
         var excluded = Of(post => post.ModerationExcluded);
         var admitted = Of(post => post.Filter.AdmittedToLlm);
         var staleRevisions = (long)posts.Sum(post => Math.Max(0, post.Revisions.Count - 1));
@@ -609,6 +610,7 @@ public static class ReportComposer
                 new("filter.candidate", "допущен", candidate, total, ReportCounterKind.Share, "решение фильтра candidate"),
                 new("filter.opening_post", "открывающий пост", opening, total, ReportCounterKind.Share, null),
                 new("filter.no_own_contact", "нет своего контакта", noContact, total, ReportCounterKind.Share, null),
+                new("filter.unresolved_contact", "возможный контакт не нормализован", unresolved, total, ReportCounterKind.Share, null),
                 new("filter.unknown", "решение не зафиксировано", unknownReason, total, ReportCounterKind.Share,
                     "нет значения в данных либо оно вне контракта фильтра"),
                 new("moderation.excluded", "исключено модерацией", excluded, total, ReportCounterKind.Share,
@@ -661,6 +663,7 @@ public static class ReportComposer
             [
                 new("cause.opening_post", "открывающий пост", opening, total, ReportCounterKind.Share, null),
                 new("cause.no_own_contact", "нет своего контакта", noContact, total, ReportCounterKind.Share, null),
+                new("cause.unresolved_contact", "возможный контакт не нормализован", unresolved, total, ReportCounterKind.Share, null),
                 new("cause.moderation_excluded", "исключён модерацией", excluded, total, ReportCounterKind.Share,
                     "причина уровня поста: решение фильтра при этом не меняется"),
                 new("cause.unknown", "решение не зафиксировано", unknownReason, total, ReportCounterKind.Share, null),
@@ -737,7 +740,8 @@ public static class ReportComposer
     {
         DvachFilter.Candidate => ("допущен", "фильтр допускает пост к анализу модели"),
         DvachFilter.OpeningPost => ("открывающий пост", "OP треда не рассматривается как анкета"),
-        DvachFilter.NoOwnContact => ("нет своего контакта", "у автора не найден собственный контакт; адресация на это не влияет"),
+        DvachFilter.NoOwnContact => ("нет своего контакта", "контакт не распознан; адресация на это не влияет"),
+        DvachFilter.UnresolvedContact => ("возможный контакт не нормализован", "адрес не подтверждён и не поставлен в очередь модели"),
         "" => ("нет данных", "решение фильтра не сохранилось для актуальной ревизии"),
         _ => ("вне контракта", "значение не входит в перечень решений фильтра"),
     };

@@ -278,6 +278,73 @@ public sealed class LlmPersistenceTests(PostgresTestCluster cluster) : IClassFix
     }
 
     [Fact]
+    public async Task ExtractFailureKeepsCheckpointAndRetryCompletesWithoutReclassifying()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var revision = (await ImportAsync(db))["210007"];
+        var calls = new List<SemanticOperation>();
+        string? preparedText = null;
+        var engine = new FixtureEngine((request, _) =>
+        {
+            calls.Add(request.Operation);
+            preparedText = JsonNode.Parse(request.User)!["text"]!.GetValue<string>();
+            return Task.FromResult(request.Operation == SemanticOperation.Classify ? ProfileClassification :
+                new LlmResponse(calls.Count == 2 ? "{}" : Fields));
+        });
+        var worker = Worker(db, Settings(), engine);
+        Assert.Equal("invalid_output_schema", (await worker.ProcessNextAsync(revision, Ct)).Status);
+        Assert.Empty(await db.Set<Analysis>().AsNoTracking().ToArrayAsync(Ct));
+        Assert.Empty(await db.Set<Profile>().AsNoTracking().ToArrayAsync(Ct));
+        var attempt = await db.Set<JobAttempt>().AsNoTracking().SingleAsync(Ct);
+        Assert.NotNull(attempt.Classification);
+        Assert.DoesNotContain("Пойдемте", attempt.Classification, StringComparison.Ordinal);
+        var decisionReport = JsonSerializer.SerializeToElement(await new LlmReports(db).DecisionAsync(revision, Ct));
+        var checkpoint = Assert.Single(decisionReport.GetProperty("Checkpoints").EnumerateArray());
+        Assert.Equal("profile", checkpoint.GetProperty("Class").GetString());
+        Assert.Empty(decisionReport.GetProperty("Results").EnumerateArray());
+        var job = await db.Set<ProcessingJob>().AsNoTracking().SingleAsync(x => x.RevisionId == revision, Ct);
+        Assert.Equal("pending", job.State);
+        var nextLease = new JobLease(job.Id, Guid.NewGuid(), revision, 2, DateTimeOffset.UtcNow.AddMinutes(1));
+        var store = new ProductStore(db);
+        Assert.NotNull(await store.ReadCheckpointAsync(nextLease, preparedText!, Ct));
+        Assert.Null(await store.ReadCheckpointAsync(nextLease, preparedText! + "изменение", Ct));
+        await db.Set<ProcessingJob>().Where(x => x.Id == job.Id)
+            .ExecuteUpdateAsync(x => x.SetProperty(j => j.AvailableAt, DateTimeOffset.UtcNow.AddSeconds(-1)), Ct);
+        Assert.Equal("profile", (await worker.ProcessNextAsync(revision, Ct)).Status);
+        Assert.Equal([SemanticOperation.Classify, SemanticOperation.Extract, SemanticOperation.Extract], calls);
+        Assert.Single(await db.Set<Analysis>().AsNoTracking().ToArrayAsync(Ct));
+        Assert.Single(await db.Set<Profile>().AsNoTracking().ToArrayAsync(Ct));
+        Assert.Equal("succeeded", await db.Set<ProcessingJob>().Where(x => x.Id == job.Id).Select(x => x.State).SingleAsync(Ct));
+        Assert.Equal("idle", (await worker.ProcessNextAsync(revision, Ct)).Status);
+    }
+
+    [Fact]
+    public async Task InvalidClassificationEvidenceRetriesWithinAttemptLimit()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var revision = (await ImportAsync(db))["210007"];
+        var engine = new FixtureEngine((_, _) => Task.FromResult(new LlmResponse(
+            """{"class":"profile","reason":"invitation","evidence":"несуществующая цитата"}""")));
+        var worker = Worker(db, Settings(), engine);
+        Assert.Equal("invalid_classification_evidence", (await worker.ProcessNextAsync(revision, Ct)).Status);
+        var job = await db.Set<ProcessingJob>().AsNoTracking().SingleAsync(x => x.RevisionId == revision, Ct);
+        Assert.Equal("pending", job.State);
+        Assert.Empty(await db.Set<Analysis>().AsNoTracking().ToArrayAsync(Ct));
+        await db.Set<ProcessingJob>().Where(x => x.Id == job.Id).ExecuteUpdateAsync(x => x
+            .SetProperty(j => j.AvailableAt, DateTimeOffset.UtcNow.AddSeconds(-1))
+            .SetProperty(j => j.MaxAttempts, 2), Ct);
+        Assert.Equal("invalid_classification_evidence", (await worker.ProcessNextAsync(revision, Ct)).Status);
+        Assert.Equal("failed", await db.Set<ProcessingJob>().Where(x => x.Id == job.Id).Select(x => x.State).SingleAsync(Ct));
+        Assert.Equal(2, engine.Calls);
+        Assert.Equal(2, await db.Set<JobAttempt>().CountAsync(x => x.JobId == job.Id && x.FailureCategory == "invalid_classification_evidence", Ct));
+        Assert.Empty(await db.Set<Profile>().AsNoTracking().ToArrayAsync(Ct));
+    }
+
+    [Fact]
     public async Task RetryAfterIsDurableAndDailyBudgetIsSharedAcrossAttempts()
     {
         RequireDocker();

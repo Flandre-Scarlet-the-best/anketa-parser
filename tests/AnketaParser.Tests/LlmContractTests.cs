@@ -71,6 +71,30 @@ public sealed class LlmContractTests
     {
         var error = Assert.Throws<LlmFailureException>(() => SemanticContract.ReadDecision(output, "нашёл ████"));
         Assert.Equal(category, error.Category);
+        Assert.True(error.Retryable);
+    }
+
+    [Theory]
+    [InlineData("location", "Интернет", "Интернет")]
+    [InlineData("location", "инет", "инет")]
+    [InlineData("location", "своего города", "ищу человека из своего города")]
+    [InlineData("gender", "ДС1", "ДС1, М30")]
+    [InlineData("interests", "ДС2", "Кун, ДС2")]
+    [InlineData("gender", "би", "Я би")]
+    [InlineData("gender", "девушку", "Ищу девушку")]
+    public void OmitsClearlyMisassignedFacts(string field, string value, string text)
+    {
+        var result = SemanticContract.ReadFacts(Fields((field, value, text)), text);
+        Assert.Empty(result.Facts);
+        Assert.Equal(field, Assert.Single(result.UnsupportedFields));
+    }
+
+    [Fact]
+    public void RetainsUnambiguousAuthorGenderAfterPartnerMention()
+    {
+        const string text = "Ищу девушку, я мужчина";
+        var result = SemanticContract.ReadFacts(Fields(("gender", "мужчина", text)), text);
+        Assert.Equal("мужчина", result.Facts["gender"].Value);
     }
 
     [Fact]
@@ -113,6 +137,36 @@ public sealed class LlmContractTests
         Assert.DoesNotContain("fixture_user", result, StringComparison.OrdinalIgnoreCase);
         Assert.EndsWith("█████", result, StringComparison.Ordinal);
         Assert.StartsWith("тг_", result, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RedactsUnrecognizedSpacedAndMixedAlphabetAddresses()
+    {
+        const string text = "Связь: @ sampleюser42, другой: @ knownuser42";
+        var masked = LlmInput.Redact(text, ["knownuser42"]);
+        Assert.Equal(text.Length, masked.Length);
+        Assert.DoesNotContain("sampleюser42", masked, StringComparison.Ordinal);
+        Assert.DoesNotContain("knownuser42", masked, StringComparison.Ordinal);
+        Assert.Contains("████", masked, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RedactsUnrecognizedSplitUsernameWithExplicitInstruction()
+    {
+        const string text = "Основной @knownuser42; запасной @ sample юser42 (без пробела)";
+        var masked = LlmInput.Redact(text, ["knownuser42"]);
+        Assert.Equal(text.Length, masked.Length);
+        Assert.DoesNotContain("sample", masked, StringComparison.Ordinal);
+        Assert.DoesNotContain("юser42", masked, StringComparison.Ordinal);
+        Assert.Contains("(без пробела)", masked, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RedactionHandlesLongSpacedTextWithoutAnInstruction()
+    {
+        var text = "@ " + string.Concat(Enumerable.Repeat("a ", 5900));
+        var masked = LlmInput.Redact(text, []);
+        Assert.Equal(text.Length, masked.Length);
     }
 
     [Theory]

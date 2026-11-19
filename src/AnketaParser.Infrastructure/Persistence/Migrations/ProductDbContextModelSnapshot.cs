@@ -299,6 +299,9 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
                     b.Property<long?>("CachedInputTokens")
                         .HasColumnType("bigint");
 
+                    b.Property<string>("Classification")
+                        .HasColumnType("jsonb");
+
                     b.Property<long?>("ElapsedMilliseconds")
                         .HasColumnType("bigint");
 

@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 using AnketaParser.Core.Persistence;
@@ -104,6 +106,42 @@ public sealed partial class ProductStore
                               select new { observation.RawValue, contact.NormalizedValue })
             .Distinct().ToArrayAsync(ct).ConfigureAwait(false);
         return LlmInput.Redact(text, contacts.SelectMany(x => new[] { x.RawValue, x.NormalizedValue }));
+    }
+
+    internal sealed record ClassificationCheckpoint(string InputHash, SemanticDecision Decision);
+
+    private static string InputHash(string text) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
+
+    internal async Task<SemanticDecision?> ReadCheckpointAsync(JobLease lease, string text, CancellationToken ct)
+    {
+        var json = await db.Set<JobAttempt>().AsNoTracking()
+            .Where(attempt => attempt.JobId == lease.JobId && attempt.Number < lease.Attempt && attempt.Classification != null)
+            .OrderByDescending(attempt => attempt.Number)
+            .Select(attempt => attempt.Classification)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        var checkpoint = json is null ? null : JsonSerializer.Deserialize<ClassificationCheckpoint>(json, LlmJson);
+        return checkpoint?.InputHash == InputHash(text) ? checkpoint.Decision : null;
+    }
+
+    internal async Task<bool> SaveCheckpointAsync(JobLease lease, LlmSettings settings, SemanticDecision decision, string text, CancellationToken ct)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+        var postId = await db.Set<PostRevision>().Where(revision => revision.Id == lease.RevisionId)
+            .Select(revision => revision.PostId).SingleAsync(ct).ConfigureAwait(false);
+        await LockPostAsync(postId, ct).ConfigureAwait(false);
+        var job = await LockJobAsync(lease.JobId, ct).ConfigureAwait(false);
+        if (job.RevisionId != lease.RevisionId || job.LlmVersion != settings.PipelineVersion ||
+            job.State != "running" || job.LeaseToken != lease.Token || job.LeaseUntil is not { } expiresAt || expiresAt <= Now ||
+            !await IsLlmEligibleAsync(lease.RevisionId, ct).ConfigureAwait(false))
+            return false;
+        var attempt = await db.Set<JobAttempt>().SingleAsync(x => x.Token == lease.Token, ct).ConfigureAwait(false);
+        attempt.Classification = JsonSerializer.Serialize(new ClassificationCheckpoint(InputHash(text), decision), LlmJson);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        // Аренда может истечь, пока выполнялась запись: транзакция тогда откатывается.
+        if (expiresAt <= Now)
+            return false;
+        await transaction.CommitAsync(ct).ConfigureAwait(false);
+        return true;
     }
 
     internal async Task<string> FinishLlmAsync(JobLease lease, LlmSettings settings, SemanticResult? result, LlmFailureException? failure,

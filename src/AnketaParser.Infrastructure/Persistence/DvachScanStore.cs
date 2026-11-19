@@ -97,6 +97,7 @@ internal sealed class DvachScanStore(ProductDbContext db)
             OtherReplies = metrics.OtherReplies + (input.Reply == DvachFilter.OtherReply ? 1 : 0),
             NoOwnContact = metrics.NoOwnContact + (reason == DvachFilter.NoOwnContact ? 1 : 0),
             Excluded = metrics.Excluded + (reason == DvachFilter.Excluded ? 1 : 0),
+            UnresolvedContacts = metrics.UnresolvedContacts + (reason == DvachFilter.UnresolvedContact ? 1 : 0),
         });
         await SaveAsync(ct).ConfigureAwait(false);
         await tx.CommitAsync(ct).ConfigureAwait(false);

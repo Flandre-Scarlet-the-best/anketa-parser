@@ -33,7 +33,7 @@ public sealed record SemanticResult(SemanticDecision Decision, SemanticExtractio
 
 public static partial class SemanticContract
 {
-    public const string SchemaVersion = "text-profile-2";
+    public const string SchemaVersion = "text-profile-3";
     public const string Profile = "profile";
     public const string NotProfile = "not_profile";
     public const string Uncertain = "uncertain";
@@ -53,7 +53,10 @@ public static partial class SemanticContract
         {"class":"profile|not_profile|uncertain","reason":"код","evidence":null или "дословный фрагмент"}
         profile: invitation (явное приглашение) или implicit_invitation (обоснованное неявное).
         not_profile: technical_contact (контакт для посторонней задачи), unrelated (явно иная цель), noise (бессвязный текст).
-        uncertain: contact_only (один контакт), ambiguous (двусмысленность), missing_context (смысла без чужой реплики недостаточно).
+        uncertain: contact_only (только контакт без намерения общаться), ambiguous (двусмысленность), missing_context (смысла без чужой реплики недостаточно).
+        Прямое предложение поболтать, подружиться, поиграть вместе, поговорить голосом или найти компанию — profile,
+        даже если оно короткое, разговорное, интимное или не содержит биографии. Не считай его contact_only.
+        Коммерческая услуга, техническая проверка и просьба дать ссылку сами по себе не доказывают приглашение к общению.
         Для profile и not_profile приведи короткий дословный фрагмент из text без скрытых контактов.
         Для uncertain фрагмент может быть null. При сомнении выбери uncertain.
         Сап, го в лс, тян, кун, ирл, транслит, смешение языков, опечатки, грубость, ирония и NSFW сами по себе ничего не исключают.
@@ -79,6 +82,9 @@ public static partial class SemanticContract
         Возраст 20+ и любые интервалы не задают точный возраст.
         В коротком самоописании «кун, 26» gender — «кун», age — «26», evidence для обоих — «кун, 26».
         «Тян 24 лвл» означает gender «Тян», age «24». «ищу тян» не задаёт gender автора.
+        ДС1 и ДС2 в контексте городов — география, не пол и не интерес. «интернет», «инет» и «своего города» не называют географическое место.
+        Ориентация сама по себе не является полом. Сведения об искомом человеке не присваивай автору.
+        Если короткое самоописание явно сообщает возраст, пол или город, извлеки их в соответствующие поля; если роль неясна, верни null.
         Копируй короткие непрерывные фрагменты из text с исходным регистром. Не добавляй от себя слова, пунктуацию или многоточие.
         Все значения могут быть null. Не копируй контакты. Не добавляй ключи.
         """;
@@ -149,13 +155,13 @@ public static partial class SemanticContract
         var classification = ReadString(root.GetProperty("class"), 24);
         var reason = ReadString(root.GetProperty("reason"), 32);
         if (!Reasons.TryGetValue(classification, out var reasons) || !reasons.Contains(reason, StringComparer.Ordinal))
-            throw new LlmFailureException("invalid_decision");
+            throw new LlmFailureException("invalid_decision", retryable: true);
         var evidence = root.GetProperty("evidence");
         if (evidence.ValueKind == JsonValueKind.Null && classification == Uncertain)
             return new(classification, reason, null);
         var span = LocateEvidence(ReadString(evidence, EvidenceMax), text);
         if (span is null && classification != Uncertain)
-            throw new LlmFailureException("invalid_classification_evidence");
+            throw new LlmFailureException("invalid_classification_evidence", retryable: true);
         return new(classification, reason, span, EvidenceOmitted: span is null);
     }
 
@@ -175,7 +181,8 @@ public static partial class SemanticContract
             var value = ReadString(field.GetProperty("value"), max);
             var span = LocateEvidence(ReadString(field.GetProperty("evidence"), EvidenceMax), text);
             if (span is null || !text.AsSpan(span.Start, span.Length).Contains(value, StringComparison.Ordinal) ||
-                name == "age" && !HasAuthorAge(text, span, value))
+                name == "age" && !HasAuthorAge(text, span, value) ||
+                !IsSupportedField(name, value, text, span))
             {
                 unsupported.Add(name);
                 continue;
@@ -184,6 +191,36 @@ public static partial class SemanticContract
         }
         return new(result, unsupported);
     }
+
+    private static bool IsSupportedField(string name, string value, string text, TextSpan span)
+    {
+        // Сдержанные инварианты: не пытаемся классифицировать произвольный текст
+        // регулярными выражениями, а отвергаем только явно несоответствующие значения.
+        if (name == "location" && NonLocation().IsMatch(value))
+            return false;
+        if (name is "gender" or "interests" && CityAbbreviation().IsMatch(value))
+            return false;
+        if (name == "gender")
+        {
+            if (Orientation().IsMatch(value))
+                return false;
+            var start = span.Start + text.AsSpan(span.Start, span.Length).IndexOf(value, StringComparison.Ordinal);
+            var prefix = text.AsSpan(0, start);
+            var sentence = prefix[(prefix.LastIndexOfAny(".!?;\n") + 1)..];
+            if (PartnerAgePrefix().IsMatch(sentence))
+                return false;
+        }
+        return true;
+    }
+
+    [GeneratedRegex(@"\A(?:интернет(?:ы)?|инет|своего\s+города)\z", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex NonLocation();
+
+    [GeneratedRegex(@"\Aдс\s*[-–]?\s*[12]\z", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex CityAbbreviation();
+
+    [GeneratedRegex(@"\A(?:би|бисексуал(?:ьн(?:ый|ая|ое))?)\z", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex Orientation();
 
     private static bool HasAuthorAge(string text, TextSpan span, string value)
     {
@@ -237,7 +274,7 @@ public static partial class SemanticContract
         if (element.ValueKind != JsonValueKind.String || element.GetString() is not { } text ||
             text.Length is 0 || text.Length > max || text != text.Trim() ||
             text.Any(c => char.IsControl(c) && c is not ('\n' or '\t')))
-            throw new LlmFailureException("invalid_output_schema");
+            throw new LlmFailureException("invalid_output_schema", retryable: true);
         return text;
     }
 
@@ -246,7 +283,7 @@ public static partial class SemanticContract
         if (element.ValueKind != JsonValueKind.Object ||
             element.EnumerateObject().Count() != properties.Length ||
             properties.Any(name => !element.TryGetProperty(name, out _)))
-            throw new LlmFailureException("invalid_output_schema");
+            throw new LlmFailureException("invalid_output_schema", retryable: true);
     }
 
     private static JsonDocument Parse(string json)

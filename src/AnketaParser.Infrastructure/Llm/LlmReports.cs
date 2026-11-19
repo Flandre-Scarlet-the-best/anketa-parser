@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 using AnketaParser.Infrastructure.Persistence;
 using AnketaParser.Infrastructure.Sources;
 
@@ -7,6 +9,8 @@ namespace AnketaParser.Infrastructure.Llm;
 
 public sealed class LlmReports(ProductDbContext database)
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
     public async Task<object> StatusAsync(LlmSettings? settings, CancellationToken ct)
     {
         var now = DateTimeOffset.UtcNow;
@@ -95,7 +99,28 @@ public sealed class LlmReports(ProductDbContext database)
             .OrderByDescending(x => x.AvailableAt).ThenBy(x => x.Id)
             .Select(x => new { x.Id, x.State, x.LlmVersion, x.Attempts, x.MaxAttempts, x.AvailableAt, x.FailureCategory })
             .Take(100).ToArrayAsync(ct).ConfigureAwait(false);
-        return new { RevisionId = revisionId, revision.PostNumber, revision.Current, Results = results, Jobs = jobs };
+        var checkpointRows = await (from attempt in database.Set<JobAttempt>().AsNoTracking()
+                                    join job in database.Set<ProcessingJob>().AsNoTracking() on attempt.JobId equals job.Id
+                                    where job.RevisionId == revisionId && attempt.Classification != null
+                                    orderby attempt.StartedAt descending
+                                    select new { job.Id, job.LlmVersion, job.State, attempt.Number, attempt.Classification })
+            .Take(100).ToArrayAsync(ct).ConfigureAwait(false);
+        var checkpoints = checkpointRows.Select(row =>
+        {
+            var checkpoint = JsonSerializer.Deserialize<ProductStore.ClassificationCheckpoint>(row.Classification!, JsonOptions)!;
+            return new
+            {
+                JobId = row.Id,
+                row.LlmVersion,
+                JobState = row.State,
+                Attempt = row.Number,
+                checkpoint.Decision.Class,
+                checkpoint.Decision.Reason,
+                checkpoint.Decision.Evidence,
+            };
+        }).ToArray();
+        // Это промежуточное решение, не завершённый анализ и не Candidate.
+        return new { RevisionId = revisionId, revision.PostNumber, revision.Current, Results = results, Jobs = jobs, Checkpoints = checkpoints };
     }
 
     public Task<Guid?> ReprocessAsync(Guid revisionId, LlmSettings settings, bool retryFailed, CancellationToken ct) =>

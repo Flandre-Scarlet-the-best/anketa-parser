@@ -25,7 +25,7 @@ internal static partial class LlmInput
         return new string(buffer);
     }
 
-    [GeneratedRegex(@"(?:https?://|(?:telegram\.me|t\.me)/|(?:mailto|xmpp):)\S+|[\w.%+-]+@[\w.-]+|@[\w_]+",
+    [GeneratedRegex(@"(?:https?://|(?:telegram\.me|t\.me)/|(?:mailto|xmpp):)\S+|[\w.%+-]+@[\w.-]+|@[ \t]*[\w_]+(?:[ \t]+[\w_]+)+(?=[ \t]*[,(]?[ \t]*(?:без[ \t]+пробел(?:а|ов)|минус[ \t]+пробелы)(?!\w))|@[ \t]*[\w_]+",
         RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, 100)]
     private static partial Regex Address();
 }

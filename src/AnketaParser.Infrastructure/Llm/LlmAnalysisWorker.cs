@@ -40,11 +40,19 @@ public sealed class LlmAnalysisWorker(DbContextOptions<ProductDbContext> databas
             var text = await store.ReadLlmTextAsync(lease, settings.MaxInputChars, cancellationToken).ConfigureAwait(false);
             if (text is null)
                 throw new LlmFailureException("revision_ineligible");
-            var classified = await GenerateAsync(SemanticOperation.Classify, text, usage, cancellationToken).ConfigureAwait(false);
-            var decision = SemanticContract.ReadDecision(classified, text);
+            var decision = await store.ReadCheckpointAsync(lease, text, cancellationToken).ConfigureAwait(false);
+            if (decision is null)
+            {
+                var classified = await GenerateAsync(SemanticOperation.Classify, text, usage, cancellationToken).ConfigureAwait(false);
+                decision = SemanticContract.ReadDecision(classified, text);
+            }
             SemanticExtraction? extraction = null;
             if (decision.Class == SemanticContract.Profile)
             {
+                // Промежуточное решение не является Analysis или Candidate и сохраняется
+                // только под действующей арендой и при актуальной ревизии.
+                if (!await store.SaveCheckpointAsync(lease, settings, decision, text, cancellationToken).ConfigureAwait(false))
+                    throw new LlmFailureException("revision_ineligible");
                 // Если пост изменён во время первого вызова, второй запрос больше не нужен.
                 if (await store.ReadLlmTextAsync(lease, settings.MaxInputChars, cancellationToken).ConfigureAwait(false) is not { } current ||
                     !string.Equals(current, text, StringComparison.Ordinal))

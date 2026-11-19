@@ -86,6 +86,7 @@ public sealed class ProductDbContext(DbContextOptions<ProductDbContext> options)
         Foreign<ModerationDecision, Complaint>(modelBuilder, "ComplaintId");
         Foreign<ProcessingJob, PostRevision>(modelBuilder, "RevisionId");
         Foreign<JobAttempt, ProcessingJob>(modelBuilder, "JobId");
+        modelBuilder.Entity<JobAttempt>().Property(x => x.Classification).HasColumnType("jsonb");
         modelBuilder.Entity<Analysis>().Property(x => x.Observations).HasColumnType("jsonb");
         modelBuilder.Entity<Analysis>().Property(x => x.Assessments).HasColumnType("jsonb");
         modelBuilder.Entity<PostRevision>().Property(x => x.RetrievalMetadata).HasColumnType("jsonb");

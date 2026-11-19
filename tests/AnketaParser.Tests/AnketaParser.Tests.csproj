@@ -24,6 +24,8 @@
   <ItemGroup>
     <Using Include="Xunit" />
     <None Include="../fixtures/dvach/thread.json" Link="fixtures/dvach/thread.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/llm/holdout-thread.json" Link="fixtures/llm/holdout-thread.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/llm/holdout-labels.json" Link="fixtures/llm/holdout-labels.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

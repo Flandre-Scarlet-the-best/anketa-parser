@@ -26,7 +26,10 @@ public sealed record DvachScanMetrics(
     int OpeningPosts = 0,
     int OtherReplies = 0,
     int NoOwnContact = 0,
-    int Excluded = 0);
+    int Excluded = 0)
+{
+    public int UnresolvedContacts { get; init; }
+}
 
 public sealed record DvachPostReport(
     string Status,
