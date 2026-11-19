@@ -32,7 +32,7 @@ class BackgroundWaitModule(Protocol):
     def start(self, args: argparse.Namespace) -> int: ...
     def worker(self, directory: Path) -> int: ...
     def start_tray_indicator(self, command_pid: int, job_id: str) -> None: ...
-    def find_executable(self, command: str) -> str | None: ...
+    def find_executable(self, command: str, allow_unc: bool = False) -> str | None: ...
     def write_json(self, path: Path, data: dict[str, object]) -> None: ...
     def copy_bounded(
         self, source: BinaryIO, destination: BinaryIO, status: dict[str, object]
@@ -229,6 +229,39 @@ class BackgroundWaitTests(unittest.TestCase):
             json.loads((job / "request.json").read_text(encoding="utf-8")),
         )
         self.assertEqual(request["cwd"], "\\\\server\\share\\")
+
+    def test_command_unc_path_is_rejected_before_network_access(self) -> None:
+        args = argparse.Namespace(
+            thread=self.env["CODEX_THREAD_ID"],
+            cwd=str(self.root),
+            command=[r"\\server\share\tool.exe"],
+        )
+        with (
+            mock.patch.object(
+                shutil, "which", side_effect=AssertionError("network access")
+            ),
+            self.assertRaises(ValueError),
+        ):
+            _ = background_wait.start(args)
+
+    def test_unc_path_entry_is_not_probed_without_authorization(self) -> None:
+        resolve = Path.resolve
+
+        def guarded(self: Path) -> Path:
+            if str(self).startswith("\\\\"):
+                raise AssertionError("network access")
+            return resolve(self)
+
+        with (
+            mock.patch.object(os, "get_exec_path", return_value=[r"\\server\share"]),
+            mock.patch.object(Path, "resolve", guarded),
+        ):
+            self.assertIsNone(background_wait.find_executable("tool.exe"))
+
+    def test_explicit_unc_command_authorization_preserves_the_path(self) -> None:
+        command = r"\\server\share\tool.exe"
+        with mock.patch.object(shutil, "which", return_value=command):
+            self.assertEqual(background_wait.find_executable(command, True), command)
 
     def test_start_prioritizes_result_over_started_marker(self) -> None:
         args = argparse.Namespace(

@@ -52,11 +52,27 @@ def owned_job(directory: Path) -> Path:
     return candidate
 
 
-def find_executable(command: str) -> str | None:
+def is_unc_path(value: str) -> bool:
+    """UNC и пространства имён Windows начинаются с двух обратных слэшей."""
+    return value.startswith("\\\\")
+
+
+def ensure_unc_authorized(value: str, allow_unc: bool) -> None:
+    if is_unc_path(value) and not allow_unc:
+        raise ValueError("Для UNC и пространств имён Windows требуется --allow-unc")
+
+
+def find_executable(command: str, allow_unc: bool = False) -> str | None:
     if os.path.dirname(command):
+        # shutil.which обращается к указанному пути напрямую, без поиска в PATH.
+        if is_unc_path(command) and not allow_unc:
+            return None
         return shutil.which(command)
     current = Path.cwd().resolve()
     for entry in os.get_exec_path():
+        # Разрешение сетевого элемента PATH уже обращается к серверу.
+        if is_unc_path(entry) and not allow_unc:
+            continue
         path = Path(entry)
         if not path.is_absolute() or path.resolve() == current:
             continue
@@ -145,9 +161,9 @@ def start(args: argparse.Namespace) -> int:
     if os.name != "nt":
         raise ValueError("Фоновый запуск поддерживается только в Windows")
     thread = str(uuid.UUID(args.thread or os.environ.get("CODEX_THREAD_ID", "")))
+    allow_unc = bool(getattr(args, "allow_unc", False))
     cwd = Path(args.cwd)
-    if str(cwd).startswith("\\\\") and not getattr(args, "allow_unc", False):
-        raise ValueError("Для UNC и пространств имён Windows требуется --allow-unc")
+    ensure_unc_authorized(str(cwd), allow_unc)
     if not cwd.is_absolute() or not cwd.is_dir():
         raise ValueError("Рабочий каталог должен быть существующим абсолютным путём")
     command = args.command
@@ -155,13 +171,17 @@ def start(args: argparse.Namespace) -> int:
         command = command[1:]
     if not command:
         raise ValueError("После -- необходимо указать исполняемый файл и аргументы")
-    executable = find_executable(command[0])
+    requested = str(command[0])
+    ensure_unc_authorized(requested, allow_unc)
+    executable = find_executable(requested, allow_unc)
     if not executable or Path(executable).suffix.lower() in {".cmd", ".bat"}:
         raise ValueError(
             "Укажите доступный исполняемый файл, а не cmd/bat или псевдоним"
         )
     command[0] = str(Path(executable).absolute())
-    codex = find_executable("codex.cmd") or find_executable("codex.exe")
+    codex = find_executable("codex.cmd", allow_unc) or find_executable(
+        "codex.exe", allow_unc
+    )
     if not codex:
         raise ValueError("Не найден исполняемый файл Codex CLI")
 
