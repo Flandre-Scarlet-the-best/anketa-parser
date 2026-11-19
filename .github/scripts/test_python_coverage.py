@@ -52,3 +52,19 @@ class PythonCoverageTests(unittest.TestCase):
                 self.assertTrue(
                     validate_coverage('{"summary": {"filesAnalyzed": 0}}', config)
                 )
+
+    def test_required_sources_cannot_be_removed_from_include(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = root / "scripts"
+            skills = root / "skills"
+            scripts.mkdir()
+            skills.mkdir()
+            _ = (scripts / "check.py").write_text("pass", encoding="utf-8")
+            _ = (skills / "helper.py").write_text("pass", encoding="utf-8")
+            config = root / "pyrightconfig.json"
+            _ = config.write_text(
+                json.dumps({"include": ["scripts"]}), encoding="utf-8"
+            )
+            report = json.dumps({"summary": {"filesAnalyzed": 1}})
+            self.assertTrue(validate_coverage(report, config, (skills,)))

@@ -1,6 +1,9 @@
 {
-  "include": ["scripts"],
+  "include": ["scripts", "../.agents/skills"],
   "pythonVersion": "3.15",
   "failOnWarnings": false,
-  "executionEnvironments": [{"root": "scripts"}]
+  "executionEnvironments": [
+    {"root": "../.agents/skills/background-wait/scripts", "pythonPlatform": "Windows"},
+    {"root": "scripts"}
+  ]
 }
