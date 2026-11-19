@@ -397,6 +397,43 @@ class BackgroundWaitTests(unittest.TestCase):
         )
         self.assertEqual(delivery["state"], "uncertain")
 
+    def test_notification_ignores_the_inherited_directory(self) -> None:
+        job = Path(self.env["CODEX_HOME"]) / "background-wait" / str(uuid.uuid4())
+        job.mkdir(parents=True)
+        background_wait.write_json(
+            job / "request.json",
+            {
+                "thread": self.env["CODEX_THREAD_ID"],
+                "cwd": str(self.root),
+                "command": [sys.executable],
+                "codex": str(self.queue),
+            },
+        )
+        process = types.SimpleNamespace(
+            pid=123,
+            wait=mock.Mock(return_value=0),
+            stdout=io.BytesIO(),
+            stderr=io.BytesIO(),
+        )
+        calls: list[dict[str, object]] = []
+
+        def queue(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+            calls.append(kwargs)
+            return subprocess.CompletedProcess([], 0, "queued", "")
+
+        with (
+            mock.patch.dict(os.environ, self.env),
+            mock.patch.object(background_wait, "start_tray_indicator"),
+            mock.patch.object(subprocess, "Popen", return_value=process),
+            mock.patch.object(subprocess, "run", side_effect=queue),
+        ):
+            _ = background_wait.worker(job)
+        self.assertEqual(len(calls), 1)
+        # Shim codex.cmd разрешает node по имени: унаследованный каталог
+        # вызывающей стороны не должен становиться каталогом поиска.
+        self.assertEqual(calls[0].get("cwd"), job)
+        self.assertNotEqual(calls[0].get("cwd"), Path.cwd())
+
     def test_tray_launch_error_does_not_interrupt_worker(self) -> None:
         job = Path(self.env["CODEX_HOME"]) / "background-wait" / str(uuid.uuid4())
         job.mkdir(parents=True)

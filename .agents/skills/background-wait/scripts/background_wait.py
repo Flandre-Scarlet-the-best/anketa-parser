@@ -326,6 +326,9 @@ def worker(directory: Path) -> int:
             "Проверь сохранённые result.json и журналы; продолжай только актуальную задачу."
         )
         try:
+            # Shim codex.cmd ищет node по имени, а cmd.exe начинает с текущего
+            # каталога. Уведомление выполняется в собственном каталоге задания,
+            # который создаёт помощник, а не в унаследованном рабочем каталоге.
             delivery = subprocess.run(  # noqa: S603 - фиксированные аргументы очереди и UUID
                 [
                     cast(str, request["codex"]),
@@ -337,6 +340,7 @@ def worker(directory: Path) -> int:
                     message,
                 ],
                 check=False,
+                cwd=directory,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
