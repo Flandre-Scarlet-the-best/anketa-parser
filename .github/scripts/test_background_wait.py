@@ -397,6 +397,31 @@ class BackgroundWaitTests(unittest.TestCase):
         )
         self.assertEqual(delivery["state"], "uncertain")
 
+    def test_failed_json_replacement_removes_the_temporary_file(self) -> None:
+        path = self.root / "written.json"
+        with (
+            mock.patch.object(os, "replace", side_effect=OSError("replace failure")),
+            self.assertRaises(OSError),
+        ):
+            background_wait.write_json(path, {"value": 1})
+        self.assertFalse((self.root / "written.json.tmp").exists())
+        self.assertFalse(path.exists())
+
+    def test_failed_json_write_removes_the_temporary_file(self) -> None:
+        path = self.root / "written.json"
+        real_write = Path.write_text
+
+        def write(self: Path, *_args: object, **_kwargs: object) -> int:
+            _ = real_write(self, "{")
+            raise OSError("write failure")
+
+        with (
+            mock.patch.object(Path, "write_text", write),
+            self.assertRaises(OSError),
+        ):
+            background_wait.write_json(path, {"value": 1})
+        self.assertFalse((self.root / "written.json.tmp").exists())
+
     def test_notification_ignores_the_inherited_directory(self) -> None:
         job = Path(self.env["CODEX_HOME"]) / "background-wait" / str(uuid.uuid4())
         job.mkdir(parents=True)

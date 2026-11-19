@@ -23,8 +23,15 @@ MAX_LOG_BYTES = 16 * 1024 * 1024
 
 def write_json(path: Path, data: dict[str, object]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    os.replace(temporary, path)
+    try:
+        temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError:
+        # Оставшийся временный файл считается неизвестным, и cleanup отклоняет
+        # каталог задания. Ошибка удаления не должна скрыть исходную причину.
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+        raise
 
 
 def read_json(path: Path) -> dict[str, object]:
