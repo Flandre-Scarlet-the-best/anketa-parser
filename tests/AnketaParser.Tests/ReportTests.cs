@@ -342,7 +342,7 @@ public sealed class ReportTests
         Assert.Equal("адресация, а не причина отсева", addressing.Note);
 
         var html = ReportHtmlRenderer.Render(document);
-        Assert.Contains("фильтр: нет своего контакта", html, StringComparison.Ordinal);
+        Assert.Contains("решение фильтра: нет своего контакта", html, StringComparison.Ordinal);
         Assert.Contains("адресация: ответ другому посту", html, StringComparison.Ordinal);
         Assert.Contains("адресация — метаданные ответа; причиной отсева она не является", html, StringComparison.Ordinal);
     }
@@ -358,15 +358,22 @@ public sealed class ReportTests
         var exactHtml = ReportHtmlRenderer.Render(exact);
         Assert.Equal(ReportEvidenceView.Exact, Assert.Single(exact.Posts).Llm.Decision.Status);
         Assert.Contains("<mark>Ищу знакомства</mark>", exactHtml, StringComparison.Ordinal);
-        Assert.Contains("фрагмент воспроизведён точно", exactHtml, StringComparison.Ordinal);
+        // Формулировка точного воспроизведения печатается один раз: подпись статуса и пояснение
+        // не дублируют друг друга, а координаты остаются рядом.
+        Assert.Contains(
+            "<p class=\"note\">фрагмент восстановлен по сохранённым координатам точно. Координаты UTF-16: 0+14.</p>",
+            exactHtml,
+            StringComparison.Ordinal);
+        Assert.Contains("фрагмент восстановлен по сохранённым координатам точно", exactHtml, StringComparison.Ordinal);
+        Assert.DoesNotContain("воспроизведён точно: фрагмент восстановлен", exactHtml, StringComparison.Ordinal);
         // Подготовленный текст и evidence ссылаются на один и тот же текст ревизии.
         Assert.Contains("реконструкция", exactHtml, StringComparison.Ordinal);
     }
 
     [Theory]
-    [InlineData(0, 500, ReportEvidenceView.OutOfRange, "координаты вне текста")]
-    [InlineData(-1, 3, ReportEvidenceView.OutOfRange, "координаты вне текста")]
-    public void UnverifiableCoordinatesAreShownWithoutHighlight(int start, int length, string status, string label)
+    [InlineData(0, 500, ReportEvidenceView.OutOfRange)]
+    [InlineData(-1, 3, ReportEvidenceView.OutOfRange)]
+    public void UnverifiableCoordinatesAreShownWithoutHighlight(int start, int length, string status)
     {
         const string text = "Ищу знакомства. Пишите: tg @nick";
         var revision = Revision(text: text);
@@ -377,8 +384,10 @@ public sealed class ReportTests
         Assert.Equal(status, Assert.Single(document.Posts).Llm.Decision.Status);
         var html = ReportHtmlRenderer.Render(document);
         Assert.DoesNotContain("<mark>", html, StringComparison.Ordinal);
-        Assert.Contains(label, html, StringComparison.Ordinal);
         Assert.Contains("выходят за границы текста", html, StringComparison.Ordinal);
+        // Пояснение не повторяет подпись статуса: дублирование формулировок исключено.
+        Assert.DoesNotContain("координаты вне текста: координаты", html, StringComparison.Ordinal);
+        Assert.Contains("Подсветка не выполняется: точное воспроизведение не подтверждено.", html, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -403,6 +412,61 @@ public sealed class ReportTests
         Assert.DoesNotContain("<mark>", textlessHtml, StringComparison.Ordinal);
         Assert.Contains("текст ревизии недоступен", textlessHtml, StringComparison.Ordinal);
         Assert.Contains("Точное воспроизведение невозможно", textlessHtml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ExpandedCardCannotWidenTheGridAndMetadataPathIsShortened()
+    {
+        const string metadataPath = @"C:\Users\example\run\run-metadata.json";
+        var revision = Revision();
+        var document = Compose(
+            Snapshot([Post("100", current: revision, analyses: [Analysis(revision.Id)])]),
+            new ReportRunMetadataView(
+                metadataPath,
+                true,
+                [new ReportMetadataItem("Модель (model.name)", "Qwen")],
+                [new ReportMetadataItem("model.name", "Qwen")]));
+
+        var html = ReportHtmlRenderer.Render(document);
+
+        // Причина дефекта: grid-элемент не сжимался ниже min-content ширины таблиц, поэтому
+        // раскрытая карточка расширяла сетку и появлялась горизонтальная прокрутка страницы.
+        Assert.Matches("article\\.post \\{[^}]*min-width: 0", html);
+        Assert.Matches("\\.post-head \\{[^}]*min-width: 0", html);
+
+        // В шапке — только имя файла, полный путь остаётся в подсказке и не теряется.
+        Assert.Contains(">run-metadata.json</span>", html, StringComparison.Ordinal);
+        Assert.Contains("title=\"" + metadataPath + "\"", html, StringComparison.Ordinal);
+        Assert.Equal(1, Regex.Count(html, Regex.Escape(metadataPath)));
+    }
+
+    [Fact]
+    public void BadgesStayUnambiguousForModerationExcludedPost()
+    {
+        var document = Compose(Snapshot([
+            Post("100", current: Revision(reason: DvachFilter.Candidate), excluded: true),
+        ]));
+        var post = Assert.Single(document.Posts);
+        Assert.True(post.ModerationExcluded);
+        Assert.False(post.Filter.AdmittedToLlm);
+
+        var html = ReportHtmlRenderer.Render(document);
+
+        // Итог этапа называет причину недопуска, а бейдж решения фильтра описывает только фильтр:
+        // иначе «допущен» рядом с «не допущен» читалось бы двусмысленно.
+        Assert.Contains("не допущен к анализу модели: исключён модерацией", html, StringComparison.Ordinal);
+        Assert.Contains("решение фильтра: допущен", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SharesAreMarkedAsRoundedWithoutChangingValues()
+    {
+        var document = Compose(Snapshot([Post("100", current: Revision())]));
+
+        var html = ReportHtmlRenderer.Render(document);
+
+        Assert.Contains("Доли округлены до 0,1 %", html, StringComparison.Ordinal);
+        Assert.Contains("100.0 %", html, StringComparison.Ordinal);
     }
 
     [Fact]

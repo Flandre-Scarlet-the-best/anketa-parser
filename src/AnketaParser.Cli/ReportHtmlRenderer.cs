@@ -86,7 +86,7 @@ public static class ReportHtmlRenderer
         #f-count { color: var(--muted); font-size: 0.82rem; margin-left: auto; }
         #post-list { display: grid; gap: 12px; }
         article.post { background: var(--panel); border: 1px solid var(--line); border-left: 5px solid var(--tone, var(--idle));
-          border-radius: 10px; padding: 11px; }
+          border-radius: 10px; padding: 11px; min-width: 0; }
         article.post[data-stage="profile"] { --tone: var(--pos); }
         article.post[data-stage="not_profile"] { --tone: var(--neg); }
         article.post[data-stage="uncertain"] { --tone: var(--warn); }
@@ -94,7 +94,7 @@ public static class ReportHtmlRenderer
         article.post[data-stage="failed"] { --tone: var(--bad); }
         article.post[data-stage="no_job"], article.post[data-stage="not_admitted"],
         article.post[data-stage="stale_only"], article.post[data-stage="succeeded_without_decision"] { --tone: var(--idle); }
-        .post-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 8px; }
+        .post-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 8px; min-width: 0; }
         .post-num { font-weight: 700; font-variant-numeric: tabular-nums; }
         .post-link { font-size: 0.8rem; }
         .when { color: var(--muted); font-size: 0.78rem; margin-left: auto; }
@@ -293,7 +293,18 @@ public static class ReportHtmlRenderer
             .Append(" инструментом AnketaParser ").Append(Escape(document.ToolVersion));
         if (document.RunMetadata.Loaded)
         {
-            html.Append(" · метаданные запуска: ").Append(Escape(document.RunMetadata.Path ?? "файл передан"));
+            html.Append(" · метаданные запуска: ");
+            if (document.RunMetadata.Path is { } metadataPath)
+            {
+                // В шапке — только имя файла: полный путь остаётся подсказкой, а сами факты
+                // приведены в разделе снимка, поэтому метаданные не теряются.
+                html.Append("<span title=\"").Append(Escape(metadataPath)).Append("\">")
+                    .Append(Escape(Path.GetFileName(metadataPath))).Append("</span>");
+            }
+            else
+            {
+                html.Append("файл передан");
+            }
         }
         else
         {
@@ -404,6 +415,10 @@ public static class ReportHtmlRenderer
 
     private static void AppendSummary(StringBuilder html, ReportDocument document)
     {
+        // Доли округляются до 0,1 %: сумма показанных долей одного разбиения может не равняться
+        // 100 % — это следствие округления, а не расхождение данных.
+        html.Append("<p class=\"note\" id=\"share-rounding\">Доли округлены до 0,1 %: сумма показанных долей " +
+            "может отличаться от 100 %, значения при этом не изменяются.</p>\n");
         for (var index = 0; index < document.Summary.Count; index++)
         {
             var group = document.Summary[index];
@@ -435,6 +450,8 @@ public static class ReportHtmlRenderer
     {
         html.Append("<section id=\"posts\">\n<h2>Детализация постов снимка</h2>\n");
         html.Append("<p class=\"note\">Показаны все посты снимка, включая отсеянные первичным фильтром и исключённые модерацией. " +
+            "Фрагмент-основание подсвечивается только при точном воспроизведении текста; в остальных случаях " +
+            "фрагмент выводится без подсветки с указанием причины. " +
             "Фильтры, поиск и сортировка работают локально в браузере без обращения к сети.</p>\n");
         AppendToolbar(html, document);
         if (document.Posts.Count == 0)
@@ -499,8 +516,8 @@ public static class ReportHtmlRenderer
         }
 
         html.Append("<span class=\"badge solid tone-").Append(Escape(Tone(post.Stage))).Append("\">")
-            .Append(Escape(post.StageLabel)).Append("</span>\n");
-        html.Append("<span class=\"badge outline tone-idle\">фильтр: ").Append(Escape(post.Filter.ReasonLabel)).Append("</span>\n");
+            .Append(Escape(StageBadge(post))).Append("</span>\n");
+        html.Append("<span class=\"badge outline tone-idle\">решение фильтра: ").Append(Escape(post.Filter.ReasonLabel)).Append("</span>\n");
         html.Append("<span class=\"badge outline tone-idle\">адресация: ").Append(Escape(post.Filter.AddressingLabel)).Append("</span>\n");
         if (post.ModerationExcluded)
         {
@@ -573,12 +590,19 @@ public static class ReportHtmlRenderer
             html.Append("<span class=\"note\">фрагмент не показан</span>");
         }
 
-        html.Append("</div>\n<p class=\"note\">").Append(Escape(EvidenceLabel(evidence.Status))).Append(": ")
-            .Append(Escape(evidence.Note));
+        html.Append("</div>\n<p class=\"note\">").Append(Escape(evidence.Note));
         if (evidence.Span is { } span)
         {
-            html.Append(" Координаты UTF-16: ").Append(Number(span.Start)).Append('+').Append(Number(span.Length))
-                .Append(". Подсветка показана только при точном воспроизведении.");
+            html.Append(evidence.Note.EndsWith('.') ? " " : ". ")
+                .Append("Координаты UTF-16: ").Append(Number(span.Start)).Append('+').Append(Number(span.Length)).Append('.');
+        }
+
+        // Подсветка показывается только при точном воспроизведении. Явная оговорка нужна там,
+        // где сохранённое пояснение о ней ещё не говорит, иначе формулировка повторялась бы дважды.
+        if (evidence.Status != ReportEvidenceView.Exact &&
+            !evidence.Note.Contains("подсветка", StringComparison.OrdinalIgnoreCase))
+        {
+            html.Append(" Подсветка не выполняется: точное воспроизведение не подтверждено.");
         }
 
         html.Append("</p>\n");
@@ -596,13 +620,13 @@ public static class ReportHtmlRenderer
             {
                 html.Append("<tr><th scope=\"row\">").Append(Escape(field.Label)).Append("</th><td class=\"wrap-cell\">")
                     .Append(Escape(field.Value ?? "—")).Append("</td><td class=\"wrap-cell\">")
-                    .Append(Escape(EvidenceLabel(field.Evidence.Status)));
+                    .Append(Escape(field.Evidence.Note));
                 if (field.Evidence.Fragment is { } fieldFragment)
                 {
                     html.Append(": «").Append(Escape(fieldFragment)).Append('»');
                 }
 
-                html.Append(" <span class=\"note\">").Append(Escape(field.Evidence.Note)).Append("</span></td></tr>\n");
+                html.Append("</td></tr>\n");
             }
 
             html.Append("</tbody></table>\n</div>\n");
@@ -876,17 +900,14 @@ public static class ReportHtmlRenderer
         _ => "idle",
     };
 
-    private static string EvidenceLabel(string status) => status switch
-    {
-        ReportEvidenceView.Exact => "фрагмент воспроизведён точно",
-        ReportEvidenceView.Omitted => "решение без сохранённого фрагмента",
-        ReportEvidenceView.Absent => "координаты фрагмента отсутствуют",
-        ReportEvidenceView.NoText => "текст ревизии недоступен",
-        ReportEvidenceView.OutOfRange => "координаты вне текста",
-        ReportEvidenceView.MaskChar => "фрагмент содержит символ маски",
-        ReportEvidenceView.ValueNotInSpan => "значение не найдено во фрагменте",
-        _ => status,
-    };
+    /// <summary>
+    /// Итог этапа для карточки. У поста, исключённого модерацией, причина недопуска называется
+    /// прямо в бейдже: рядом с решением фильтра «допущен» иначе читалось бы двусмысленно.
+    /// </summary>
+    private static string StageBadge(ReportPostView post) =>
+        post.ModerationExcluded && !post.Filter.AdmittedToLlm
+            ? post.StageLabel + ": исключён модерацией"
+            : post.StageLabel;
 
     private static string Share(ReportCounter counter)
     {
