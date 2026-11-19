@@ -53,8 +53,13 @@ def owned_job(directory: Path) -> Path:
 
 
 def is_unc_path(value: str) -> bool:
-    """UNC и пространства имён Windows начинаются с двух обратных слэшей."""
-    return value.startswith("\\\\")
+    """UNC и пространства имён Windows начинаются с двух любых разделителей.
+
+    Прямые слеши приводятся к обратным без обращения к файловой системе:
+    Windows принимает `//server/share` как UNC, а параметры команды и элементы
+    PATH проверяются до нормализации через `Path`.
+    """
+    return value.replace("/", "\\").startswith("\\\\")
 
 
 def ensure_unc_authorized(value: str, allow_unc: bool) -> None:

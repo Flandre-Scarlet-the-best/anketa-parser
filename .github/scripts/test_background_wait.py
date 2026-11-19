@@ -231,32 +231,37 @@ class BackgroundWaitTests(unittest.TestCase):
         self.assertEqual(request["cwd"], "\\\\server\\share\\")
 
     def test_command_unc_path_is_rejected_before_network_access(self) -> None:
-        args = argparse.Namespace(
-            thread=self.env["CODEX_THREAD_ID"],
-            cwd=str(self.root),
-            command=[r"\\server\share\tool.exe"],
-        )
-        with (
-            mock.patch.object(
-                shutil, "which", side_effect=AssertionError("network access")
-            ),
-            self.assertRaises(ValueError),
-        ):
-            _ = background_wait.start(args)
+        for command in (r"\\server\share\tool.exe", "//server/share/tool.exe"):
+            with (
+                self.subTest(command=command),
+                mock.patch.object(
+                    shutil, "which", side_effect=AssertionError("network access")
+                ),
+                self.assertRaises(ValueError),
+            ):
+                _ = background_wait.start(
+                    argparse.Namespace(
+                        thread=self.env["CODEX_THREAD_ID"],
+                        cwd=str(self.root),
+                        command=[command],
+                    )
+                )
 
     def test_unc_path_entry_is_not_probed_without_authorization(self) -> None:
         resolve = Path.resolve
 
         def guarded(self: Path) -> Path:
-            if str(self).startswith("\\\\"):
+            if str(self).replace("/", "\\").startswith("\\\\"):
                 raise AssertionError("network access")
             return resolve(self)
 
-        with (
-            mock.patch.object(os, "get_exec_path", return_value=[r"\\server\share"]),
-            mock.patch.object(Path, "resolve", guarded),
-        ):
-            self.assertIsNone(background_wait.find_executable("tool.exe"))
+        for entry in (r"\\server\share", "//server/share"):
+            with (
+                self.subTest(entry=entry),
+                mock.patch.object(os, "get_exec_path", return_value=[entry]),
+                mock.patch.object(Path, "resolve", guarded),
+            ):
+                self.assertIsNone(background_wait.find_executable("tool.exe"))
 
     def test_explicit_unc_command_authorization_preserves_the_path(self) -> None:
         command = r"\\server\share\tool.exe"
