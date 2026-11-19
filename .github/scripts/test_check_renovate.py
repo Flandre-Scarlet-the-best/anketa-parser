@@ -672,19 +672,24 @@ class FixtureRunnerTests(RepositoryCase):
         }
         return self.write(
             "engine.py",
-            "import json, os, sys\nfrom pathlib import Path\n"
-            f"packages = {packages!r}\nfailure = {failure!r}\nmissing = {missing!r}\n"
-            "root = Path.cwd()\nname = root.name\n"
-            "assert os.environ['RENOVATE_BASE_DIR'] == str(root / '.renovate')\n"
-            "assert os.environ['RENOVATE_CACHE_DIR'] == str(root / '.renovate-cache')\n"
-            "if name == failure:\n    sys.exit(7)\n"
-            "files = []\n"
-            "for path, deps in packages[name].items():\n"
-            "    entries = [{'depName': dep, 'updates': [{'branchName': "
-            "'renovate/grouped' if name == 'grouping-control' else 'renovate/' + dep}]} "
-            "for dep in deps if dep != missing]\n"
-            "    files.append({'packageFile': path, 'deps': entries})\n"
-            "print(json.dumps({'msg': 'packageFiles with updates', 'config': {'nuget': files}}))\n",
+            "".join(
+                (
+                    "import json, os, sys\nfrom pathlib import Path\n",
+                    f"packages = {packages!r}\nfailure = {failure!r}\nmissing = {missing!r}\n",
+                    "root = Path.cwd()\nname = root.name\n",
+                    "assert os.environ['RENOVATE_BASE_DIR'] == str(root / '.renovate')\n",
+                    "assert os.environ['RENOVATE_CACHE_DIR'] == str(root / '.renovate-cache')\n",
+                    "if name == failure:\n    sys.exit(7)\n",
+                    "files = []\n",
+                    "for path, deps in packages[name].items():\n",
+                    "    entries = [{'depName': dep, 'updates': [{'branchName': ",
+                    "'renovate/grouped' if name == 'grouping-control' else 'renovate/' + dep}]} ",
+                    "for dep in deps if dep != missing]\n",
+                    "    files.append({'packageFile': path, 'deps': entries})\n",
+                    "print(json.dumps({'msg': 'packageFiles with updates', "
+                    + "'config': {'nuget': files}}))\n",
+                )
+            ),
         )
 
     def test_parallel_subprocesses_verify_all_scenarios_in_stable_order(self) -> None:
@@ -760,7 +765,7 @@ class FixtureRunnerTests(RepositoryCase):
         directories: list[Path] = []
 
         def fake_lookup(
-            node: str, script: Path, directory: Path, config_file: Path
+            _node: str, _script: Path, directory: Path, _config_file: Path
         ) -> dict[tuple[str, str], tuple[str, ...]]:
             nonlocal active, peak
             with lock:

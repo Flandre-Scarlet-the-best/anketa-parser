@@ -4,7 +4,7 @@
 import argparse
 import re
 import sys
-from collections.abc import Hashable, Sequence
+from collections.abc import Callable, Hashable, Sequence
 from pathlib import Path
 from typing import TypeGuard, cast, override
 from urllib.parse import unquote
@@ -49,10 +49,11 @@ class UniqueSafeLoader(yaml.SafeLoader):
         # отображение YAML — это пары узлов с метками разбора; уточняем один раз.
         pairs = cast(Sequence[tuple[yaml.Node, yaml.Node]], node.value)
         seen: set[Hashable] = set()
+        # Результат construct_object в stubs не аннотирован; вызываемая сторона
+        # уточняется один раз, а ключ YAML остаётся хешируемым значением.
+        construct = cast(Callable[..., object], self.construct_object)
         for key_node, _ in pairs:
-            # Результат construct_object в stubs не аннотирован: ключ YAML —
-            # хешируемое значение, а нехешируемый ключ отвергается ниже.
-            key = cast(Hashable, self.construct_object(key_node, deep=deep))
+            key = cast(Hashable, construct(key_node, deep=deep))
             mark = cast(yaml.Mark, key_node.start_mark)
             try:
                 if key in seen:
