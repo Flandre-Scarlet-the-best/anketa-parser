@@ -85,6 +85,10 @@ public static class ReportHtmlRenderer
         .buttons button:hover, .buttons button:focus-visible { border-color: var(--accent); }
         #f-count { color: var(--muted); font-size: 0.82rem; margin-left: auto; }
         #post-list { display: grid; gap: 12px; }
+        /* Переход по якорю не должен прятать заголовок под закреплённой панелью:
+           --toolbar-offset выставляет встроенный сценарий по фактической высоте панели,
+           а на узких экранах панель не закреплена и переменная равна нулю. */
+        article.post, section[id] { scroll-margin-top: calc(var(--toolbar-offset, 0px) + 8px); }
         article.post { background: var(--panel); border: 1px solid var(--line); border-left: 5px solid var(--tone, var(--idle));
           border-radius: 10px; padding: 11px; min-width: 0; }
         article.post[data-stage="profile"] { --tone: var(--pos); }
@@ -124,6 +128,16 @@ public static class ReportHtmlRenderer
           h1 { font-size: 1.2rem; }
           .when { margin-left: 0; }
           article.post { padding: 9px; }
+        }
+        @media (max-width: 640px) {
+          .toolbar { position: static; gap: 6px; padding: 8px; }
+          .toolbar .row { gap: 6px; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); }
+          .field select, .field input { padding: 5px 6px; font-size: 0.8rem; }
+          .buttons { gap: 6px; }
+          .buttons button { padding: 5px 9px; font-size: 0.78rem; }
+        }
+        @media (max-height: 480px) {
+          .toolbar { position: static; }
         }
         @media (min-width: 1400px) {
           #post-list { grid-template-columns: 1fr 1fr; align-items: start; }
@@ -235,6 +249,19 @@ public static class ReportHtmlRenderer
           if (expand) { expand.addEventListener('click', function () { toggleDetails(true); }); }
           var collapse = document.getElementById('b-collapse');
           if (collapse) { collapse.addEventListener('click', function () { toggleDetails(false); }); }
+          // Фактическая высота закреплённой панели: по ней считается отступ перехода по якорю.
+          // Если панель не закреплена (узкий экран), переменная обнуляется, чтобы не было пустоты.
+          function syncToolbarOffset() {
+            var toolbar = document.querySelector('.toolbar');
+            var offset = 0;
+            if (toolbar && window.getComputedStyle(toolbar).position === 'sticky') {
+              offset = Math.round(toolbar.getBoundingClientRect().height);
+            }
+            document.documentElement.style.setProperty('--toolbar-offset', offset + 'px');
+          }
+          window.addEventListener('resize', syncToolbarOffset);
+          window.addEventListener('orientationchange', syncToolbarOffset);
+          syncToolbarOffset();
           apply();
         }());
         """;
@@ -594,7 +621,7 @@ public static class ReportHtmlRenderer
         if (evidence.Span is { } span)
         {
             html.Append(evidence.Note.EndsWith('.') ? " " : ". ")
-                .Append("Координаты UTF-16: ").Append(Number(span.Start)).Append('+').Append(Number(span.Length)).Append('.');
+                .Append("Координаты UTF-16: ").Append(Offset(span.Start)).Append('+').Append(Offset(span.Length)).Append('.');
         }
 
         // Подсветка показывается только при точном воспроизведении. Явная оговорка нужна там,
@@ -930,6 +957,14 @@ public static class ReportHtmlRenderer
     private static string Number(long value) => value.ToString("N0", CultureInfo.InvariantCulture);
 
     private static string Number(int value) => Number((long)value);
+
+    /// <summary>
+    /// Смещение и длина в координатах UTF-16. Группировка разрядов здесь запрещена: «2128+134»
+    /// читается однозначно, а «2,128+134» похоже на два разных числа.
+    /// </summary>
+    private static string Offset(long value) => value.ToString(CultureInfo.InvariantCulture);
+
+    private static string Offset(int value) => Offset((long)value);
 
     private static string Hash(string content, string algorithm) =>
         algorithm + "-" + Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(content)));

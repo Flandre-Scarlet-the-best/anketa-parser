@@ -589,6 +589,78 @@ public sealed class ReportTests
         DumpEdgeScenario(scenario, html);
     }
 
+    [Fact]
+    public void EvidenceCoordinatesDropDigitGroupingWhileStatisticsKeepIt()
+    {
+        // Смещение и длина — это пара чисел: «2128+134» читается однозначно, «2,128+134» — нет.
+        // Текст собран из повторяющихся фраз, а не из одного символа: так он остаётся похожим
+        // на реальный и не провоцирует катастрофический откат в разборщиках содержимого.
+        var text = string.Concat(Enumerable.Repeat("Ищу знакомства. Пишите в телеграм. ", 80));
+        var revision = Revision(text: text);
+        var attempt = new ReportAttemptFacts(
+            Number: 1,
+            StartedAt: Started.AddMinutes(2),
+            FinishedAt: Started.AddMinutes(3),
+            ElapsedMilliseconds: 3_855,
+            MeasuredRequests: 1_073,
+            ReservedRequests: 1_230,
+            InputTokens: 654_002,
+            OutputTokens: 118_095,
+            CachedInputTokens: 523_892,
+            FailureCategory: null);
+        var job = new ReportJobFacts(
+            Guid.NewGuid(),
+            revision.Id,
+            DvachFilter.ProcessorVersion,
+            "profile-analysis-v1",
+            "succeeded",
+            1,
+            DvachFilter.MaxAttempts,
+            Started.AddMinutes(2),
+            null,
+            [attempt]);
+        var document = Compose(Snapshot([
+            Post("100", current: revision, jobs: [job], analyses: [Analysis(revision.Id, evidence: new TextSpan(2128, 134))]),
+        ]));
+
+        var html = ReportHtmlRenderer.Render(document);
+
+        Assert.Equal(ReportEvidenceView.Exact, Assert.Single(document.Posts).Llm.Decision.Status);
+        Assert.Contains("Координаты UTF-16: 2128+134.", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("2,128+134", html, StringComparison.Ordinal);
+        // Статистика сохраняет группировку разрядов: токены, время попытки и число запросов.
+        Assert.Contains("654,002", html, StringComparison.Ordinal);
+        Assert.Contains("3,855", html, StringComparison.Ordinal);
+        Assert.Contains("1,073", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NarrowScreensDetachToolbarAndAnchorsReserveItsHeight()
+    {
+        var document = Compose(Snapshot([Post("100", current: Revision())]));
+
+        var html = ReportHtmlRenderer.Render(document);
+        var style = Regex.Match(html, "<style>(?<body>.*?)</style>", RegexOptions.Singleline).Groups["body"].Value;
+        var script = Regex.Match(html, "<script>(?<body>.*?)</script>", RegexOptions.Singleline).Groups["body"].Value;
+
+        // На узких экранах панель не закреплена и её отступы уменьшены.
+        Assert.Contains("@media (max-width: 640px)", style, StringComparison.Ordinal);
+        Assert.Matches("@media \\(max-width: 640px\\) \\{[^}]*\\.toolbar \\{ position: static;", style);
+        Assert.Contains("@media (max-height: 480px)", style, StringComparison.Ordinal);
+
+        // Переход по якорю учитывает фактическую высоту панели и не создаёт пустоту без sticky.
+        Assert.Contains(
+            "article.post, section[id] { scroll-margin-top: calc(var(--toolbar-offset, 0px) + 8px); }",
+            style,
+            StringComparison.Ordinal);
+        Assert.Contains("--toolbar-offset", script, StringComparison.Ordinal);
+        Assert.Contains("getComputedStyle(toolbar).position === 'sticky'", script, StringComparison.Ordinal);
+        Assert.Contains("window.addEventListener('resize', syncToolbarOffset)", script, StringComparison.Ordinal);
+        // Рендерер считает хеши сам: в разметке стоят хеши ровно этого сценария и этих стилей.
+        Assert.Contains("script-src '" + Hash(script) + "'", html, StringComparison.Ordinal);
+        Assert.Contains("style-src '" + Hash(style) + "'", html, StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// Снимок нельзя доказать — отчёт не строится. Проверяются расхождение
     /// <c>Received</c>/<c>Applied</c>, незакрытый журнал, отсутствие границ окна,
