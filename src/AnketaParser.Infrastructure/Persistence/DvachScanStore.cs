@@ -128,7 +128,7 @@ internal sealed class DvachScanStore(ProductDbContext db)
                                 rev.IngestionReply, db.Set<PostRevision>().Count(r => r.PostId == post.Id),
                                 rev.IngestionContacts, rev.IngestionAmbiguous,
                                 db.Set<ProcessingJob>().Where(j => j.RevisionId == rev.Id && j.ProcessorVersion == DvachFilter.ProcessorVersion)
-                                    .Select(j => j.State).FirstOrDefault())).SingleOrDefaultAsync(ct).ConfigureAwait(false);
+                                    .Select(j => j.State).FirstOrDefault(), rev.Id)).SingleOrDefaultAsync(ct).ConfigureAwait(false);
         return report ?? new DvachPostReport("post_not_found");
     }
 

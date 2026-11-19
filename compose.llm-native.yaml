@@ -1,0 +1,10 @@
+# Дополнение для нативного профиля. В TOML используйте путь /models/model.gguf.
+services:
+  llm-worker:
+    volumes:
+      - type: bind
+        source: ${ANKETAPARSER_LLM_GGUF:-./models/model.gguf}
+        target: /models/model.gguf
+        read_only: true
+        bind:
+          create_host_path: false

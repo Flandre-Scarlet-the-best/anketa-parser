@@ -2,10 +2,9 @@
 
 [Context index](INDEX.md) · [Human architecture guide](../../docs/architecture.md)
 
-The application uses one long-running host and one database. Its owners cover
-diagnostics, product persistence and maintenance, and ingestion of a configured
-Dvach thread. Telegram clients, LLM integrations and an HTTP API are outside
-this topology.
+The long-running Host and optional text analysis Worker use one PostgreSQL
+database. The Host ingests a configured Dvach thread and keeps readiness
+independent of model execution.
 
 | Area | Owner and entry points | Tests / explanation |
 | --- | --- | --- |
@@ -14,6 +13,7 @@ this topology.
 | Dvach source and filtering | [Source adapter](../../src/AnketaParser.Infrastructure/Sources/), [polling service](../../src/AnketaParser.Host/DvachPollingService.cs) | [Offline source tests](../../tests/AnketaParser.Tests/DvachTests.cs), [source guide](../../docs/dvach.md) |
 | Host composition and lifetime | [Program](../../src/AnketaParser.Host/Program.cs), [HostApplication](../../src/AnketaParser.Host/HostApplication.cs), startup and monitor services | [Host tests](../../tests/AnketaParser.Tests/HostApplicationTests.cs) |
 | CLI composition and presentation | [Program](../../src/AnketaParser.Cli/Program.cs), [CliApplication](../../src/AnketaParser.Cli/CliApplication.cs) | [CLI tests](../../tests/AnketaParser.Tests/CliApplicationTests.cs) |
+| LLM classification and extraction | [LLM implementation](../../src/AnketaParser.Infrastructure/Llm/), [worker entry](../../src/AnketaParser.Cli/LlmCommands.cs) | [LLM guide](../../docs/llm.md), [labeled corpus](../../tests/fixtures/llm/README.md) |
 | Container runtime | [Dockerfile](../../Dockerfile), [Compose](../../compose.yaml), [debug override](../../compose.debug.yaml) | [Docker smoke](../../tests/AnketaParser.DockerTests/ComposeStackSmokeTests.cs), [operations](../../docs/operations.md) |
 | Build and dependency policy | [Solution](../../anketa-parser.slnx), [SDK](../../global.json), [build props](../../Directory.Build.props), [package props](../../Directory.Packages.props), project lockfiles | [Development](../../docs/development.md) |
 | Automation | [CI](../../.github/workflows/ci.yml), [Python scripts](../../.github/scripts/), [type-check scope](../../.github/pyrightconfig.json), [Ruff](../../ruff.toml) | [Verification map](03-VERIFICATION.md) |

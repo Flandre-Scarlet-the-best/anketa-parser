@@ -57,6 +57,19 @@ HEALTHCHECK --interval=30s --timeout=15s --start-period=20s --retries=3 \
 USER $APP_UID
 ENTRYPOINT ["dotnet", "/app/host/AnketaParser.Host.dll"]
 
+FROM runtime AS llm-worker
+USER root
+# CPU-бэкенд llama.cpp в NuGet использует OpenMP. Пакет берётся из репозитория базового образа.
+# hadolint ignore=DL3008
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+HEALTHCHECK NONE
+# hadolint ignore=DL3066
+USER $APP_UID
+ENTRYPOINT ["dotnet", "/app/cli/AnketaParser.Cli.dll", "llm"]
+CMD ["worker"]
+
 # Официальный PostgreSQL содержит gosu со старым Go. Собираем закреплённый исходник
 # исправленным компилятором; пересмотреть после обновления gosu в базовом образе.
 FROM golang:1.27.4-alpine3.24@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS gosu-build

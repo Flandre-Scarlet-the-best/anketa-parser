@@ -51,9 +51,18 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
                     b.Property<string>("Location")
                         .HasColumnType("text");
 
+                    b.Property<string>("Model")
+                        .HasColumnType("text");
+
                     b.Property<string>("Observations")
                         .IsRequired()
                         .HasColumnType("jsonb");
+
+                    b.Property<string>("PipelineVersion")
+                        .HasColumnType("text");
+
+                    b.Property<Guid?>("ProcessingJobId")
+                        .HasColumnType("uuid");
 
                     b.Property<string>("Processor")
                         .IsRequired()
@@ -66,13 +75,29 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("SemanticClass")
+                        .HasColumnType("text");
+
+                    b.Property<string>("SemanticReason")
+                        .HasColumnType("text");
+
                     b.HasKey("Id");
 
+                    b.HasIndex("ProcessingJobId")
+                        .IsUnique()
+                        .HasFilter("\"ProcessingJobId\" IS NOT NULL");
+
                     b.HasIndex("RevisionId");
+
+                    b.HasIndex("RevisionId", "PipelineVersion")
+                        .IsUnique()
+                        .HasFilter("\"PipelineVersion\" IS NOT NULL");
 
                     b.ToTable("Analysis", "product", t =>
                         {
                             t.HasCheckConstraint("age_valid", "\"Age\" IS NULL OR \"Age\" BETWEEN 0 AND 130");
+
+                            t.HasCheckConstraint("llm_decision_valid", "(\"ProcessingJobId\" IS NULL AND \"PipelineVersion\" IS NULL AND \"SemanticClass\" IS NULL AND \"SemanticReason\" IS NULL AND \"Model\" IS NULL)\nOR (\"ProcessingJobId\" IS NOT NULL AND \"PipelineVersion\" IS NOT NULL AND \"SemanticClass\" IS NOT NULL\nAND \"SemanticClass\" IN ('profile','not_profile','uncertain') AND \"SemanticReason\" IS NOT NULL AND \"Model\" IS NOT NULL)");
                         });
                 });
 
@@ -268,16 +293,37 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("BudgetKey")
+                        .HasColumnType("text");
+
+                    b.Property<long?>("CachedInputTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("ElapsedMilliseconds")
+                        .HasColumnType("bigint");
+
                     b.Property<string>("FailureCategory")
                         .HasColumnType("text");
 
                     b.Property<DateTimeOffset?>("FinishedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<long?>("InputTokens")
+                        .HasColumnType("bigint");
+
                     b.Property<Guid>("JobId")
                         .HasColumnType("uuid");
 
+                    b.Property<int>("MeasuredRequests")
+                        .HasColumnType("integer");
+
                     b.Property<int>("Number")
+                        .HasColumnType("integer");
+
+                    b.Property<long?>("OutputTokens")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("ReservedRequests")
                         .HasColumnType("integer");
 
                     b.Property<DateTimeOffset>("StartedAt")
@@ -290,6 +336,9 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("Token")
                         .IsUnique();
+
+                    b.HasIndex("BudgetKey", "StartedAt")
+                        .HasFilter("\"BudgetKey\" IS NOT NULL");
 
                     b.HasIndex("JobId", "Number")
                         .IsUnique();
@@ -440,6 +489,9 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset?>("LeaseUntil")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("LlmVersion")
+                        .HasColumnType("text");
+
                     b.Property<int>("MaxAttempts")
                         .HasColumnType("integer");
 
@@ -456,8 +508,14 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("RevisionId", "LlmVersion")
+                        .IsUnique()
+                        .HasFilter("\"LlmVersion\" IS NOT NULL");
+
                     b.HasIndex("RevisionId", "ProcessorVersion")
                         .IsUnique();
+
+                    b.HasIndex("LlmVersion", "State", "LeaseUntil");
 
                     b.HasIndex("State", "AvailableAt", "LeaseUntil");
 
@@ -680,6 +738,11 @@ namespace AnketaParser.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("AnketaParser.Infrastructure.Persistence.Analysis", b =>
                 {
+                    b.HasOne("AnketaParser.Infrastructure.Persistence.ProcessingJob", null)
+                        .WithMany()
+                        .HasForeignKey("ProcessingJobId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("AnketaParser.Infrastructure.Persistence.PostRevision", null)
                         .WithMany()
                         .HasForeignKey("RevisionId")

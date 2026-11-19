@@ -482,6 +482,8 @@ $RECYCLE.BIN/
 *.swp
 
 # anketa-parser local state
+llm.toml
+*.gguf
 .env
 .env.*
 !.env.example

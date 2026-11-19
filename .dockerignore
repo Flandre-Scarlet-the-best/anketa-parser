@@ -9,6 +9,8 @@ tests/
 **/.env
 **/.env.*
 **/appsettings.Local.json
+**/llm.toml
+**/*.gguf
 *.user
 *.log
 README.md

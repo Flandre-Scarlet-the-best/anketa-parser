@@ -21,7 +21,7 @@ public sealed class BuildContextTests
             foreach (var directory in new[] { "", "src/AnketaParser.Host", "src/deep/nested" })
             {
                 var target = Directory.CreateDirectory(Path.Combine(context.FullName, directory));
-                foreach (var name in new[] { ".env", ".env.private", "appsettings.Local.json" })
+                foreach (var name in new[] { ".env", ".env.private", "appsettings.Local.json", "llm.toml", "model.gguf" })
                 {
                     File.WriteAllText(Path.Combine(target.FullName, name), "synthetic-secret-sentinel");
                 }

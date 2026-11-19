@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 
 using AnketaParser.Core.Persistence;
+using AnketaParser.Infrastructure.Llm;
 using AnketaParser.Infrastructure.Sources;
 
 using Microsoft.EntityFrameworkCore;
@@ -10,7 +11,7 @@ using Microsoft.EntityFrameworkCore;
 namespace AnketaParser.Infrastructure.Persistence;
 
 /// <summary>Один экземпляр на операционную область. Транзакционные блокировки сериализуют изменения одной идентичности.</summary>
-public sealed class ProductStore(ProductDbContext db) : IProductStore
+public sealed partial class ProductStore(ProductDbContext db) : IProductStore
 {
     private static DateTimeOffset Now => DateTimeOffset.UtcNow;
 
@@ -288,6 +289,7 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
          join post in db.Set<OriginalPost>() on profile.PostId equals post.Id
          join analysis in db.Set<Analysis>() on profile.AnalysisId equals analysis.Id
          where link.AnonId == anonId && link.UnlinkedAt == null && profile.State == ProfileState.Published && !post.Excluded
+            && (analysis.PipelineVersion == null || post.IngestedRevisionId == analysis.RevisionId)
          orderby profile.CreatedAt descending, profile.Id descending
          select new PublicProfile(profile.Id, analysis.Age, analysis.Location, analysis.GenderDescription, analysis.Interests, analysis.Goals))
         .FirstOrDefaultAsync(cancellationToken);
@@ -392,7 +394,10 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         return ids.Count == 1 ? ids[0] : throw new InvalidOperationException("Ревизия недоступна для постановки в очередь.");
     }
 
-    public async Task<JobLease?> ClaimAsync(TimeSpan lease, CancellationToken cancellationToken)
+    public Task<JobLease?> ClaimAsync(TimeSpan lease, CancellationToken cancellationToken) =>
+        ClaimAsync(lease, null, null, cancellationToken);
+
+    internal async Task<JobLease?> ClaimAsync(TimeSpan lease, LlmSettings? llm, Guid? revisionId, CancellationToken cancellationToken)
     {
         if (lease <= TimeSpan.Zero || lease > TimeSpan.FromDays(1)) throw new ArgumentOutOfRangeException(nameof(lease));
         // Закрываем просроченные попытки вместе со снятием аренды. При возврате
@@ -419,6 +424,19 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
             await expiration.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        if (llm is not null && !await CanClaimLlmAsync(llm, cancellationToken).ConfigureAwait(false))
+            return null;
+        // Типизированные параметры с флагами сохраняют SQL-параметры даже при отсутствии фильтра.
+        var version = llm?.PipelineVersion ?? string.Empty;
+        var filterRevision = revisionId.GetValueOrDefault();
+        const string queueFilter = """
+            (({2}='' AND job."LlmVersion" IS NULL) OR
+             ({2}<>'' AND post."IngestedRevisionId"=revision."Id" AND
+              (job."LlmVersion"={2} OR (job."LlmVersion" IS NULL AND job."ProcessorVersion"={3} AND NOT EXISTS (
+                SELECT 1 FROM product."ProcessingJob" AS bound WHERE bound."RevisionId"=job."RevisionId" AND bound."LlmVersion"={2})))))
+            AND ({4}=false OR revision."Id"={5})
+            """;
+        var selectLimit = llm is null ? int.MaxValue : 64;
         var jobs = await db.Database.SqlQueryRaw<Guid>("""
             SELECT job."Id" AS "Value"
             FROM product."ProcessingJob" AS job
@@ -427,10 +445,12 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
             WHERE job."State"='pending'
             AND job."Attempts"<job."MaxAttempts" AND job."AvailableAt"<={1}
             AND
-            """ + " " + EligibleRevisionSql + " " + """
+            """ + " " + EligibleRevisionSql + " AND " + queueFilter + " " + """
 
             ORDER BY job."AvailableAt", job."Id"
-            """, DvachFilter.Candidate, Now).ToListAsync(cancellationToken).ConfigureAwait(false);
+            LIMIT {6}
+            """, DvachFilter.Candidate, Now,
+            version, DvachFilter.ProcessorVersion, revisionId.HasValue, filterRevision, selectLimit).ToListAsync(cancellationToken).ConfigureAwait(false);
         // Блокировка берётся по одному кандидату и в порядке «пост, затем задание»:
         // остальные готовые задания остаются доступными другим захватам.
         ProcessingJob? job = null;
@@ -452,13 +472,14 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
                 SELECT job.* FROM product."ProcessingJob" AS job
                 JOIN product."PostRevision" AS revision ON revision."Id"=job."RevisionId"
                 JOIN product."OriginalPost" AS post ON post."Id"=revision."PostId"
-                WHERE job."Id"={1} AND job."State"='pending'
-                AND job."Attempts"<job."MaxAttempts" AND job."AvailableAt"<={2}
+                WHERE job."Id"={6} AND job."State"='pending'
+                AND job."Attempts"<job."MaxAttempts" AND job."AvailableAt"<={1}
                 AND
-                """ + " " + EligibleRevisionSql + " " + """
+                """ + " " + EligibleRevisionSql + " AND " + queueFilter + " " + """
 
                 FOR UPDATE OF job SKIP LOCKED
-                """, DvachFilter.Candidate, candidate, Now).ToListAsync(cancellationToken).ConfigureAwait(false);
+                """, DvachFilter.Candidate, Now, version, DvachFilter.ProcessorVersion,
+                revisionId.HasValue, filterRevision, candidate).ToListAsync(cancellationToken).ConfigureAwait(false);
             if (locked.Count == 0)
                 continue;
             job = locked[0];
@@ -467,7 +488,14 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         if (job is null) { await transaction.CommitAsync(cancellationToken).ConfigureAwait(false); return null; }
         await db.Entry(job).ReloadAsync(cancellationToken).ConfigureAwait(false);
         job.Attempts++; job.State = "running"; job.LeaseToken = Guid.NewGuid(); job.LeaseUntil = Now + lease;
-        db.Add(new JobAttempt { JobId = job.Id, Number = job.Attempts, Token = job.LeaseToken.Value, StartedAt = Now });
+        job.LlmVersion ??= llm?.PipelineVersion;
+        var attempt = new JobAttempt { JobId = job.Id, Number = job.Attempts, Token = job.LeaseToken.Value, StartedAt = Now };
+        if (llm?.Endpoint is not null)
+        {
+            attempt.BudgetKey = llm.BudgetKey;
+            attempt.ReservedRequests = LlmAnalysisWorker.MaxRequestsPerAttempt;
+        }
+        db.Add(attempt);
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new JobLease(job.Id, job.LeaseToken.Value, job.RevisionId, job.Attempts, job.LeaseUntil.Value);
@@ -481,6 +509,7 @@ public sealed class ProductStore(ProductDbContext db) : IProductStore
         var jobs = await db.Set<ProcessingJob>().FromSqlInterpolated($"""SELECT * FROM product."ProcessingJob" WHERE "Id"={lease.JobId} FOR UPDATE""").ToListAsync(cancellationToken).ConfigureAwait(false);
         var job = jobs.Single();
         await db.Entry(job).ReloadAsync(cancellationToken).ConfigureAwait(false);
+        if (job.LlmVersion is not null) throw new InvalidOperationException("Модельное задание завершается вместе с результатом анализа.");
         if (job.LeaseToken != lease.Token || job.LeaseUntil <= Now || job.State != "running") throw new InvalidOperationException("Захват задания истёк или заменён.");
         job.State = failureCategory is null ? "succeeded" : job.Attempts < job.MaxAttempts ? "pending" : "failed";
         job.FailureCategory = failureCategory; job.LeaseUntil = null; job.LeaseToken = null;

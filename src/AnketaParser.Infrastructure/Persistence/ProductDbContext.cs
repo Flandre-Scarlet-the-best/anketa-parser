@@ -48,9 +48,15 @@ public sealed class ProductDbContext(DbContextOptions<ProductDbContext> options)
         modelBuilder.Entity<ContactVerification>().HasIndex(x => new { x.ContactId, x.AccountId, x.VerifiedAt });
         modelBuilder.Entity<BlacklistEntry>().HasIndex(x => new { x.OwnerId, x.AnonId }).IsUnique();
         modelBuilder.Entity<ProcessingJob>().HasIndex(x => new { x.RevisionId, x.ProcessorVersion }).IsUnique();
+        modelBuilder.Entity<ProcessingJob>().HasIndex(x => new { x.RevisionId, x.LlmVersion }).IsUnique().HasFilter("\"LlmVersion\" IS NOT NULL");
+        modelBuilder.Entity<ProcessingJob>().HasIndex(x => new { x.LlmVersion, x.State, x.LeaseUntil });
         modelBuilder.Entity<ProcessingJob>().HasIndex(x => new { x.State, x.AvailableAt, x.LeaseUntil });
         modelBuilder.Entity<JobAttempt>().HasIndex(x => new { x.JobId, x.Number }).IsUnique();
         modelBuilder.Entity<JobAttempt>().HasIndex(x => x.Token).IsUnique();
+        modelBuilder.Entity<JobAttempt>().HasIndex(x => new { x.BudgetKey, x.StartedAt }).HasFilter("\"BudgetKey\" IS NOT NULL");
+        modelBuilder.Entity<Analysis>().HasIndex(x => x.ProcessingJobId).IsUnique().HasFilter("\"ProcessingJobId\" IS NOT NULL");
+        modelBuilder.Entity<Analysis>().HasIndex(x => x.RevisionId);
+        modelBuilder.Entity<Analysis>().HasIndex(x => new { x.RevisionId, x.PipelineVersion }).IsUnique().HasFilter("\"PipelineVersion\" IS NOT NULL");
         modelBuilder.Entity<Profile>().HasIndex(x => new { x.PostId, x.State, x.CreatedAt });
         modelBuilder.Entity<ProfileLink>().HasIndex(x => new { x.AnonId, x.UnlinkedAt });
         modelBuilder.Entity<ContactObservation>().HasIndex(x => new { x.ContactId, x.RevisionId });
@@ -59,6 +65,7 @@ public sealed class ProductDbContext(DbContextOptions<ProductDbContext> options)
         Foreign<OriginalPost, PostRevision>(modelBuilder, "IngestedRevisionId");
         Foreign<PostRevision, OriginalPost>(modelBuilder, "PostId");
         Foreign<Analysis, PostRevision>(modelBuilder, "RevisionId");
+        Foreign<Analysis, ProcessingJob>(modelBuilder, "ProcessingJobId");
         Foreign<Profile, Analysis>(modelBuilder, "AnalysisId");
         Foreign<Profile, OriginalPost>(modelBuilder, "PostId");
         Foreign<ContactObservation, Contact>(modelBuilder, "ContactId");
@@ -84,7 +91,15 @@ public sealed class ProductDbContext(DbContextOptions<ProductDbContext> options)
         modelBuilder.Entity<PostRevision>().Property(x => x.RetrievalMetadata).HasColumnType("jsonb");
         modelBuilder.Entity<BotUser>().Property(x => x.Settings).HasColumnType("jsonb");
         modelBuilder.Entity<ContactObservation>().Property(x => x.Confidence).HasPrecision(4, 3);
-        modelBuilder.Entity<Analysis>().ToTable(t => t.HasCheckConstraint("age_valid", "\"Age\" IS NULL OR \"Age\" BETWEEN 0 AND 130"));
+        modelBuilder.Entity<Analysis>().ToTable(t =>
+        {
+            t.HasCheckConstraint("age_valid", "\"Age\" IS NULL OR \"Age\" BETWEEN 0 AND 130");
+            t.HasCheckConstraint("llm_decision_valid", """
+                ("ProcessingJobId" IS NULL AND "PipelineVersion" IS NULL AND "SemanticClass" IS NULL AND "SemanticReason" IS NULL AND "Model" IS NULL)
+                OR ("ProcessingJobId" IS NOT NULL AND "PipelineVersion" IS NOT NULL AND "SemanticClass" IS NOT NULL
+                AND "SemanticClass" IN ('profile','not_profile','uncertain') AND "SemanticReason" IS NOT NULL AND "Model" IS NOT NULL)
+                """);
+        });
         modelBuilder.Entity<ContactObservation>().ToTable(t => t.HasCheckConstraint("confidence_valid", "\"Confidence\" BETWEEN 0 AND 1"));
         modelBuilder.Entity<Profile>().ToTable(t => t.HasCheckConstraint("profile_state_valid", "\"State\" BETWEEN 0 AND 4"));
         modelBuilder.Entity<ProfileLink>().ToTable(t => t.HasCheckConstraint("link_confidence_valid", "\"Confidence\" BETWEEN 0 AND 1"));
