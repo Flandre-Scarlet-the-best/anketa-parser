@@ -407,7 +407,7 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(notes[0], "покрытие подтверждено для 0 изменений")
         self.assertIn(
             "экосистема NuGet не подтверждается графом PR: граф не публикует "
-            "разрешённые версии из packages.lock.json и Directory.Packages.props (2)",
+            + "разрешённые версии из packages.lock.json и Directory.Packages.props (2)",
             notes[1],
         )
         # Совместно с подтверждённой экосистемой неподтверждённые не скрывают её.
@@ -637,8 +637,8 @@ class NugetAuditTests(RepositoryCase):
         self.write(
             NUGET_AUDIT_WORKFLOW.as_posix(),
             "on:\n  pull_request:\nsteps:\n"
-            "  - run: python .github/scripts/check_nuget_audit.py\n"
-            "  - run: python .github/scripts/check_osv.py\n",
+            + "  - run: python .github/scripts/check_nuget_audit.py\n"
+            + "  - run: python .github/scripts/check_osv.py\n",
         )
         head = self.commit("аудит зависимостей")
         changes_file = self.root / "changes.json"
@@ -684,9 +684,9 @@ class NugetAuditTests(RepositoryCase):
         self.write(
             NUGET_AUDIT_WORKFLOW.as_posix(),
             "on:\n  push:\n    branches: [main]\n"
-            "steps:\n"
-            "  - run: python .github/scripts/check_nuget_audit.py --root .\n"
-            "  - run: python .github/scripts/check_osv.py --root .\n",
+            + "steps:\n"
+            + "  - run: python .github/scripts/check_nuget_audit.py --root .\n"
+            + "  - run: python .github/scripts/check_osv.py --root .\n",
         )
         with self.assertRaisesRegex(CoverageError, "не запускается на pull_request"):
             _ = nuget_audit_proof(self.root)
@@ -695,7 +695,7 @@ class NugetAuditTests(RepositoryCase):
         self.write(
             NUGET_AUDIT_WORKFLOW.as_posix(),
             "on:\n  pull_request:\n"
-            "steps:\n  - run: python .github/scripts/check_osv.py --root .\n",
+            + "steps:\n  - run: python .github/scripts/check_osv.py --root .\n",
         )
         with self.assertRaisesRegex(CoverageError, "check_nuget_audit.py"):
             _ = nuget_audit_proof(self.root)
@@ -704,12 +704,12 @@ class NugetAuditTests(RepositoryCase):
         self.write(
             NUGET_AUDIT_WORKFLOW.as_posix(),
             "on:\n  pull_request:\n"
-            "steps:\n"
-            "  - run: python .github/scripts/check_nuget_audit.py --root .\n"
-            "  - run: python .github/scripts/check_osv.py --root .\n",
+            + "steps:\n"
+            + "  - run: python .github/scripts/check_nuget_audit.py --root .\n"
+            + "  - run: python .github/scripts/check_osv.py --root .\n",
         )
         self.assertEqual(
             nuget_audit_proof(self.root),
             "точные версии NuGet проверяет задание аудита зависимостей "
-            "на pull_request: check_nuget_audit.py, check_osv.py",
+            + "на pull_request: check_nuget_audit.py, check_osv.py",
         )

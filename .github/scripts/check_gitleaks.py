@@ -15,7 +15,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import TypeGuard, cast
 
 # Пользовательский код находки отделяет найденные секреты от ошибок инструмента.
 LEAK_EXIT_CODE = 10
@@ -96,11 +96,16 @@ def payload_from(path: Path) -> dict[str, object]:
     return cast(dict[str, object], data)
 
 
+def is_mapping(value: object) -> TypeGuard[dict[str, object]]:
+    """Отображение строк в значения события либо иное значение."""
+    return isinstance(value, dict)
+
+
 def nested(payload: dict[str, object], *keys: str) -> object:
     """Значение вложенного поля события либо None."""
     current: object = payload
     for key in keys:
-        if not isinstance(current, dict):
+        if not is_mapping(current):
             return None
         current = current.get(key)
     return current
@@ -247,7 +252,7 @@ def dedupe(findings: list[dict[str, str]]) -> list[dict[str, str]]:
         key = finding.get("Fingerprint") or "|".join(
             finding.get(name, "") for name in SAFE_FIELDS
         )
-        unique.setdefault(key, finding)
+        _ = unique.setdefault(key, finding)
     return list(unique.values())
 
 

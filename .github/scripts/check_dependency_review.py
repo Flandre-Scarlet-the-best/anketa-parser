@@ -46,8 +46,8 @@ IMPRECISE = re.compile(r"^[<>=~^*\[(]")
 # суффиксы предварительной версии и метаданных сборки без пустых компонентов.
 NUGET_VERSION = re.compile(
     r"^\d+(?:\.\d+){1,3}"
-    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
-    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+    + r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    + r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 MAX_DIAGNOSTIC = 2000
 NUGET = "NuGet"
@@ -397,10 +397,8 @@ def verify(expected: list[Change], reported_changes: list[Change]) -> list[str]:
             change.describe() for change in unconfirmed if change.ecosystem == ecosystem
         ]
         reason = UNCONFIRMED_REASONS.get(ecosystem.lower(), "граф не публикует версию")
-        notes.append(
-            f"экосистема {ecosystem} не подтверждается графом PR: {reason} "
-            f"({len(entries)}): " + "; ".join(entries[:50])
-        )
+        prefix = f"экосистема {ecosystem} не подтверждается графом PR: {reason}"
+        notes.append(f"{prefix} ({len(entries)}): " + "; ".join(entries[:50]))
     return notes
 
 

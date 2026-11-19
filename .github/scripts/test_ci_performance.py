@@ -170,10 +170,13 @@ class RenovateProofTests(unittest.TestCase):
             root = Path(directory)
             docker = root / "docker"
             _ = docker.write_text(
-                "#!/usr/bin/env python\nimport os, sys\n"
-                "command = ' '.join(sys.argv)\n"
-                "if '--version' in command:\n    print('44.251.0')\n"
-                "sys.exit(7 if os.environ['CURRENT_STAGE'] == os.environ.get('FAIL_STAGE') else 0)\n",
+                """#!/usr/bin/env python
+import os, sys
+command = ' '.join(sys.argv)
+if '--version' in command:
+    print('44.251.0')
+sys.exit(7 if os.environ['CURRENT_STAGE'] == os.environ.get('FAIL_STAGE') else 0)
+""",
                 encoding="utf-8",
             )
             docker.chmod(0o755)
@@ -264,7 +267,7 @@ class RenovateProofTests(unittest.TestCase):
                         "ruff==0.1.0\n", encoding="utf-8"
                     )
                 elif operation == "rename":
-                    (root / "requirements-new.txt").rename(
+                    _ = (root / "requirements-new.txt").rename(
                         root / "requirements-other.txt"
                     )
                 elif operation == "delete":
@@ -402,8 +405,8 @@ class PythonAnalysisTests(unittest.TestCase):
             }
             _ = checker.write_text(
                 "#!/usr/bin/env python\nimport json, os, sys\n"
-                f"print(json.dumps({report!r}))\n"
-                "sys.exit(int(os.environ['CHECKER_EXIT']))\n",
+                + f"print(json.dumps({report!r}))\n"
+                + "sys.exit(int(os.environ['CHECKER_EXIT']))\n",
                 encoding="utf-8",
             )
             checker.chmod(0o755)
