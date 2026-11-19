@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 from typing import BinaryIO, cast
 
@@ -29,11 +29,14 @@ PROBE_TIMEOUT_SECONDS = 30
 # Подтверждение разрешённой очистки: переживает прерывание удаления.
 CLEANUP_MARKER = "cleanup.json"
 
+# Фоновое ожидание опирается на Windows: msvcrt, junction и скрытые процессы.
+SUPPORTED_PLATFORMS = frozenset({"win32"})
+
 
 def write_json(path: Path, data: dict[str, object]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     try:
-        temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        _ = temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         os.replace(temporary, path)
     except OSError:
         # Оставшийся временный файл считается неизвестным, и cleanup отклоняет
@@ -44,7 +47,7 @@ def write_json(path: Path, data: dict[str, object]) -> None:
 
 
 def read_json(path: Path) -> dict[str, object]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return cast(dict[str, object], json.loads(path.read_text(encoding="utf-8")))
 
 
 def print_json(data: dict[str, object]) -> None:
@@ -172,19 +175,19 @@ def copy_bounded(
 
 
 @contextlib.contextmanager
-def notification_lock(directory: Path) -> Iterator[None]:
+def notification_lock(directory: Path) -> Generator[None]:
     import msvcrt
 
     path = directory / "notification.lock"
     if path.is_symlink() or path.is_junction():
         raise ValueError("Файл блокировки не должен быть ссылкой")
     with path.open("a+b") as lock:
-        lock.seek(0)
+        _ = lock.seek(0)
         msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
         try:
             yield
         finally:
-            lock.seek(0)
+            _ = lock.seek(0)
             msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
 
@@ -236,15 +239,20 @@ def queue_resume_supported(codex: str, cwd: Path) -> bool:
 
 
 def start(args: argparse.Namespace) -> int:
-    if os.name != "nt":
+    if sys.platform not in SUPPORTED_PLATFORMS:
         raise ValueError("Фоновый запуск поддерживается только в Windows")
-    thread = str(uuid.UUID(args.thread or os.environ.get("CODEX_THREAD_ID", "")))
+    thread = str(
+        uuid.UUID(
+            cast(str | None, getattr(args, "thread", None))
+            or os.environ.get("CODEX_THREAD_ID", "")
+        )
+    )
     allow_unc = bool(getattr(args, "allow_unc", False))
-    cwd = Path(args.cwd)
+    cwd = Path(cast(str, args.cwd))
     ensure_unc_authorized(str(cwd), allow_unc)
     if not cwd.is_absolute() or not cwd.is_dir():
         raise ValueError("Рабочий каталог должен быть существующим абсолютным путём")
-    command = args.command
+    command = [str(part) for part in cast("list[object]", args.command)]
     if command and command[0] == "--":
         command = command[1:]
     if not command:
@@ -282,7 +290,7 @@ def start(args: argparse.Namespace) -> int:
         | subprocess.CREATE_NO_WINDOW
     )
     try:
-        subprocess.Popen(  # noqa: S603 - запуск собственного процесса-наблюдателя
+        _ = subprocess.Popen(  # noqa: S603 - запуск собственного процесса-наблюдателя
             [sys.executable, str(Path(__file__).resolve()), "worker", str(directory)],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -517,21 +525,23 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="action", required=True)
     start_parser = subparsers.add_parser("start")
-    start_parser.add_argument("--cwd", required=True)
-    start_parser.add_argument("--thread")
-    start_parser.add_argument("--allow-unc", action="store_true")
-    start_parser.add_argument("command", nargs=argparse.REMAINDER)
+    _ = start_parser.add_argument("--cwd", required=True)
+    _ = start_parser.add_argument("--thread")
+    _ = start_parser.add_argument("--allow-unc", action="store_true")
+    _ = start_parser.add_argument("command", nargs=argparse.REMAINDER)
     for name in ("worker", "cancel", "cleanup"):
-        subparsers.add_parser(name).add_argument("directory", type=Path)
+        _ = subparsers.add_parser(name).add_argument("directory", type=Path)
     args = parser.parse_args()
+    action = cast(str, args.action)
+    directory = cast(Path, getattr(args, "directory", None))
     try:
-        if args.action == "start":
+        if action == "start":
             return start(args)
-        if args.action == "worker":
-            return worker(args.directory)
-        if args.action == "cleanup":
-            return cleanup(args.directory)
-        return cancel(args.directory)
+        if action == "worker":
+            return worker(directory)
+        if action == "cleanup":
+            return cleanup(directory)
+        return cancel(directory)
     except (OSError, ValueError) as error:
         print(f"Ошибка: {error}", file=sys.stderr)
         return 1
