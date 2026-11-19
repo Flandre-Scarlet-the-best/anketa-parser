@@ -20,6 +20,9 @@ from typing import BinaryIO, cast
 # Ограничение для каждого потока не мешает дочернему процессу писать дальше.
 MAX_LOG_BYTES = 16 * 1024 * 1024
 
+# Ожидание очереди ограничено: уведомление не должно удерживать блокировку задания.
+QUEUE_TIMEOUT_SECONDS = 60
+
 
 def write_json(path: Path, data: dict[str, object]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -36,6 +39,16 @@ def write_json(path: Path, data: dict[str, object]) -> None:
 
 def read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def print_json(data: dict[str, object]) -> None:
+    """Вывести машиночитаемый ответ независимо от кодировки stdout.
+
+    Экранирование не-ASCII сохраняет путь задания при перенаправлении вывода
+    в кодировку, которая не содержит нужных символов; `json.loads` восстановит
+    исходное значение.
+    """
+    print(json.dumps(data))
 
 
 def job_root() -> Path:
@@ -169,6 +182,29 @@ def notification_lock(directory: Path) -> Iterator[None]:
             msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
 
+def queue_resume_supported(codex: str, cwd: Path) -> bool:
+    """Проверить, принимает ли выбранный Codex CLI возобновление очереди.
+
+    Справка выполняется в каталоге помощника: shim codex.cmd разрешает node по
+    имени, а cmd.exe начинает поиск с текущего каталога.
+    """
+    try:
+        probe = subprocess.run(  # noqa: S603 - фиксированные аргументы справки
+            [codex, "queue", "--help"],
+            check=False,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except OSError, subprocess.TimeoutExpired:
+        return False
+    return probe.returncode == 0 and "--resume" in probe.stdout
+
+
 def start(args: argparse.Namespace) -> int:
     if os.name != "nt":
         raise ValueError("Фоновый запуск поддерживается только в Windows")
@@ -196,9 +232,15 @@ def start(args: argparse.Namespace) -> int:
     )
     if not codex:
         raise ValueError("Не найден исполняемый файл Codex CLI")
+    root = job_root()
+    root.mkdir(parents=True, exist_ok=True)
+    if not queue_resume_supported(codex, root):
+        raise ValueError(
+            "Codex CLI не поддерживает queue --resume: уведомление невозможно"
+        )
 
     job_id = str(uuid.uuid4())
-    directory = job_root() / job_id
+    directory = root / job_id
     directory.mkdir(parents=True, exist_ok=False)
     write_json(
         directory / "request.json",
@@ -220,12 +262,7 @@ def start(args: argparse.Namespace) -> int:
         )
     except OSError as error:
         write_json(directory / "startup-error.json", {"error": str(error)})
-        print(
-            json.dumps(
-                {"state": "startup_failed", "job_dir": str(directory)},
-                ensure_ascii=False,
-            )
-        )
+        print_json({"state": "startup_failed", "job_dir": str(directory)})
         return 1
 
     deadline = time.monotonic() + 15
@@ -238,20 +275,12 @@ def start(args: argparse.Namespace) -> int:
                     if name == "result.json"
                     else "running"
                 )
-                print(
-                    json.dumps(
-                        {"state": state, "job_id": job_id, "job_dir": str(directory)},
-                        ensure_ascii=False,
-                    )
+                print_json(
+                    {"state": state, "job_id": job_id, "job_dir": str(directory)}
                 )
                 return 0 if state in {"running", "completed"} else 1
         time.sleep(0.05)
-    print(
-        json.dumps(
-            {"state": "unknown", "job_id": job_id, "job_dir": str(directory)},
-            ensure_ascii=False,
-        )
-    )
+    print_json({"state": "unknown", "job_id": job_id, "job_dir": str(directory)})
     return 1
 
 
@@ -332,49 +361,59 @@ def worker(directory: Path) -> int:
             f"Завершена фоновая задача {job_id}. Это машинное уведомление. "
             "Проверь сохранённые result.json и журналы; продолжай только актуальную задачу."
         )
+        delivery: dict[str, object]
         try:
-            # Shim codex.cmd ищет node по имени, а cmd.exe начинает с текущего
-            # каталога. Уведомление выполняется в собственном каталоге задания,
-            # который создаёт помощник, а не в унаследованном рабочем каталоге.
-            delivery = subprocess.run(  # noqa: S603 - фиксированные аргументы очереди и UUID
-                [
-                    cast(str, request["codex"]),
-                    "queue",
-                    "--resume",
-                    "--thread",
-                    thread,
-                    "--message",
-                    message,
-                ],
-                check=False,
-                cwd=directory,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=60,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            write_json(
-                directory / "delivery.json",
-                {
-                    "state": "queued"
-                    if delivery.returncode == 0 and not delivery.stderr.strip()
-                    else "uncertain",
-                    "exit_code": delivery.returncode,
-                    "stdout": delivery.stdout,
-                    "stderr": delivery.stderr,
-                },
-            )
-        except subprocess.TimeoutExpired as error:
-            write_json(
-                directory / "delivery.json", {"state": "uncertain", "error": str(error)}
+            delivery = queue_notification(
+                cast(str, request["codex"]), thread, message, directory
             )
         except OSError as error:
-            write_json(
-                directory / "delivery.json", {"state": "failed", "error": str(error)}
-            )
+            delivery = {"state": "failed", "error": str(error)}
+        # Ошибка сохранения статуса не подменяет принятое уведомление ошибкой
+        # очереди: повторяется только запись, а не вызов очереди.
+        try:
+            write_json(directory / "delivery.json", delivery)
+        except OSError:
+            write_json(directory / "delivery.json", delivery)
     return 0
+
+
+def queue_notification(
+    codex: str, thread: str, message: str, directory: Path
+) -> dict[str, object]:
+    """Поставить уведомление в очередь и вернуть наблюдаемый статус доставки."""
+    # Shim codex.cmd ищет node по имени, а cmd.exe начинает с текущего каталога.
+    # Уведомление выполняется в собственном каталоге задания, который создаёт
+    # помощник, а не в унаследованном рабочем каталоге.
+    process = subprocess.Popen(  # noqa: S603 - фиксированные аргументы очереди и UUID
+        [codex, "queue", "--resume", "--thread", thread, "--message", message],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=directory,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=QUEUE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        # На Windows сбор оставшегося вывода после kill() ждёт закрытия каналов
+        # всеми потомками. Ограничиваемся завершением самого процесса очереди,
+        # иначе наблюдатель удерживал бы блокировку задания без предела.
+        with contextlib.suppress(OSError):
+            process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            _ = process.wait(timeout=QUEUE_TIMEOUT_SECONDS)
+        return {"state": "uncertain", "error": str(error)}
+    return {
+        "state": "queued"
+        if process.returncode == 0 and not stderr.strip()
+        else "uncertain",
+        "exit_code": process.returncode,
+        "stdout": stdout,
+        "stderr": stderr,
+    }
 
 
 def cancel(directory: Path) -> int:
@@ -383,28 +422,19 @@ def cancel(directory: Path) -> int:
         raise ValueError("Указанный каталог не содержит задания")
     with notification_lock(directory):
         if (directory / "delivery.json").exists():
-            print(
-                json.dumps(
-                    {"state": "already_finished", "job_dir": str(directory)},
-                    ensure_ascii=False,
-                )
-            )
+            print_json({"state": "already_finished", "job_dir": str(directory)})
             return 1
         marker = directory / "cancel.json"
         if not marker.exists():
             with marker.open("x", encoding="utf-8") as file:
                 json.dump({"requested": True}, file)
-    print(
-        json.dumps(
-            {"state": "suppression_requested", "job_dir": str(directory)},
-            ensure_ascii=False,
-        )
-    )
+    print_json({"state": "suppression_requested", "job_dir": str(directory)})
     return 0
 
 
 def cleanup(directory: Path) -> int:
     directory = owned_job(directory)
+    cleanup_marker = "cleanup.json"
     allowed = {
         "request.json",
         "started.json",
@@ -415,6 +445,7 @@ def cleanup(directory: Path) -> int:
         "notification.lock",
         "stdout.log",
         "stderr.log",
+        cleanup_marker,
     }
     with notification_lock(directory):
         names = {entry.name for entry in directory.iterdir()}
@@ -425,7 +456,9 @@ def cleanup(directory: Path) -> int:
             "cancel.json",
             "notification.lock",
         }
-        if "request.json" not in names or not (completed or startup_failed):
+        if cleanup_marker not in names and (
+            "request.json" not in names or not (completed or startup_failed)
+        ):
             raise ValueError(
                 "Удалять можно только завершённое или не запущенное задание"
             )
@@ -438,12 +471,16 @@ def cleanup(directory: Path) -> int:
             for entry in entries
         ):
             raise ValueError("Каталог содержит неизвестные файлы или ссылки")
+        # Подтверждение разрешённой очистки сохраняется до её завершения:
+        # иначе неудаление отдельного файла оставляло бы каталог неочищаемым.
+        write_json(directory / cleanup_marker, {"state": "in_progress"})
+        entries = list(directory.iterdir())
     for entry in entries:
-        entry.unlink()
+        if entry.name != cleanup_marker:
+            entry.unlink()
+    (directory / cleanup_marker).unlink()
     directory.rmdir()
-    print(
-        json.dumps({"state": "removed", "job_dir": str(directory)}, ensure_ascii=False)
-    )
+    print_json({"state": "removed", "job_dir": str(directory)})
     return 0
 
 

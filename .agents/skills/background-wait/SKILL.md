@@ -9,10 +9,14 @@ description: >-
 
 # Background command completion
 
-This workflow requires Windows, Python, a running Codex session with
-`CODEX_THREAD_ID`, and a reachable Codex queue. It does not provide a native
-Codex process-completion event. Follow more specific session instructions and
-permissions; running a command through the helper does not authorize it.
+This workflow requires Windows, Python 3.15 or newer, a running Codex session
+with `CODEX_THREAD_ID`, and a Codex CLI whose `queue` accepts `--resume`. The
+Python level matches the target this repository declares for its own sources; on
+an older interpreter the watcher cannot inspect link targets and ends without a
+result. The helper verifies `--resume` support before creating a job; a CLI
+without it cannot deliver the notification. The workflow does not provide a
+native Codex process-completion event. Follow more specific session instructions
+and permissions; running a command through the helper does not authorize it.
 
 Run [the helper](scripts/background_wait.py) with `start`, an absolute working
 directory and an argument vector after `--`. Use a real executable, not a shell
