@@ -35,8 +35,11 @@ WORKDIR /app
 # отсутствующую в сокращённом runtime-образе.
 # Версия берётся из репозитория выбранного базового образа; пересмотреть при
 # появлении поддерживаемого снимка APT с воспроизводимыми обновлениями безопасности.
+# Зеркало Canonical обслуживает те же подписанные наборы пакетов по HTTPS.
+# Меняем адреса основного архива и архива безопасности Ubuntu, сохраняя suites и ключи.
 # hadolint ignore=DL3008
-RUN apt-get update \
+RUN sed -i -E 's,^URIs: https?://(archive|security)[.]ubuntu[.]com/ubuntu/?$,URIs: https://azure.archive.ubuntu.com/ubuntu/,' /etc/apt/sources.list.d/ubuntu.sources \
+ && apt-get -o APT::Update::Error-Mode=any update \
  && apt-get install -y --no-install-recommends apt libapt-pkg6.0t64 libgssapi-krb5-2 \
  && rm -rf /var/lib/apt/lists/*
 
@@ -61,7 +64,7 @@ FROM runtime AS llm-worker
 USER 0
 # CPU-бэкенд llama.cpp в NuGet использует OpenMP. Пакет берётся из репозитория базового образа.
 # hadolint ignore=DL3008
-RUN apt-get update \
+RUN apt-get -o APT::Update::Error-Mode=any update \
  && apt-get install -y --no-install-recommends libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 HEALTHCHECK NONE
