@@ -23,6 +23,12 @@ MAX_LOG_BYTES = 16 * 1024 * 1024
 # Ожидание очереди ограничено: уведомление не должно удерживать блокировку задания.
 QUEUE_TIMEOUT_SECONDS = 60
 
+# Проверка справки CLI не должна задерживать запуск задания.
+PROBE_TIMEOUT_SECONDS = 30
+
+# Подтверждение разрешённой очистки: переживает прерывание удаления.
+CLEANUP_MARKER = "cleanup.json"
+
 
 def write_json(path: Path, data: dict[str, object]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -182,6 +188,37 @@ def notification_lock(directory: Path) -> Iterator[None]:
             msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
 
 
+def run_bounded(
+    command: list[str], cwd: Path, timeout: float
+) -> tuple[int, str, str] | None:
+    """Запустить CLI и вернуть код возврата с выводом, либо None при тайм-ауте.
+
+    Ожидание ограничено самим процессом: на Windows повторный сбор вывода после
+    kill() ждёт закрытия каналов всеми потомками и может не завершиться.
+    """
+    process = subprocess.Popen(  # noqa: S603 - аргументы собирает вызывающая сторона
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=cwd,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            _ = process.wait(timeout=timeout)
+        return None
+    code = process.returncode
+    return (0 if code is None else code, stdout, stderr)
+
+
 def queue_resume_supported(codex: str, cwd: Path) -> bool:
     """Проверить, принимает ли выбранный Codex CLI возобновление очереди.
 
@@ -189,20 +226,13 @@ def queue_resume_supported(codex: str, cwd: Path) -> bool:
     имени, а cmd.exe начинает поиск с текущего каталога.
     """
     try:
-        probe = subprocess.run(  # noqa: S603 - фиксированные аргументы справки
-            [codex, "queue", "--help"],
-            check=False,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-    except OSError, subprocess.TimeoutExpired:
+        probe = run_bounded([codex, "queue", "--help"], cwd, PROBE_TIMEOUT_SECONDS)
+    except OSError:
         return False
-    return probe.returncode == 0 and "--resume" in probe.stdout
+    if probe is None:
+        return False
+    returncode, stdout, _ = probe
+    return returncode == 0 and "--resume" in stdout
 
 
 def start(args: argparse.Namespace) -> int:
@@ -384,33 +414,20 @@ def queue_notification(
     # Shim codex.cmd ищет node по имени, а cmd.exe начинает с текущего каталога.
     # Уведомление выполняется в собственном каталоге задания, который создаёт
     # помощник, а не в унаследованном рабочем каталоге.
-    process = subprocess.Popen(  # noqa: S603 - фиксированные аргументы очереди и UUID
+    result = run_bounded(
         [codex, "queue", "--resume", "--thread", thread, "--message", message],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=directory,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        directory,
+        QUEUE_TIMEOUT_SECONDS,
     )
-    try:
-        stdout, stderr = process.communicate(timeout=QUEUE_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired as error:
-        # На Windows сбор оставшегося вывода после kill() ждёт закрытия каналов
-        # всеми потомками. Ограничиваемся завершением самого процесса очереди,
-        # иначе наблюдатель удерживал бы блокировку задания без предела.
-        with contextlib.suppress(OSError):
-            process.kill()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            _ = process.wait(timeout=QUEUE_TIMEOUT_SECONDS)
-        return {"state": "uncertain", "error": str(error)}
+    if result is None:
+        return {
+            "state": "uncertain",
+            "error": f"Тайм-аут очереди {QUEUE_TIMEOUT_SECONDS} с",
+        }
+    returncode, stdout, stderr = result
     return {
-        "state": "queued"
-        if process.returncode == 0 and not stderr.strip()
-        else "uncertain",
-        "exit_code": process.returncode,
+        "state": "queued" if returncode == 0 and not stderr.strip() else "uncertain",
+        "exit_code": returncode,
         "stdout": stdout,
         "stderr": stderr,
     }
@@ -418,9 +435,16 @@ def queue_notification(
 
 def cancel(directory: Path) -> int:
     directory = owned_job(directory)
+    # Очистка уже разрешена: новый запрос отмены сделал бы каталог непустым.
+    if (directory / CLEANUP_MARKER).exists():
+        print_json({"state": "cleaning_up", "job_dir": str(directory)})
+        return 1
     if not (directory / "request.json").is_file():
         raise ValueError("Указанный каталог не содержит задания")
     with notification_lock(directory):
+        if (directory / CLEANUP_MARKER).exists():
+            print_json({"state": "cleaning_up", "job_dir": str(directory)})
+            return 1
         if (directory / "delivery.json").exists():
             print_json({"state": "already_finished", "job_dir": str(directory)})
             return 1
@@ -434,7 +458,6 @@ def cancel(directory: Path) -> int:
 
 def cleanup(directory: Path) -> int:
     directory = owned_job(directory)
-    cleanup_marker = "cleanup.json"
     allowed = {
         "request.json",
         "started.json",
@@ -445,7 +468,7 @@ def cleanup(directory: Path) -> int:
         "notification.lock",
         "stdout.log",
         "stderr.log",
-        cleanup_marker,
+        CLEANUP_MARKER,
     }
     with notification_lock(directory):
         names = {entry.name for entry in directory.iterdir()}
@@ -456,7 +479,7 @@ def cleanup(directory: Path) -> int:
             "cancel.json",
             "notification.lock",
         }
-        if cleanup_marker not in names and (
+        if CLEANUP_MARKER not in names and (
             "request.json" not in names or not (completed or startup_failed)
         ):
             raise ValueError(
@@ -473,13 +496,19 @@ def cleanup(directory: Path) -> int:
             raise ValueError("Каталог содержит неизвестные файлы или ссылки")
         # Подтверждение разрешённой очистки сохраняется до её завершения:
         # иначе неудаление отдельного файла оставляло бы каталог неочищаемым.
-        write_json(directory / cleanup_marker, {"state": "in_progress"})
+        write_json(directory / CLEANUP_MARKER, {"state": "in_progress"})
         entries = list(directory.iterdir())
     for entry in entries:
-        if entry.name != cleanup_marker:
+        if entry.name != CLEANUP_MARKER:
             entry.unlink()
-    (directory / cleanup_marker).unlink()
-    directory.rmdir()
+    (directory / CLEANUP_MARKER).unlink()
+    try:
+        directory.rmdir()
+    except OSError:
+        # Каталог снова стал непустым: подтверждение восстанавливается, чтобы
+        # повторная очистка оставалась возможной.
+        write_json(directory / CLEANUP_MARKER, {"state": "in_progress"})
+        raise
     print_json({"state": "removed", "job_dir": str(directory)})
     return 0
 

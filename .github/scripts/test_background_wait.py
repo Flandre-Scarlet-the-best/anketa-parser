@@ -32,7 +32,9 @@ spec.loader.exec_module(module)
 class BackgroundWaitModule(Protocol):
     def start(self, args: argparse.Namespace) -> int: ...
     def worker(self, directory: Path) -> int: ...
+    def cancel(self, directory: Path) -> int: ...
     def cleanup(self, directory: Path) -> int: ...
+    def queue_resume_supported(self, codex: str, cwd: Path) -> bool: ...
     def queue_notification(
         self, codex: str, thread: str, message: str, directory: Path
     ) -> dict[str, object]: ...
@@ -570,6 +572,72 @@ time.sleep(12)
             json.loads((job / "delivery.json").read_text(encoding="utf-8")),
         )
         self.assertEqual(delivery["state"], "queued")
+
+    def test_probe_timeout_does_not_wait_for_a_surviving_grandchild(self) -> None:
+        stub = self.bin / "probe_stub.py"
+        _ = stub.write_text(
+            # Уцелевший потомок не должен удерживать каталог прогона как рабочий.
+            """import os, subprocess, sys, tempfile, time
+os.chdir(tempfile.gettempdir())
+subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(12)'])
+time.sleep(12)
+""",
+            encoding="utf-8",
+        )
+        _ = self.queue.write_text(
+            f'@echo off\r\n"{sys.executable}" "{stub}"\r\n', encoding="ascii"
+        )
+        with mock.patch.object(background_wait, "PROBE_TIMEOUT_SECONDS", 1):
+            started = time.monotonic()
+            supported = background_wait.queue_resume_supported(
+                str(self.queue), self.root
+            )
+            elapsed = time.monotonic() - started
+        self.assertFalse(supported)
+        self.assertLess(elapsed, 6, "Проверка справки ждала завершения потомка")
+
+    def test_cancel_is_refused_while_cleanup_is_in_progress(self) -> None:
+        job = Path(self.env["CODEX_HOME"]) / "background-wait" / str(uuid.uuid4())
+        job.mkdir(parents=True)
+        background_wait.write_json(job / "request.json", {"state": "completed"})
+        background_wait.write_json(job / "cleanup.json", {"state": "in_progress"})
+        with (
+            mock.patch.dict(os.environ, self.env),
+            mock.patch("sys.stdout", new_callable=io.StringIO) as output,
+        ):
+            self.assertEqual(background_wait.cancel(job), 1)
+        # Отмена не создаёт файлов, иначе каталог перестанет удаляться.
+        self.assertFalse((job / "cancel.json").exists())
+        self.assertIn("cleaning_up", output.getvalue())
+
+    def test_failed_removal_restores_the_cleanup_confirmation(self) -> None:
+        job = Path(self.env["CODEX_HOME"]) / "background-wait" / str(uuid.uuid4())
+        job.mkdir(parents=True)
+        for name in ("request.json", "result.json", "delivery.json"):
+            background_wait.write_json(job / name, {"state": "completed"})
+        real_rmdir = Path.rmdir
+        failed = {"count": 0}
+
+        def rmdir(self: Path) -> None:
+            if not failed["count"]:
+                failed["count"] = 1
+                raise OSError("каталог занят")
+            real_rmdir(self)
+
+        with (
+            mock.patch.dict(os.environ, self.env),
+            mock.patch.object(Path, "rmdir", rmdir),
+            mock.patch("sys.stdout", new_callable=io.StringIO),
+            self.assertRaises(OSError),
+        ):
+            _ = background_wait.cleanup(job)
+        self.assertTrue((job / "cleanup.json").exists())
+        with (
+            mock.patch.dict(os.environ, self.env),
+            mock.patch("sys.stdout", new_callable=io.StringIO),
+        ):
+            self.assertEqual(background_wait.cleanup(job), 0)
+        self.assertFalse(job.exists())
 
     def test_cleanup_can_be_repeated_after_a_partial_failure(self) -> None:
         job = Path(self.env["CODEX_HOME"]) / "background-wait" / str(uuid.uuid4())

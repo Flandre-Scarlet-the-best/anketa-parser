@@ -61,12 +61,14 @@ after a crash, shutdown, or unavailable Codex server.
 To suppress a future notification for an obsolete job, use `cancel` with the job
 directory (`python <skill-path>/scripts/background_wait.py cancel <job-directory>`).
 This does not terminate the command. If notification was already
-submitted, it cannot be retracted. Do not use this mechanism for jobs requiring
+submitted, it cannot be retracted. A job whose removal has started cannot be
+cancelled. Do not use this mechanism for jobs requiring
 guaranteed process-tree cancellation or secure deletion of logs.
 Job directories are retained. After the user explicitly authorizes removing a
 particular completed job or a job whose watcher failed to start,
 `cleanup <job-directory>` removes only
-known helper files from that job; unknown files or links block cleanup. It does
+known helper files from that job; unknown files or links block cleanup, and an
+interrupted removal can be repeated. It does
 not clean jobs automatically or establish a global storage quota.
 
 <!-- output-language: ru -->
