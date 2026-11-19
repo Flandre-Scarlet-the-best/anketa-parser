@@ -4,30 +4,29 @@ namespace AnketaParser.Tests.Support;
 
 internal static class ApplicationProcess
 {
-    public static async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(
+    /// <summary>
+    /// Параметры запуска проверяемого приложения. Служебные окна консоли не создаются:
+    /// вывод забирается перенаправленными потоками, а <c>CreateNoWindow</c> убирает мерцание
+    /// окон при каждом запуске внешнего процесса из тестов.
+    /// </summary>
+    /// <param name="rootPath">Рабочий каталог запуска.</param>
+    /// <param name="application">Имя приложения: <c>AnketaParser.{application}.dll</c>.</param>
+    /// <param name="arguments">Аргументы командной строки.</param>
+    /// <param name="environment">Дополнительные переменные окружения.</param>
+    /// <returns>Параметры запуска без окна консоли.</returns>
+    internal static ProcessStartInfo CreateStartInfo(
+        string rootPath,
         string application,
-        string json,
         IReadOnlyList<string> arguments,
-        IReadOnlyDictionary<string, string?>? environment = null)
+        IReadOnlyDictionary<string, string?>? environment)
     {
-        using var root = new TemporaryContentRoot();
-        foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory))
-        {
-            if (Path.GetExtension(file) == ".dll" ||
-                file.EndsWith(".deps.json", StringComparison.Ordinal) ||
-                file.EndsWith(".runtimeconfig.json", StringComparison.Ordinal))
-            {
-                File.Copy(file, Path.Combine(root.Path, Path.GetFileName(file)));
-            }
-        }
-
-        File.WriteAllText(Path.Combine(root.Path, "appsettings.json"), json);
         var startInfo = new ProcessStartInfo("dotnet")
         {
-            WorkingDirectory = root.Path,
+            WorkingDirectory = rootPath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
+            CreateNoWindow = true,
         };
         foreach (var key in startInfo.Environment.Keys.ToArray())
         {
@@ -52,6 +51,28 @@ internal static class ApplicationProcess
             startInfo.ArgumentList.Add(argument);
         }
 
+        return startInfo;
+    }
+
+    public static async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(
+        string application,
+        string json,
+        IReadOnlyList<string> arguments,
+        IReadOnlyDictionary<string, string?>? environment = null)
+    {
+        using var root = new TemporaryContentRoot();
+        foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory))
+        {
+            if (Path.GetExtension(file) == ".dll" ||
+                file.EndsWith(".deps.json", StringComparison.Ordinal) ||
+                file.EndsWith(".runtimeconfig.json", StringComparison.Ordinal))
+            {
+                File.Copy(file, Path.Combine(root.Path, Path.GetFileName(file)));
+            }
+        }
+
+        File.WriteAllText(Path.Combine(root.Path, "appsettings.json"), json);
+        var startInfo = CreateStartInfo(root.Path, application, arguments, environment);
         using var process = Process.Start(startInfo)!;
         var stdout = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
         var stderr = process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);

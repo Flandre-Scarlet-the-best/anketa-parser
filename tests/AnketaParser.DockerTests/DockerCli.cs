@@ -26,22 +26,31 @@ internal sealed class DockerCli
         _environment = environment ?? new Dictionary<string, string>();
     }
 
-    public async Task<string> RunAsync(
-        IReadOnlyList<string> arguments,
-        TimeSpan timeout,
-        CancellationToken cancellationToken,
-        bool requireSuccess = true)
+    /// <summary>
+    /// Параметры запуска Docker CLI. Вывод забирается перенаправленными потоками, поэтому
+    /// видимое окно консоли не нужно: <c>CreateNoWindow</c> убирает мерцание окон в тестах.
+    /// </summary>
+    /// <param name="executable">Путь к исполняемому файлу CLI.</param>
+    /// <param name="workingDirectory">Рабочий каталог запуска.</param>
+    /// <param name="environment">Переменные окружения дочернего процесса.</param>
+    /// <param name="arguments">Аргументы командной строки.</param>
+    /// <returns>Параметры запуска без окна консоли.</returns>
+    internal static ProcessStartInfo CreateStartInfo(
+        string executable,
+        string workingDirectory,
+        IReadOnlyDictionary<string, string> environment,
+        IReadOnlyList<string> arguments)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        var startInfo = new ProcessStartInfo(_executable)
+        var startInfo = new ProcessStartInfo(executable)
         {
-            WorkingDirectory = _workingDirectory,
+            WorkingDirectory = workingDirectory,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
+            CreateNoWindow = true,
         };
 
-        foreach (var (name, value) in _environment)
+        foreach (var (name, value) in environment)
         {
             startInfo.Environment[name] = value;
         }
@@ -51,6 +60,17 @@ internal sealed class DockerCli
             startInfo.ArgumentList.Add(argument);
         }
 
+        return startInfo;
+    }
+
+    public async Task<string> RunAsync(
+        IReadOnlyList<string> arguments,
+        TimeSpan timeout,
+        CancellationToken cancellationToken,
+        bool requireSuccess = true)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var startInfo = CreateStartInfo(_executable, _workingDirectory, _environment, arguments);
         using var process = new Process { StartInfo = startInfo };
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();

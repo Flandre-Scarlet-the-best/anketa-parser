@@ -523,14 +523,37 @@ public sealed class BackupService
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
-    private async Task RunToolAsync(string executable, IReadOnlyList<string> arguments, string? connectionString, CancellationToken ct)
+    /// <summary>
+    /// Параметры запуска утилиты PostgreSQL. Вывод забирается перенаправленными потоками,
+    /// поэтому видимое окно консоли не нужно: <c>CreateNoWindow</c> убирает его мерцание
+    /// при каждой операции резервного копирования и восстановления.
+    /// </summary>
+    /// <param name="executable">Путь к утилите.</param>
+    /// <param name="arguments">Аргументы командной строки.</param>
+    /// <param name="connectionString">Строка подключения либо <c>null</c>, если утилите она не нужна.</param>
+    /// <returns>Параметры запуска без окна консоли и с перенаправленными потоками.</returns>
+    internal static ProcessStartInfo CreateToolStartInfo(
+        string executable, IReadOnlyList<string> arguments, string? connectionString)
     {
-        var info = new ProcessStartInfo(executable) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+        var info = new ProcessStartInfo(executable)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
         foreach (var argument in arguments) info.ArgumentList.Add(argument);
         if (connectionString is not null)
         {
             PostgresToolConnection.Apply(info, new NpgsqlConnectionStringBuilder(connectionString));
         }
+
+        return info;
+    }
+
+    private async Task RunToolAsync(string executable, IReadOnlyList<string> arguments, string? connectionString, CancellationToken ct)
+    {
+        var info = CreateToolStartInfo(executable, arguments, connectionString);
         using var process = new Process { StartInfo = info };
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(_settings.TimeoutSeconds));

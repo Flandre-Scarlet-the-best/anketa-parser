@@ -6,6 +6,25 @@ namespace AnketaParser.DockerTests;
 
 public sealed class DockerCliTests
 {
+    private static readonly string[] ExpectedComposeArguments = ["compose", "ps"];
+
+    [Fact]
+    public void StartInfoStartsDockerWithoutConsoleWindow()
+    {
+        // Запуск Docker CLI из тестов не должен создавать видимое окно консоли.
+        var environment = new Dictionary<string, string>(StringComparer.Ordinal) { ["PRODUCT_BACKUP_PASSWORD"] = "synthetic" };
+        var info = DockerCli.CreateStartInfo("docker", Path.GetTempPath(), environment, ["compose", "ps"]);
+
+        Assert.Equal("docker", info.FileName);
+        Assert.Equal(Path.GetTempPath(), info.WorkingDirectory);
+        Assert.False(info.UseShellExecute);
+        Assert.True(info.CreateNoWindow);
+        Assert.True(info.RedirectStandardOutput);
+        Assert.True(info.RedirectStandardError);
+        Assert.Equal(ExpectedComposeArguments, info.ArgumentList);
+        Assert.Equal("synthetic", info.Environment["PRODUCT_BACKUP_PASSWORD"]);
+    }
+
     [Fact]
     public async Task RunAsyncPassesConfiguredEnvironmentToChildProcess()
     {

@@ -391,6 +391,32 @@ public sealed class BackupServiceTests : IDisposable
         Assert.Empty(service.List());
     }
 
+    [Fact]
+    public void ToolStartInfoHidesConsoleWindowAndKeepsRedirects()
+    {
+        // Окно консоли утилит PostgreSQL не создаётся: иначе каждая операция резервного
+        // копирования и восстановления мерцает окном на экране пользователя.
+        var arguments = new[] { "--file", "synthetic.dump", "--format=custom" };
+        var connectionString = "Host=127.0.0.1;Port=5432;Database=synthetic;Username=synthetic_user;Password=synthetic_password";
+
+        var info = BackupService.CreateToolStartInfo("pg_dump", arguments, connectionString);
+
+        Assert.Equal("pg_dump", info.FileName);
+        Assert.False(info.UseShellExecute);
+        Assert.True(info.CreateNoWindow);
+        Assert.True(info.RedirectStandardOutput);
+        Assert.True(info.RedirectStandardError);
+        Assert.Equal(arguments, info.ArgumentList);
+        Assert.Equal("synthetic_password", info.Environment["PGPASSWORD"]);
+        Assert.DoesNotContain("synthetic_password", info.Arguments, StringComparison.Ordinal);
+
+        // Утилите без строки подключения параметры подключения не передаются.
+        var withoutConnection = BackupService.CreateToolStartInfo("pg_restore", ["--version"], connectionString: null);
+        Assert.True(withoutConnection.CreateNoWindow);
+        Assert.False(withoutConnection.UseShellExecute);
+        Assert.DoesNotContain("PGPASSWORD", withoutConnection.Environment.Keys);
+    }
+
     private void Write(string name, DateTime time)
     {
         var path = Path.Combine(_directory, name);
