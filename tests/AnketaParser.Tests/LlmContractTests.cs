@@ -170,6 +170,35 @@ public sealed class LlmContractTests
     }
 
     [Theory]
+    [InlineData("""{"choices":[{"finish_reason":"length","message":{"content":"часть"}}],"usage":{"prompt_tokens":12,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":7}}}""", "incomplete_output")]
+    [InlineData("""{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":7}}}""", "unsupported_response")]
+    public async Task RejectedResponseStillCarriesProviderUsage(string body, string category)
+    {
+        // Провайдер израсходовал токены и всё равно прислал непригодный ответ:
+        // отказ остаётся отказом, но расход не теряется.
+        using var handler = new FixtureHandler((_, _) => Task.FromResult(Reply(HttpStatusCode.OK, body)));
+        using var client = new HttpClient(handler);
+        var error = await Assert.ThrowsAsync<LlmFailureException>(() =>
+            new OpenAiLlmEngine(Settings(), client).GenerateAsync(SemanticContract.Request(SemanticOperation.Classify, "данные"), Ct));
+        Assert.Equal(category, error.Category);
+        Assert.False(error.Retryable);
+        var usage = Assert.IsType<LlmUsage>(error.Usage);
+        Assert.Equal(new LlmUsage(12, 4, 7), usage);
+    }
+
+    [Fact]
+    public async Task SuccessfulResponseKeepsSingleUsageWithoutDuplication()
+    {
+        using var handler = new FixtureHandler((_, _) => Task.FromResult(Reply(HttpStatusCode.OK,
+            """{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}],"usage":{"prompt_tokens":9,"completion_tokens":2}}""")));
+        using var client = new HttpClient(handler);
+        var response = await new OpenAiLlmEngine(Settings(), client)
+            .GenerateAsync(SemanticContract.Request(SemanticOperation.Classify, "данные"), Ct);
+        Assert.Equal(new LlmUsage(9, 2, null), response.Usage);
+        Assert.Equal("{}", response.Text);
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public async Task RejectsRemoteHttpSecretsBeforeSending(bool key)

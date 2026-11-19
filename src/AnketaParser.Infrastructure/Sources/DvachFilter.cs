@@ -267,11 +267,21 @@ internal static partial class DvachFilter
     {
         var prefix = text.AsSpan(0, offset);
         var sentence = prefix[(prefix.LastIndexOfAny(".!?;\n") + 1)..];
-        return ForeignContactPrefix().IsMatch(sentence);
+        // Признак чужого контакта действует до явного указания на собственный:
+        // «Не мой контакт @a, а мой тг @b» не делает @b чужим.
+        var markerEnd = -1;
+        var markers = ForeignContactPrefix().EnumerateMatches(sentence);
+        while (markers.MoveNext())
+            markerEnd = markers.Current.Index + markers.Current.Length;
+        return markerEnd >= 0 && !OwnContactPrefix().IsMatch(sentence[markerEnd..]);
     }
 
-    [GeneratedRegex(@"(?:мне\s+переслали|не\s+мой\s+(?:контакт|аккаунт|телеграм|тг)|чуж(?:ой|ая|ого|ую)\s+(?:контакт|аккаунт|ссылк\w*|телеграм|тг)|(?:контакт|аккаунт|телеграм|тг|дискорд|дс)\s+(?:моего\s+|моей\s+)?(?:друга|подруги|знакомого|знакомой))(?:[^.!?;]*)\z", IgnoreCase)]
+    [GeneratedRegex(@"(?:мне\s+переслали|не\s+мой\s+(?:контакт|аккаунт|телеграм|тг)|чуж(?:ой|ая|ого|ую)\s+(?:контакт|аккаунт|ссылк\w*|телеграм|тг)|(?:контакт|аккаунт|телеграм|тг|дискорд|дс)\s+(?:моего\s+|моей\s+)?(?:друга|подруги|знакомого|знакомой))", IgnoreCase)]
     private static partial Regex ForeignContactPrefix();
+
+    /// <summary>Явное указание автора на собственный контакт, снимающее признак чужого.</summary>
+    [GeneratedRegex(@"(?<![\w])(?:(?:мой|моя|моё|мое|моего|моей|мою)\s+(?:тг|телеграм\w*|телега|телегу|дискорд|дис|дс|контакт\w*|аккаунт\w*|ник\w*|юзернейм\w*)|у\s+меня\s+(?:тг|телеграм\w*|контакт\w*|аккаунт\w*)|(?:а|но|зато)\s+(?:вот\s+)?(?:мой|моя|моё|мое)\b[^\w]{0,3}$)", IgnoreCase)]
+    private static partial Regex OwnContactPrefix();
 
     private static bool IsLabeledValue(string platform, string value) => platform switch
     {

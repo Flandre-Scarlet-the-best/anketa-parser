@@ -64,6 +64,10 @@ public sealed class LlmAnalysisWorker(DbContextOptions<ProductDbContext> databas
         }
         catch (LlmFailureException error)
         {
+            // Провайдер мог израсходовать токены и всё равно прислать отказ:
+            // сохраняем его статистику, не превращая ответ в успешный результат.
+            if (error.Usage is { } measured)
+                usage.Add(measured);
             failure = error;
         }
         catch (LlmConfigurationException error)

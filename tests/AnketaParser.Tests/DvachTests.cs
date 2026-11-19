@@ -201,6 +201,28 @@ public sealed class DvachTests
     }
 
     [Theory]
+    [InlineData("Это не мой контакт @sampleuser42, а мой тг @ownuser42")]
+    [InlineData("Это не мой контакт @sampleuser42, мой тг: @ownuser42")]
+    [InlineData("Чужой контакт @sampleuser42, у меня тг @ownuser42")]
+    public void OwnContactInsideTheSameSentenceSurvivesTheForeignMarker(string html)
+    {
+        // Признак чужого контакта не должен распространяться на адрес, который автор
+        // в том же предложении назвал своим.
+        var prepared = Prepare(html);
+        var contact = Assert.Single(prepared.Contacts);
+        Assert.Equal("ownuser42", contact.NormalizedValue);
+    }
+
+    [Theory]
+    [InlineData("Не мой контакт @sampleuser42 и @otheruser42")]
+    [InlineData("Контакт моего друга: @sampleuser42, @otheruser42")]
+    public void ForeignMarkerStillCoversContactsBeforeAnyOwnStatement(string html)
+    {
+        // Без явного указания на собственный контакт оба адреса остаются чужими.
+        Assert.Empty(Prepare(html).Contacts);
+    }
+
+    [Theory]
     [InlineData("a@sampleuser42", "ambiguous_at", "a@sampleuser42")]
     [InlineData("tg @ sampleюser42", "mixed_alphabet", "@ sampleюser42")]
     [InlineData("sampleuser42 дс", "discord_reverse", "sampleuser42")]

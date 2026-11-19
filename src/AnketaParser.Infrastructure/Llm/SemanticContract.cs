@@ -13,11 +13,17 @@ public enum SemanticOperation { Classify, Extract }
 public sealed record LlmRequest(SemanticOperation Operation, string System, string User, JsonObject Schema, string Grammar);
 public sealed record LlmUsage(int Input, int Output, int? CachedInput);
 public sealed record LlmResponse(string Text, LlmUsage? Usage = null);
-public sealed class LlmFailureException(string category, bool retryable = false, TimeSpan? retryAfter = null) : Exception(category)
+public sealed class LlmFailureException(string category, bool retryable = false, TimeSpan? retryAfter = null, LlmUsage? usage = null) : Exception(category)
 {
     public string Category { get; } = category;
     public bool Retryable { get; } = retryable;
     public TimeSpan? RetryAfter { get; } = retryAfter;
+
+    /// <summary>
+    /// Статистика токенов, которую провайдер сообщил вместе с отвергнутым ответом.
+    /// Отказ остаётся отказом: значение нужно только для честного учёта расходов.
+    /// </summary>
+    public LlmUsage? Usage { get; } = usage;
 }
 
 public interface ILlmEngine

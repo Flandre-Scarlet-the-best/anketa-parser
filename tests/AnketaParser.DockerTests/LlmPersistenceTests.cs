@@ -345,6 +345,28 @@ public sealed class LlmPersistenceTests(PostgresTestCluster cluster) : IClassFix
     }
 
     [Fact]
+    public async Task FailedAttemptStillRecordsReportedTokens()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var revision = (await ImportAsync(db))["210007"];
+        // Провайдер оборвал ответ по лимиту, но прислал статистику: расход обязан сохраниться.
+        var engine = new FixtureEngine((_, _) => throw new LlmFailureException(
+            "incomplete_output", usage: new LlmUsage(1200, 768, 900)));
+        var worker = Worker(db, Settings(), engine);
+        Assert.Equal("incomplete_output", (await worker.ProcessNextAsync(revision, Ct)).Status);
+        var attempt = await db.Set<JobAttempt>().AsNoTracking().SingleAsync(Ct);
+        Assert.Equal("incomplete_output", attempt.FailureCategory);
+        Assert.Equal(1200, attempt.InputTokens);
+        Assert.Equal(768, attempt.OutputTokens);
+        Assert.Equal(900, attempt.CachedInputTokens);
+        Assert.Equal(1, attempt.MeasuredRequests);
+        Assert.Empty(await db.Set<Analysis>().AsNoTracking().ToArrayAsync(Ct));
+        Assert.Empty(await db.Set<Profile>().AsNoTracking().ToArrayAsync(Ct));
+    }
+
+    [Fact]
     public async Task RetryAfterIsDurableAndDailyBudgetIsSharedAcrossAttempts()
     {
         RequireDocker();

@@ -136,25 +136,33 @@ public sealed class OpenAiLlmEngine(LlmSettings settings, HttpClient client) : I
 
     private static LlmResponse Parse(JsonElement root)
     {
+        // Статистику читаем до проверок формы ответа: провайдер уже израсходовал токены,
+        // и отказ не должен скрывать этот расход.
+        var usage = ReadUsage(root);
         var choices = Property(root, "choices");
         if (choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() != 1)
-            throw new LlmFailureException("unsupported_response");
+            throw new LlmFailureException("unsupported_response", usage: usage);
         var choice = choices[0];
         var finish = String(Property(choice, "finish_reason"));
         var message = Property(choice, "message");
         if (finish == "length")
-            throw new LlmFailureException("incomplete_output");
+            throw new LlmFailureException("incomplete_output", usage: usage);
         if (finish == "content_filter" || String(Property(message, "refusal")) is not null)
-            throw new LlmFailureException("model_refusal");
+            throw new LlmFailureException("model_refusal", usage: usage);
         if (finish != "stop" || Property(message, "tool_calls").ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null) ||
             Property(message, "function_call").ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null) ||
             String(Property(message, "content")) is not { Length: > 0 } text)
-            throw new LlmFailureException("unsupported_response");
+            throw new LlmFailureException("unsupported_response", usage: usage);
+        return new(text, usage);
+    }
+
+    private static LlmUsage? ReadUsage(JsonElement root)
+    {
         var usage = Property(root, "usage");
         var input = Count(Property(usage, "prompt_tokens"));
         var output = Count(Property(usage, "completion_tokens"));
         var cached = Count(Property(Property(usage, "prompt_tokens_details"), "cached_tokens"));
-        return new(text, input is { } i && output is { } o ? new(i, o, cached <= i ? cached : null) : null);
+        return input is { } i && output is { } o ? new(i, o, cached <= i ? cached : null) : null;
     }
 
     private static JsonElement Property(JsonElement element, string name) =>
