@@ -53,6 +53,8 @@ public static class CliApplication
             return await SourceCommands.RunAsync(args, stdout, stderr, contentRootPath, cancellationToken).ConfigureAwait(false);
         if (args is ["llm", ..])
             return await LlmCommands.RunAsync(args, stdout, stderr, contentRootPath, cancellationToken).ConfigureAwait(false);
+        if (args is ["report", ..])
+            return await ReportCommands.RunAsync(args, stdout, stderr, contentRootPath, cancellationToken).ConfigureAwait(false);
 
         var info = ApplicationInfo.ForEntryAssembly();
         var invocation = CommandLineParser.Parse(args);
