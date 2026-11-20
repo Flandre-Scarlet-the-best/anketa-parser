@@ -120,7 +120,8 @@ internal static partial class DvachFilter
             foreach (Match match in EmailAfterCyrillicLabel().Matches(text))
             {
                 if (!InsideUrl(text, match.Index))
-                    Record(match.Index, match.Length, "email", match.Value, match.Value, 0.8m, "label");
+                    Record(match.Index, match.Length, PreviousPlatform(text, match.Index, lines, index) == "xmpp" ? "xmpp" : "email",
+                        match.Value, match.Value, 0.8m, "label");
             }
 
             // Явные контакты строки: они уже описывают значение справа от метки.
@@ -192,7 +193,10 @@ internal static partial class DvachFilter
             {
                 var raw = match.Groups["raw"];
                 if (!InsideUrl(text, raw.Index))
+                {
+                    labeled.Add((match.Index, raw.Index + raw.Length));
                     Record(raw.Index, raw.Length, "telegram", raw.Value, match.Groups["value"].Value, 0.8m, "label");
+                }
             }
             foreach (Match match in ReverseTelegram().Matches(text))
             {
@@ -272,7 +276,15 @@ internal static partial class DvachFilter
     private static bool IsExplicitlyForeign(string text, int offset)
     {
         var prefix = text.AsSpan(0, offset);
-        var sentence = prefix[(prefix.LastIndexOfAny(".!?;\n") + 1)..];
+        var addresses = ExplicitContact().Matches(text).Cast<Match>().Concat(Url().Matches(text).Cast<Match>()).ToArray();
+        var boundary = -1;
+        for (var i = 0; i < prefix.Length; i++)
+        {
+            if (prefix[i] is '!' or '?' or ';' or '\n' ||
+                prefix[i] == '.' && !addresses.Any(address => i >= address.Index && i + 1 < address.Index + address.Length))
+                boundary = i;
+        }
+        var sentence = prefix[(boundary + 1)..];
         // Признак чужого контакта действует до явного указания на собственный:
         // «Не мой контакт @a, а мой тг @b» не делает @b чужим.
         var markerEnd = -1;
@@ -284,6 +296,9 @@ internal static partial class DvachFilter
 
     [GeneratedRegex(@"(?:мне\s+переслали|не\s+мой\s+(?:контакт|аккаунт|телеграм|тг)|чуж(?:ой|ая|ого|ую)\s+(?:контакт|аккаунт|ссылк\w*|телеграм|тг)|(?:контакт|аккаунт|телеграм|тг|дискорд|дс)\s+(?:моего\s+|моей\s+)?(?:друга|подруги|знакомого|знакомой))", IgnoreCase)]
     private static partial Regex ForeignContactPrefix();
+
+    [GeneratedRegex(@"https?://[A-Za-z0-9_~:/?#\[\]@!$&'()*+,;=%.-]+", IgnoreCase)]
+    private static partial Regex Url();
 
     /// <summary>Явное указание автора на собственный контакт, снимающее признак чужого.</summary>
     [GeneratedRegex(@"(?<![\w])(?:(?:мой|моя|моё|мое|моего|моей|мою)\s+(?:тг|телеграм\w*|телега|телегу|дискорд|дис|дс|контакт\w*|аккаунт\w*|ник\w*|юзернейм\w*)|у\s+меня\s+(?:тг|телеграм\w*|контакт\w*|аккаунт\w*)|(?:а|но|зато)\s+(?:вот\s+)?(?:мой|моя|моё|мое)\b[^\w]{0,3}$)", IgnoreCase)]

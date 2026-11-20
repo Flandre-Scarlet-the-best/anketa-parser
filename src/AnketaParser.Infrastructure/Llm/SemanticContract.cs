@@ -39,7 +39,7 @@ public sealed record SemanticResult(SemanticDecision Decision, SemanticExtractio
 
 public static partial class SemanticContract
 {
-    public const string SchemaVersion = "text-profile-5";
+    public const string SchemaVersion = "text-profile-6";
     public const string Profile = "profile";
     public const string NotProfile = "not_profile";
     public const string Uncertain = "uncertain";
@@ -210,7 +210,7 @@ public static partial class SemanticContract
             if (contextual && (PartnerPrefix().IsMatch(prefix) || ThirdPersonSelfPrefix().IsMatch(prefix)))
                 return null; // Цитата, где это же значение относится к собеседнику, недостаточна.
             var label = ImageboardGlossary.Normalize(name, needle, prefix, suffix);
-            if (compactGender && label is null)
+            if (label is null && ImageboardGlossary.RequiresContext(name, needle))
                 continue;
             result ??= (new TextSpan(start, match.Length), label);
             if (!contextual)
@@ -339,8 +339,8 @@ public static partial class SemanticContract
     }
 
     private static bool HasMeaningfulText(string value) =>
-        value.Any(character => !char.IsWhiteSpace(character) && character != Redacted && !char.IsPunctuation(character) &&
-            !char.IsSymbol(character));
+        value.EnumerateRunes().Any(character => !Rune.IsWhiteSpace(character) && character.Value != Redacted &&
+            !Rune.IsPunctuation(character) && !Rune.IsSymbol(character));
 
     private static string ReadString(JsonElement element, int max)
     {

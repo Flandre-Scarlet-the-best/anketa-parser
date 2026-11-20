@@ -175,6 +175,8 @@ public sealed class DvachTests
     [InlineData("Email: Test.User@example.invalid и ещё текст", "email", "Test.User@example.invalid")]
     [InlineData("тгшку:Test.User@example.invalid", "email", "Test.User@example.invalid")]
     [InlineData("Telegram: Test.User@example.invalid", "email", "Test.User@example.invalid")]
+    [InlineData("Жаббер:Case@EXAMPLE.INVALID", "xmpp", "case@example.invalid")]
+    [InlineData("write telegram@sampleuser42", "telegram", "sampleuser42")]
     public void TechnicalContactsAreIndependentOfPositionAndMeaning(string html, string platform, string value)
     {
         var prepared = Prepare(html);
@@ -209,6 +211,13 @@ public sealed class DvachTests
         Assert.Equal("ownuser42", contact.NormalizedValue);
     }
 
+    [Fact]
+    public void ForeignMarkerEndsAtSentenceBoundaryWithoutSpace()
+    {
+        var contact = Assert.Single(Prepare("Не мой контакт @sampleuser42.Мой тг: @ownuser42").Contacts);
+        Assert.Equal("ownuser42", contact.NormalizedValue);
+    }
+
     [Theory]
     [InlineData("Это не мой контакт @sampleuser42, а мой тг @ownuser42")]
     [InlineData("Это не мой контакт @sampleuser42, мой тг: @ownuser42")]
@@ -225,6 +234,8 @@ public sealed class DvachTests
     [Theory]
     [InlineData("Не мой контакт @sampleuser42 и @otheruser42")]
     [InlineData("Контакт моего друга: @sampleuser42, @otheruser42")]
+    [InlineData("Не мой контакт first@example.invalid и @otheruser42")]
+    [InlineData("Не мой контакт https://t.me/sampleuser42 и @otheruser42")]
     public void ForeignMarkerStillCoversContactsBeforeAnyOwnStatement(string html)
     {
         // Без явного указания на собственный контакт оба адреса остаются чужими.

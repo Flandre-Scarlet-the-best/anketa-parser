@@ -62,6 +62,7 @@ public sealed class LlmContractTests
     [Theory]
     [InlineData("""{"class":"profile","reason":"invitation","evidence":"доказательства нет"}""", "invalid_classification_evidence")]
     [InlineData("""{"class":"profile","reason":"invitation","evidence":"████"}""", "invalid_classification_evidence")]
+    [InlineData("""{"class":"profile","reason":"invitation","evidence":"🙂"}""", "invalid_classification_evidence")]
     [InlineData("""{"class":"profile","reason":"contact_only","evidence":null}""", "invalid_decision")]
     [InlineData("""{"class":"profile","reason":"invitation","evidence":null}""", "invalid_output_schema")]
     [InlineData("""{"class":"profile/invitation","reason":"The author explicitly states they are looking for communication and provides a Telegram contact.","evidence":"нашёл"}""", "invalid_output_schema")]
@@ -75,9 +76,18 @@ public sealed class LlmContractTests
         Assert.True(error.Retryable);
     }
 
+    [Fact]
+    public void EmojiAloneIsNotMeaningfulEvidenceEvenWhenPresent()
+    {
+        var error = Assert.Throws<LlmFailureException>(() => SemanticContract.ReadDecision(
+            """{"class":"profile","reason":"invitation","evidence":"🙂"}""", "🙂 ███"));
+        Assert.Equal("invalid_classification_evidence", error.Category);
+    }
+
     [Theory]
     [InlineData("ищу общение", "Сап\nИщу общение, ███")]
     [InlineData("Ищу общение, ███", "Сап\nИщу общение, ███")]
+    [InlineData("Ищу общение 🙂", "Ищу общение 🙂")]
     public void AcceptsEvidenceThatDiffersOnlyInCaseOrMaskedContact(string evidence, string text)
     {
         var result = SemanticContract.ReadDecision(
@@ -220,6 +230,7 @@ public sealed class LlmContractTests
     [InlineData("Пишите в дс.", "location", "дс")]
     [InlineData("Я из ДС3.", "location", "ДС3")]
     [InlineData("Спишемся онлайн.", "location", "онлайн")]
+    [InlineData("ДС-2 — мой игровой сервер. Ищу общение.", "location", "ДС-2")]
     [InlineData("Хочу найти Мишу.", "gender", "М")]
     [InlineData("Миша играет, код м30abc.", "gender", "м")]
     public void SlangDoesNotInventAnAuthorFact(string text, string field, string value)
