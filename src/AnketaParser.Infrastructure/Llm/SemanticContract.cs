@@ -73,6 +73,7 @@ public static partial class SemanticContract
         «По ошибкам сборки пишите █» → not_profile/technical_contact; «ссылку на общий чат подскажите» → not_profile/unrelated;
         «█» → uncertain/contact_only; «ну если так, то █» → uncertain/missing_context.
         Для evidence копируй непрерывные слова без исправлений, многоточий и дополнительных кавычек.
+        Сохраняй регистр символов и разбиение на строки: не заменяй перенос строки пробелом и не объединяй строки по-своему.
         Если решение uncertain, предпочти null, когда короткий точный фрагмент не объясняет решение.
         """;
 
@@ -186,7 +187,8 @@ public static partial class SemanticContract
             RequireObject(field, "value", "evidence");
             var value = ReadString(field.GetProperty("value"), max);
             var span = LocateEvidence(ReadString(field.GetProperty("evidence"), EvidenceMax), text);
-            if (span is null || !text.AsSpan(span.Start, span.Length).Contains(value, StringComparison.Ordinal) ||
+            if (span is null || value.Contains(Redacted) ||
+                !ContainsNormalized(text.AsSpan(span.Start, span.Length), value) ||
                 name == "age" && !HasAuthorAge(text, span, value) ||
                 !IsSupportedField(name, value, text, span))
             {
@@ -271,9 +273,71 @@ public static partial class SemanticContract
 
     private static TextSpan? LocateEvidence(string value, string text)
     {
-        var start = text.IndexOf(value, StringComparison.Ordinal);
-        return start < 0 || value.Contains(Redacted) ? null : new(start, value.Length);
+        // Свидетельство обязано быть содержательным: одна маска скрытого контакта
+        // или пунктуация не объясняют решение, поэтому такой фрагмент не принимается.
+        if (!HasMeaningfulText(value))
+            return null;
+        var exact = text.IndexOf(value, StringComparison.Ordinal);
+        if (exact >= 0)
+            return new(exact, value.Length);
+        return LocateNormalized(value, text);
     }
+
+    /// <summary>
+    /// Ищет фрагмент, отличающийся от текста только регистром и длиной пробельных
+    /// серий: модель часто заменяет перенос строки пробелом, а само свидетельство
+    /// остаётся доказуемым, потому что координаты берутся из исходного текста.
+    /// </summary>
+    private static TextSpan? LocateNormalized(string value, string text)
+    {
+        var needle = Normalize(value);
+        if (needle.Length == 0)
+            return null;
+        var haystack = Normalize(text, out var map);
+        var index = haystack.IndexOf(needle, StringComparison.Ordinal);
+        if (index < 0)
+            return null;
+        var start = map[index];
+        var end = map[index + needle.Length - 1] + 1;
+        return new(start, end - start);
+    }
+
+    private static bool ContainsNormalized(ReadOnlySpan<char> source, string value) =>
+        Normalize(source.ToString()).Contains(Normalize(value), StringComparison.Ordinal);
+
+    private static string Normalize(string value) => Normalize(value, out _);
+
+    private static string Normalize(string value, out int[] map)
+    {
+        var builder = new StringBuilder(value.Length);
+        var positions = new List<int>(value.Length);
+        var pendingSpace = -1;
+        for (var index = 0; index < value.Length; index++)
+        {
+            var character = value[index];
+            if (char.IsWhiteSpace(character))
+            {
+                // Ведущие пробелы отбрасываются, серия внутри текста сжимается до одного.
+                if (pendingSpace < 0)
+                    pendingSpace = index;
+                continue;
+            }
+            if (pendingSpace >= 0 && builder.Length > 0)
+            {
+                builder.Append(' ');
+                positions.Add(pendingSpace);
+            }
+            pendingSpace = -1;
+            builder.Append(char.ToLowerInvariant(character));
+            positions.Add(index);
+        }
+        map = [.. positions];
+        return builder.ToString();
+    }
+
+    private static bool HasMeaningfulText(string value) =>
+        value.Any(character => !char.IsWhiteSpace(character) && character != Redacted && !char.IsPunctuation(character) &&
+            !char.IsSymbol(character));
 
     private static string ReadString(JsonElement element, int max)
     {

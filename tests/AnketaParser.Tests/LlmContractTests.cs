@@ -75,6 +75,57 @@ public sealed class LlmContractTests
     }
 
     [Theory]
+    [InlineData("ищу общение", "Сап\nИщу общение, ███")]
+    [InlineData("Ищу общение, ███", "Сап\nИщу общение, ███")]
+    public void AcceptsEvidenceThatDiffersOnlyInCaseOrMaskedContact(string evidence, string text)
+    {
+        var result = SemanticContract.ReadDecision(
+            $$"""{"class":"profile","reason":"invitation","evidence":"{{evidence}}"}""", text);
+        Assert.Equal("profile", result.Class);
+        Assert.NotNull(result.Evidence);
+        Assert.False(result.EvidenceOmitted);
+        var span = result.Evidence;
+        var located = text.Substring(span.Start, span.Length);
+        Assert.Equal(evidence, located, ignoreCase: true);
+    }
+
+    [Fact]
+    public void AcceptsEvidenceWithLineBreakReplacedBySpace()
+    {
+        const string text = "Мужчина, 25\nИщу тян для общения";
+        var result = SemanticContract.ReadDecision(
+            """{"class":"profile","reason":"invitation","evidence":"Мужчина, 25 Ищу тян"}""", text);
+        Assert.NotNull(result.Evidence);
+        var span = result.Evidence;
+        Assert.Equal("Мужчина, 25\nИщу тян", text.Substring(span.Start, span.Length));
+    }
+
+    [Fact]
+    public void RejectsEvidenceThatChangesWordsEvenWithNormalization()
+    {
+        var error = Assert.Throws<LlmFailureException>(() => SemanticContract.ReadDecision(
+            """{"class":"profile","reason":"invitation","evidence":"Ищу долгое общение"}""", "Ищу долгие беседы"));
+        Assert.Equal("invalid_classification_evidence", error.Category);
+    }
+
+    [Fact]
+    public void AcceptsExtractedFactWhenValuesDifferOnlyInCase()
+    {
+        const string text = "Мужчина 22, ищу девушку";
+        var result = SemanticContract.ReadFacts(Fields(("gender", "Мужчина", "мужчина 22")), text);
+        Assert.Equal("Мужчина", result.Facts["gender"].Value);
+    }
+
+    [Fact]
+    public void OmitsExtractedFactThatIsOnlyAMaskedContact()
+    {
+        const string text = "Ищу тян. Пишите ████████";
+        var result = SemanticContract.ReadFacts(Fields(("interests", "█████████", "Пишите ████████")), text);
+        Assert.Empty(result.Facts);
+        Assert.Equal("interests", Assert.Single(result.UnsupportedFields));
+    }
+
+    [Theory]
     [InlineData("location", "Интернет", "Интернет")]
     [InlineData("location", "инет", "инет")]
     [InlineData("location", "своего города", "ищу человека из своего города")]
