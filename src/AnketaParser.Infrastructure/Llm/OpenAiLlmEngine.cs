@@ -31,8 +31,13 @@ public sealed class OpenAiLlmEngine(LlmSettings settings, HttpClient client) : I
         };
         if (settings.Temperature is { } temperature)
             body["temperature"] = temperature;
-        if (settings.ReasoningEffort is not null)
-            body["reasoning_effort"] = settings.ReasoningEffort;
+        if (settings.ReasoningEffort is { } effort)
+        {
+            if (settings.ReasoningAsObject)
+                body["reasoning"] = effort == "none" ? new JsonObject { ["enabled"] = false } : new JsonObject { ["effort"] = effort };
+            else
+                body["reasoning_effort"] = effort;
+        }
         if (Format(settings.ResponseMode, request) is { } format)
             body["response_format"] = format;
         using var message = new HttpRequestMessage(HttpMethod.Post, settings.Endpoint) { Content = JsonContent.Create(body) };

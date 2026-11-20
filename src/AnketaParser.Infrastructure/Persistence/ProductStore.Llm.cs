@@ -234,6 +234,8 @@ public sealed partial class ProductStore
             Observations = JsonSerializer.Serialize(new
             {
                 fields = result.Extraction?.Facts.ToDictionary(x => x.Key, x => x.Value.Evidence, StringComparer.Ordinal),
+                normalizedFields = result.Extraction?.Facts.Where(x => x.Value.NormalizedValue is not null)
+                    .ToDictionary(x => x.Key, x => x.Value.NormalizedValue, StringComparer.Ordinal),
                 unsupportedFields = result.Extraction?.UnsupportedFields,
                 preferences = Value("preferences"),
                 description = Value("description"),

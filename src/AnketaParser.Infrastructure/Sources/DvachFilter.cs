@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 
 using AnketaParser.Core.Persistence;
+using AnketaParser.Infrastructure.Llm;
 
 namespace AnketaParser.Infrastructure.Sources;
 
@@ -133,6 +134,11 @@ internal static partial class DvachFilter
                 if (InsideUrl(text, value.Index))
                     continue;
                 if (platform is not ("telegram" or "discord") || !IsLabeledValue(platform, value.Value))
+                    continue;
+                // В явном описании места «живу в ДС-1.» точка заканчивает фразу,
+                // а не образует Discord-идентификатор «1.».
+                if (platform == "discord" && ImageboardGlossary.IsNumberedCityInContext(
+                    text[match.Index..(value.Index + value.Length)].TrimEnd('.'), text.AsSpan(0, match.Index)))
                     continue;
                 // Слэш допустим только как разделитель списка значений: остаток адреса
                 // (`tg: alice_name/path`) не должен давать первый контакт.

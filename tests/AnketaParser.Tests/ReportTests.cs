@@ -384,6 +384,26 @@ public sealed class ReportTests
         Assert.Contains("реконструкция", exactHtml, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void FieldLabelIsShownOnlyWhenItsRawValueIsVerified()
+    {
+        const string text = "Живу в ДС-1, ищу компанию.";
+        var revision = Revision(text: text);
+        var analysis = Analysis(revision.Id, fields: [new("location", new TextSpan(0, "Живу в ДС-1".Length), "Москва")])
+            with
+        { Location = "ДС-1" };
+        var document = Compose(Snapshot([Post("100", current: revision, analyses: [analysis])]));
+        var field = Assert.Single(Assert.Single(document.Posts).Llm.Fields);
+        Assert.Equal("Москва", field.Value);
+        Assert.Equal("Живу в ДС-1", field.Evidence.Fragment);
+        Assert.Equal(ReportEvidenceView.Exact, field.Evidence.Status);
+
+        var inconsistent = Compose(Snapshot([Post("100", current: revision, analyses: [analysis with { Location = "ДС-2" }])]));
+        field = Assert.Single(Assert.Single(inconsistent.Posts).Llm.Fields);
+        Assert.Equal("ДС-2", field.Value);
+        Assert.Equal(ReportEvidenceView.ValueNotInSpan, field.Evidence.Status);
+    }
+
     [Theory]
     [InlineData(0, 500, ReportEvidenceView.OutOfRange)]
     [InlineData(-1, 3, ReportEvidenceView.OutOfRange)]

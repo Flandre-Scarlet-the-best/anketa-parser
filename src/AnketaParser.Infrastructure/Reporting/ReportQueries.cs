@@ -235,7 +235,10 @@ public sealed class ReportQueries(ProductDbContext database)
                         !field.Value.TryGetProperty("start", out var start) || !start.TryGetInt32(out var startValue) ||
                         !field.Value.TryGetProperty("length", out var length) || !length.TryGetInt32(out var lengthValue))
                         continue;
-                    fields.Add(new ReportFieldSpan(field.Name, new TextSpan(startValue, lengthValue)));
+                    var label = document.RootElement.TryGetProperty("normalizedFields", out var normalized) &&
+                        normalized.ValueKind == JsonValueKind.Object && normalized.TryGetProperty(field.Name, out var labelValue) &&
+                        labelValue.ValueKind == JsonValueKind.String ? labelValue.GetString() : null;
+                    fields.Add(new ReportFieldSpan(field.Name, new TextSpan(startValue, lengthValue), label));
                 }
             }
 

@@ -382,12 +382,13 @@ public static class ReportComposer
     }
 
     private static IReadOnlyList<ReportFieldView> BuildFields(ReportAnalysisFacts analysis, string? text) =>
-        [.. analysis.FieldSpans
-            .Select(span => new ReportFieldView(
-                span.Name,
-                FieldLabels.GetValueOrDefault(span.Name, span.Name),
-                FieldValue(analysis, span.Name),
-                Verify(span.Span, text, omitted: false, FieldValue(analysis, span.Name))))];
+        [.. analysis.FieldSpans.Select(span =>
+        {
+            var raw = FieldValue(analysis, span.Name);
+            var evidence = Verify(span.Span, text, omitted: false, raw);
+            var display = evidence.Span is not null ? span.NormalizedValue ?? raw : raw;
+            return new ReportFieldView(span.Name, FieldLabels.GetValueOrDefault(span.Name, span.Name), display, evidence);
+        })];
 
     private static string? FieldValue(ReportAnalysisFacts analysis, string name) => name switch
     {

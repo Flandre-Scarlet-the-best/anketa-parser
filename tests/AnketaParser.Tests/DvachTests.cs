@@ -184,6 +184,15 @@ public sealed class DvachTests
         Assert.Equal(value, contact.NormalizedValue);
     }
 
+    [Fact]
+    public void NumberedCityInExplicitLocationDoesNotBecomeDiscordContact()
+    {
+        Assert.Empty(Prepare("Живу в ДС-1. Ищу общение.").Contacts);
+        var onlyContact = Assert.Single(Prepare("Живу в дс 2. Мой дс: sampleuser42").Contacts);
+        Assert.Equal("discord", onlyContact.Platform);
+        Assert.Equal("sampleuser42", onlyContact.NormalizedValue);
+    }
+
     [Theory]
     [InlineData("Мне переслали @sampleuser42")]
     [InlineData("Мне переслали https://t.me/sampleuser42")]

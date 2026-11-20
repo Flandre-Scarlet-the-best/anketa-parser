@@ -16,7 +16,7 @@ public sealed record LlmSettings(
     IReadOnlyDictionary<string, string> HeaderVariables, LlmResponseMode ResponseMode, string TokenParameter,
     string? ReasoningEffort, string? ModelPath, int ContextTokens, int Threads, int GpuLayers,
     int MaxOutputTokens, int MaxInputChars, float? Temperature, int TimeoutSeconds, int Concurrency,
-    int? DailyRequestLimit, string BudgetKey, string PipelineVersion)
+    int? DailyRequestLimit, string BudgetKey, string PipelineVersion, bool ReasoningAsObject = false)
 {
     public TimeSpan Timeout => TimeSpan.FromSeconds(TimeoutSeconds);
 }
@@ -97,7 +97,7 @@ public static class LlmConfiguration
         string[] common = ["engine", "model", "timeout_seconds", "concurrency", "max_output_tokens", "max_input_chars", "temperature"];
         RequireKeys(profile, native
             ? [.. common, "gguf_path", "context_tokens", "threads", "gpu_layers"]
-            : [.. common, "base_url", "key_env", "headers_env", "response_mode", "token_parameter", "reasoning_effort", "daily_request_limit"]);
+            : [.. common, "base_url", "key_env", "headers_env", "response_mode", "token_parameter", "reasoning_effort", "reasoning_format", "daily_request_limit"]);
 
         var model = Read<string>(profile, "model");
         if (string.IsNullOrWhiteSpace(model) || model.Length > 160 || model.Any(char.IsControl))
@@ -126,6 +126,13 @@ public static class LlmConfiguration
         if (reasoning is not (null or "none" or "minimal" or "low" or "medium" or "high" or "xhigh") ||
             engine == LlmEngine.LlamaServer && reasoning is not null)
             throw Invalid("invalid_reasoning_effort");
+
+        var reasoningAsObject = Read<string>(profile, "reasoning_format") switch
+        {
+            null => false,
+            "object" when engine == LlmEngine.OpenAi && reasoning is "none" or "low" or "medium" or "high" => true,
+            _ => throw Invalid("invalid_reasoning_format"),
+        };
 
         var key = Read<string>(profile, "key_env");
         var headerVariables = ReadHeaders(profile);
@@ -166,6 +173,7 @@ public static class LlmConfiguration
             response,
             tokenParameter,
             reasoning,
+            reasoningAsObject,
             context,
             threads,
             layers,
@@ -175,7 +183,7 @@ public static class LlmConfiguration
             headers = headerVariables.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase).ToArray(),
         });
         return new(active, engine, model, endpoint, key, headerVariables, response, tokenParameter, reasoning, modelPath,
-            context, threads, layers, maxOutput, maxInput, temperature, timeout, concurrency, budget, budgetKey, version);
+            context, threads, layers, maxOutput, maxInput, temperature, timeout, concurrency, budget, budgetKey, version, reasoningAsObject);
     }
 
     private static async Task<(string Path, string Hash)> ReadModelAsync(string? file, string directory, CancellationToken ct)

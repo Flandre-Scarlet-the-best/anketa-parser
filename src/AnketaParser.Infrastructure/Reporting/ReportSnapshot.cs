@@ -128,7 +128,7 @@ public sealed record ReportAnalysisFacts(
     ReportProfileFacts? Profile);
 
 /// <summary>Сохранённые координаты подтверждённого поля (кодовая единица UTF-16).</summary>
-public sealed record ReportFieldSpan(string Name, TextSpan Span);
+public sealed record ReportFieldSpan(string Name, TextSpan Span, string? NormalizedValue = null);
 
 /// <summary>Анкета, созданная по решению модели.</summary>
 public sealed record ReportProfileFacts(Guid Id, ProfileState State, DateTimeOffset CreatedAt);

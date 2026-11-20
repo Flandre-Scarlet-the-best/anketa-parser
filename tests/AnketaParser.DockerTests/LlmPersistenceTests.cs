@@ -79,7 +79,7 @@ public sealed class LlmPersistenceTests(PostgresTestCluster cluster) : IClassFix
         await using var db = database.Open();
         var fixture = JsonNode.Parse(await File.ReadAllTextAsync(FixturePath(), Ct))!;
         fixture["threads"]![0]!["posts"]![7]!["comment"] =
-            "Мне 24, я девушка, живу в Омске. Ищу общение. <a href=\"https://t.me/alice_name\">тг_alice_name</a>";
+            "Мне 24, я ТЯН, живу в ДС-1. Ищу общение. <a href=\"https://t.me/alice_name\">тг_alice_name</a>";
         var directory = Directory.CreateTempSubdirectory("anketa-llm-fields-");
         try
         {
@@ -91,18 +91,22 @@ public sealed class LlmPersistenceTests(PostgresTestCluster cluster) : IClassFix
             {
                 sentText = JsonNode.Parse(request.User)!["text"]!.GetValue<string>();
                 Assert.DoesNotContain("alice_name", sentText, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("живу в ДС-1", sentText, StringComparison.Ordinal);
                 return Task.FromResult(new LlmResponse(request.Operation == SemanticOperation.Classify
                     ? """{"class":"profile","reason":"invitation","evidence":"Ищу общение"}"""
-                    : """{"age":{"value":"24","evidence":"Мне 24"},"gender":{"value":"девушка","evidence":"я девушка"},"location":{"value":"Омске","evidence":"живу в Омске"},"interests":null,"goals":null,"preferences":null,"description":null}"""));
+                    : """{"age":{"value":"24","evidence":"Мне 24"},"gender":{"value":"тян","evidence":"я тян"},"location":{"value":"ДС-1","evidence":"живу в ДС-1"},"interests":null,"goals":null,"preferences":null,"description":null}"""));
             });
             Assert.Equal("profile", (await Worker(db, Settings(), engine).ProcessNextAsync(revision, Ct)).Status);
             var analysis = await db.Set<Analysis>().AsNoTracking().SingleAsync(Ct);
             Assert.Equal(24, analysis.Age);
-            Assert.Equal("Омске", analysis.Location);
-            Assert.Equal("девушка", analysis.GenderDescription);
+            Assert.Equal("ДС-1", analysis.Location);
+            Assert.Equal("ТЯН", analysis.GenderDescription);
             using var observations = JsonDocument.Parse(analysis.Observations);
+            var labels = observations.RootElement.GetProperty("normalizedFields");
+            Assert.Equal("Девушка", labels.GetProperty("gender").GetString());
+            Assert.Equal("Москва", labels.GetProperty("location").GetString());
             var fields = observations.RootElement.GetProperty("fields");
-            foreach (var (name, evidence) in new[] { ("age", "Мне 24"), ("gender", "я девушка"), ("location", "живу в Омске") })
+            foreach (var (name, evidence) in new[] { ("age", "Мне 24"), ("gender", "я ТЯН"), ("location", "живу в ДС-1") })
             {
                 var span = fields.GetProperty(name);
                 Assert.Equal(evidence, sentText!.Substring(span.GetProperty("start").GetInt32(), span.GetProperty("length").GetInt32()));

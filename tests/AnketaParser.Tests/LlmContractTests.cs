@@ -116,6 +116,23 @@ public sealed class LlmContractTests
         Assert.Equal("Мужчина", result.Facts["gender"].Value);
     }
 
+    [Theory]
+    [InlineData("Мужчина 22, ищу компанию.", "мужчина", "мужчина 22", "Мужчина 22", true)]
+    [InlineData("🙂 Я взрослый   мужчина, ищу компанию.", "взрослый мужчина", "Я взрослый мужчина", "Я взрослый   мужчина", true)]
+    [InlineData("Ищу ТЯН для общения.", "тян", "ТЯН", "ТЯН", false)]
+    public void GenderUsesOriginalOffsetsAfterNormalization(string text, string value, string quote, string source, bool accepted)
+    {
+        var result = SemanticContract.ReadFacts(Fields(("gender", value, quote)), text);
+        if (!accepted)
+        {
+            Assert.Equal("gender", Assert.Single(result.UnsupportedFields));
+            Assert.Empty(result.Facts);
+            return;
+        }
+        Assert.Empty(result.UnsupportedFields);
+        Assert.Equal(new TextSpan(text.IndexOf(source, StringComparison.Ordinal), source.Length), result.Facts["gender"].Evidence);
+    }
+
     [Fact]
     public void OmitsExtractedFactThatIsOnlyAMaskedContact()
     {
@@ -146,6 +163,37 @@ public sealed class LlmContractTests
         const string text = "Ищу девушку, я мужчина";
         var result = SemanticContract.ReadFacts(Fields(("gender", "мужчина", text)), text);
         Assert.Equal("мужчина", result.Facts["gender"].Value);
+    }
+
+    [Theory]
+    [InlineData("Я ТЯН, хочу поиграть.", "gender", "тян", "ТЯН", "Девушка")]
+    [InlineData("Кунчик, 26. Ищу компанию.", "gender", "кунчик", "Кунчик", "Парень")]
+    [InlineData("м30, ищу друга.", "gender", "М", "м", "Парень")]
+    [InlineData("ж24, ищу подругу.", "gender", "ж", "ж", "Девушка")]
+    [InlineData("🙂 Живу в ДС-1, ищу друга.", "location", "дс-1", "ДС-1", "Москва")]
+    [InlineData("Я из дс  2, ищу компанию.", "location", "дс 2", "дс  2", "Санкт-Петербург")]
+    [InlineData("Я из Екб, ищу друзей.", "location", "Екб", "Екб", "Екатеринбург")]
+    [InlineData("Нахожусь в Питере", "location", "Питере", "Питере", null)]
+    public void SlangHasSeparateDisplayValueAndVerbatimSource(string text, string field, string value, string raw, string? normalized)
+    {
+        var result = SemanticContract.ReadFacts(Fields((field, value, text)), text);
+        Assert.Empty(result.UnsupportedFields);
+        Assert.Equal(new ExtractedFact(raw, new TextSpan(0, text.Length), normalized), result.Facts[field]);
+    }
+
+    [Theory]
+    [InlineData("Ищу тян.", "gender", "тян")]
+    [InlineData("Ищу девушку из СПб.", "location", "СПб")]
+    [InlineData("Пишите в дс.", "location", "дс")]
+    [InlineData("Я из ДС3.", "location", "ДС3")]
+    [InlineData("Спишемся онлайн.", "location", "онлайн")]
+    [InlineData("Хочу найти Мишу.", "gender", "М")]
+    [InlineData("Миша играет, код м30abc.", "gender", "м")]
+    public void SlangDoesNotInventAnAuthorFact(string text, string field, string value)
+    {
+        var result = SemanticContract.ReadFacts(Fields((field, value, text)), text);
+        Assert.Empty(result.Facts);
+        Assert.Equal(field, Assert.Single(result.UnsupportedFields));
     }
 
     [Fact]
@@ -366,6 +414,48 @@ public sealed class LlmContractTests
         var second = Settings() with { Endpoint = new Uri("https://second.example.invalid/v1/chat/completions") };
         Assert.Equal(new LlmUsage(12, 4, 7), (await new OpenAiLlmEngine(first, client).GenerateAsync(request, Ct)).Usage);
         Assert.Equal("{}", (await new OpenAiLlmEngine(second, client).GenerateAsync(request, Ct)).Text);
+    }
+
+    [Theory]
+    [InlineData("none", """{"enabled":false}""")]
+    [InlineData("low", """{"effort":"low"}""")]
+    [InlineData("medium", """{"effort":"medium"}""")]
+    [InlineData("high", """{"effort":"high"}""")]
+    public async Task LoadsAndSendsObjectReasoningControl(string effort, string expected)
+    {
+        var root = Directory.CreateTempSubdirectory("anketa-llm-reasoning-");
+        try
+        {
+            var path = Path.Combine(root.FullName, "llm.toml");
+            var profile = $"""
+                active_profile = "test"
+                [profiles.test]
+                engine = "openai"
+                model = "fixture-model"
+                base_url = "https://example.invalid/v1"
+                reasoning_effort = "{effort}"
+                """;
+            using var config = new ConfigurationManager();
+            await File.WriteAllTextAsync(path, profile, Ct);
+            var classic = Assert.IsType<LlmSettings>(await LlmConfiguration.LoadAsync(config, root.FullName, Ct));
+            await File.WriteAllTextAsync(path, profile + "\nreasoning_format = \"object\"\n", Ct);
+            var structured = Assert.IsType<LlmSettings>(await LlmConfiguration.LoadAsync(config, root.FullName, Ct));
+            Assert.NotEqual(classic.PipelineVersion, structured.PipelineVersion);
+            Assert.Equal(classic.BudgetKey, structured.BudgetKey);
+            using var client = new HttpClient(new FixtureHandler(async (message, ct) =>
+            {
+                using var payload = JsonDocument.Parse(await message.Content!.ReadAsStringAsync(ct));
+                var body = payload.RootElement;
+                Assert.False(body.TryGetProperty("reasoning_effort", out _));
+                Assert.Equal(expected, body.GetProperty("reasoning").GetRawText());
+                return Reply(HttpStatusCode.OK, """{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}""");
+            }));
+            await new OpenAiLlmEngine(structured, client).GenerateAsync(SemanticContract.Request(SemanticOperation.Classify, "данные"), Ct);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
     }
 
     [Theory]
