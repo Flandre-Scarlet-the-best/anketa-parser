@@ -228,7 +228,12 @@ public sealed partial class ProductStore
             SchemaVersion = SemanticContract.SchemaVersion,
             SemanticClass = result.Decision.Class,
             SemanticReason = result.Decision.Reason,
-            Age = Value("age") is { } age ? int.Parse(age, CultureInfo.InvariantCulture) : null,
+            // Значение приходит из вывода модели: неразобранное или выходящее за
+            // допустимый диапазон число не должно ломать сохранение решения.
+            Age = Value("age") is { } age && int.TryParse(age, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) &&
+                parsed is >= 0 and <= 130
+                ? parsed
+                : null,
             Location = Value("location"),
             GenderDescription = Value("gender"),
             Interests = Value("interests"),

@@ -88,7 +88,11 @@ public static class ReportComposer
         ArgumentNullException.ThrowIfNull(toolVersion);
         SnapshotBoundary.Validate(snapshot.Scan, snapshot.Posts);
         var posts = snapshot.Posts.Select(BuildPost).ToArray();
-        var outside = snapshot.PostsOutsideWindow.Select(BuildPost).ToArray();
+        // Пост вне окна скана может не иметь текущей ревизии: отчёт не прерывается,
+        // но и не выдаёт отсутствие данных за решение фильтра или модели.
+        var outside = snapshot.PostsOutsideWindow
+            .Select(post => post.CurrentRevision is null && !post.DetailsLoaded ? MissingRevisionPost(post) : BuildPost(post))
+            .ToArray();
         return new ReportDocument(
             generatedAt,
             toolVersion,
@@ -379,6 +383,37 @@ public static class ReportComposer
             CurrentJobState = null,
             Jobs = [],
         };
+
+    /// <summary>
+    /// Пост вне окна скана без доступной текущей ревизии: отчёт показывает отсутствие
+    /// данных, не прерывается и не приписывает посту решение фильтра или модели.
+    /// </summary>
+    private static ReportPostView MissingRevisionPost(ReportPostFacts post) => new(
+        post.ExternalId,
+        post.Url,
+        SafeLink(post.Url),
+        Format(post.PublishedAt),
+        Format(post.LastSeenAt),
+        StageDetailsNotLoaded,
+        StageLabel(StageDetailsNotLoaded),
+        post.Excluded,
+        new ReportFilterView(
+            "unknown", "решение фильтра не загружено", "текущая ревизия поста недоступна",
+            "unknown", "адресация не загружена", "текущая ревизия поста недоступна",
+            0, false, false, "текущая ревизия поста недоступна"),
+        new ReportTextView(
+            null, "текст недоступен: текущая ревизия поста не загружена", null,
+            "unavailable", "подготовленный текст не сформирован", [], [], []),
+        new ReportLlmView(
+            StageDetailsNotLoaded,
+            StageLabel(StageDetailsNotLoaded),
+            "текущая ревизия поста недоступна: задания и решения не загружены",
+            null, null, null, null, null, null, null, null, null, null,
+            new ReportEvidenceView(ReportEvidenceView.Absent, null,
+                "решение модели недоступно: текущая ревизия поста не загружена", null),
+            [], [], null, null, [], null, []),
+        [],
+        post.ExternalId.ToLowerInvariant());
 
     private static (string Status, string? Note) ResolveStage(
         ReportFilterView filter,

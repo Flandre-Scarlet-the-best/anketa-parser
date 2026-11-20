@@ -81,6 +81,32 @@ public sealed class ReportCommandTests
         Assert.False(File.Exists(output));
     }
 
+    [Fact]
+    public async Task OutputThroughDirectoryLinkCannotReplaceRunMetadata()
+    {
+        using var root = new Support.TemporaryContentRoot("{}");
+        var data = System.IO.Path.Combine(root.Path, "data");
+        var alias = System.IO.Path.Combine(root.Path, "alias");
+        Directory.CreateDirectory(data);
+        try
+        {
+            Directory.CreateSymbolicLink(alias, data);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            Assert.Skip("Символические ссылки недоступны в этом окружении.");
+        }
+
+        var metadata = System.IO.Path.Combine(data, "run.json");
+        await File.WriteAllTextAsync(metadata, "{}", TestContext.Current.CancellationToken);
+        var output = System.IO.Path.Combine(alias, "run.json");
+        var result = await RunAsync(["report", "html", "--output", output, "--run-metadata", metadata], root.Path);
+
+        // Ссылка на каталог ведёт к тому же файлу: запись отклоняется как неверные аргументы.
+        Assert.Equal(ExitCodes.InvalidUsage, result.ExitCode);
+        Assert.Equal("{}", await File.ReadAllTextAsync(metadata, TestContext.Current.CancellationToken));
+    }
+
     private static async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(
         string[] args, string? contentRootPath = null)
     {

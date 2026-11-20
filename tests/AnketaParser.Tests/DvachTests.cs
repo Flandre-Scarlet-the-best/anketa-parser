@@ -318,6 +318,20 @@ public sealed class DvachTests
         Assert.Equal("candidate", prepared.Reason);
     }
 
+    [Theory]
+    [InlineData("Не моя почта:alice@example.invalid")]
+    [InlineData("Не мой email:alice@example.invalid")]
+    [InlineData("Чужая почта:alice@example.invalid")]
+    public void NegatedOwnMailIsNotAuthorContact(string text) =>
+        Assert.Empty(Prepare(text).Contacts);
+
+    [Fact]
+    public void OwnMailWithoutNegationIsStillRecognized()
+    {
+        var prepared = Prepare("Моя почта:alice@example.invalid");
+        Assert.Equal("alice@example.invalid", Assert.Single(prepared.Contacts).NormalizedValue);
+    }
+
     [Fact]
     public void OwnEnglishPlatformLabelDoesNotAdoptTheForeignContact()
     {

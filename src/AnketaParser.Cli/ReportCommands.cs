@@ -249,18 +249,48 @@ internal static class ReportCommands
         return true;
     }
 
-    /// <summary>Пути совпадают после развёртывания в абсолютную форму.</summary>
+    /// <summary>
+    /// Пути совпадают после развёртывания в абсолютную форму и разрешения ссылок:
+    /// запись через ссылку на каталог не должна заменить исходный файл метаданных.
+    /// </summary>
     private static bool SamePath(string first, string second)
     {
         try
         {
             var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-            return string.Equals(Path.GetFullPath(first), Path.GetFullPath(second), comparison);
+            return string.Equals(ResolvedPath(first), ResolvedPath(second), comparison);
         }
-        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException)
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException or IOException)
         {
             return false;
         }
+    }
+
+    /// <summary>Абсолютный путь с разрешёнными ссылками самого файла и его каталогов.</summary>
+    private static string ResolvedPath(string path)
+    {
+        var full = Path.GetFullPath(path);
+        var file = new FileInfo(full);
+        if (file.Exists && file.ResolveLinkTarget(returnFinalTarget: true) is { } target)
+            full = target.FullName;
+        var directory = Path.GetDirectoryName(full);
+        return string.IsNullOrEmpty(directory)
+            ? full
+            : Path.Combine(ResolvedDirectory(directory), Path.GetFileName(full));
+    }
+
+    /// <summary>Каталог с разрешёнными ссылками во всех существующих предках.</summary>
+    private static string ResolvedDirectory(string directory)
+    {
+        var info = new DirectoryInfo(directory);
+        // Корень и несуществующий каталог разрешать нечего: ссылки в них отсутствуют по контракту.
+        if (!info.Exists || info.Parent is null)
+            return directory;
+        var resolved = info.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? directory;
+        var parent = Path.GetDirectoryName(resolved);
+        return string.IsNullOrEmpty(parent) || string.Equals(parent, resolved, StringComparison.Ordinal)
+            ? resolved
+            : Path.Combine(ResolvedDirectory(parent), Path.GetFileName(resolved));
     }
 
     internal static async Task WriteHtmlAsync(string path, string html, CancellationToken cancellationToken)

@@ -132,6 +132,22 @@ public sealed class ReportTests
     }
 
     [Fact]
+    public void OutsidePostWithoutCurrentRevisionDoesNotBreakReport()
+    {
+        var inside = Post("100", current: Revision());
+        var outside = Post("98") with { CurrentRevision = null, DetailsLoaded = false };
+        var document = Compose(Snapshot([inside], [outside]));
+
+        var view = Assert.Single(document.PostsOutsideWindow);
+        Assert.Equal(ReportComposer.StageDetailsNotLoaded, view.Stage);
+        Assert.Contains("не загружена", view.Text.TextNote, StringComparison.Ordinal);
+        Assert.Empty(view.Llm.Decisions);
+        // Строгая проверка ревизий основного снимка сохраняется.
+        Assert.Throws<ReportDiagnosticException>(() =>
+            Compose(Snapshot([Post("97") with { CurrentRevision = null }])));
+    }
+
+    [Fact]
     public void PostOutsideWindowDeclaresUnloadedDetailsInsteadOfMissingJobs()
     {
         var inside = Post("100", current: Revision());
