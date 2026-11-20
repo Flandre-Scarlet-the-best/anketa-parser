@@ -456,8 +456,7 @@ public sealed class LlmContractTests
             using var client = new HttpClient(new FixtureHandler(async (message, ct) =>
             {
                 Assert.Equal("https://nordrouter.com/v1/chat/completions", message.RequestUri?.AbsoluteUri);
-                Assert.True(message.Headers.TryGetValues("Authorization", out var values));
-                Assert.Equal("Bearer " + fixtureSecret, Assert.Single(values));
+                Assert.Equal("Bearer " + fixtureSecret, Assert.Single(message.Headers.GetValues("Authorization")));
                 using var payload = JsonDocument.Parse(await message.Content!.ReadAsStringAsync(ct));
                 var body = payload.RootElement;
                 Assert.Equal(settings.Model, body.GetProperty("model").GetString());
