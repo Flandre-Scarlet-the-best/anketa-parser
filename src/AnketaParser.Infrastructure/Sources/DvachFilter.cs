@@ -72,8 +72,9 @@ internal static partial class DvachFilter
 
             var text = line.Text;
             var number = index + 1;
+            var previousLine = index > 0 ? lines[index - 1].Text : null;
             // Дорогие проверки выполняются один раз на строку, а не на каждый контакт.
-            var interiorDots = InteriorDots(text);
+            var interiorPunctuation = InteriorPunctuation(text);
             List<(int Start, int End)> occupied = [];
             List<(int Start, int End)> labeled = [];
             List<(int Offset, DetectedContact Contact)> found = [];
@@ -81,7 +82,7 @@ internal static partial class DvachFilter
             void Record(int offset, int length, string platform, string raw, string value, decimal confidence, string origin)
             {
                 if (occupied.Any(span => offset < span.End && offset + length > span.Start) ||
-                    IsExplicitlyForeign(text, offset, interiorDots))
+                    IsExplicitlyForeign(text, offset, interiorPunctuation, previousLine))
                     return;
                 var contact = Create(platform, raw, value, confidence, number, offset, origin);
                 if (contact is null)
@@ -221,7 +222,7 @@ internal static partial class DvachFilter
             foreach (var link in line.Links)
             {
                 if (link.Target.Length > 2048 || string.IsNullOrWhiteSpace(link.Label) ||
-                    IsExplicitlyForeign(text, link.Offset, interiorDots))
+                    IsExplicitlyForeign(text, link.Offset, interiorPunctuation, previousLine))
                     continue;
                 var match = ExplicitContact().Match(link.Target);
                 if (!match.Success || match.Length != link.Target.Length)
@@ -255,10 +256,11 @@ internal static partial class DvachFilter
             var text = lines[index].Text;
             if (text.Length > 4096)
                 continue;
-            var interiorDots = InteriorDots(text);
+            var previousLine = index > 0 ? lines[index - 1].Text : null;
+            var interiorPunctuation = InteriorPunctuation(text);
             foreach (Match match in PossibleMalformedAt().Matches(text))
             {
-                if (!InsideUrl(text, match.Index) && !IsExplicitlyForeign(text, match.Index, interiorDots))
+                if (!InsideUrl(text, match.Index) && !IsExplicitlyForeign(text, match.Index, interiorPunctuation, previousLine))
                     result.Add(new(index + 1, match.Index, match.Length, "ambiguous_at"));
             }
             foreach (Match match in PossibleMixedTelegram().Matches(text))
@@ -266,33 +268,35 @@ internal static partial class DvachFilter
                 var raw = match.Groups["value"];
                 if (raw.Value.Any(c => c is >= 'А' and <= 'я' or 'Ё' or 'ё') &&
                     raw.Value.Any(char.IsAsciiLetter) && !InsideUrl(text, raw.Index) &&
-                    !IsExplicitlyForeign(text, raw.Index, interiorDots))
+                    !IsExplicitlyForeign(text, raw.Index, interiorPunctuation, previousLine))
                     result.Add(new(index + 1, raw.Index, raw.Length, "mixed_alphabet"));
             }
             if (PossibleReverseDiscord().Match(text) is { Success: true } reverse)
             {
                 var raw = reverse.Groups["value"];
-                if (!InsideUrl(text, raw.Index) && !IsExplicitlyForeign(text, raw.Index, interiorDots))
+                if (!InsideUrl(text, raw.Index) && !IsExplicitlyForeign(text, raw.Index, interiorPunctuation, previousLine))
                     result.Add(new(index + 1, raw.Index, raw.Length, "discord_reverse"));
             }
         }
         return result;
     }
 
-    private static bool IsExplicitlyForeign(string text, int offset, bool[] interiorDots)
+    private static bool IsExplicitlyForeign(string text, int offset, bool[] interiorPunctuation, string? previousLine)
     {
         var boundary = -1;
         for (var i = 0; i < offset; i++)
         {
+            // Пунктуация внутри адреса не завершает предложение: «friend.name», «?start=».
+            if (interiorPunctuation[i])
+                continue;
             if (text[i] is '!' or '?' or ';' or '\n')
             {
                 boundary = i;
                 continue;
             }
 
-            // Точка внутри имени или адреса не завершает предложение: «friend.name».
             // Границей остаётся точка, за которой следует пробел или конец фрагмента.
-            if (text[i] == '.' && !interiorDots[i] && (i + 1 == offset || char.IsWhiteSpace(text[i + 1])))
+            if (text[i] == '.' && (i + 1 == offset || char.IsWhiteSpace(text[i + 1])))
                 boundary = i;
         }
 
@@ -305,7 +309,14 @@ internal static partial class DvachFilter
         while (markers.MoveNext())
             markerEnd = markers.Current.Index + markers.Current.Length;
         if (markerEnd < 0)
-            return false;
+        {
+            // Подпись предыдущей строки относится к значению, перенесённому на новую:
+            // «Контакт друга:» на отдельной строке делает следующий контакт чужим.
+            if (previousLine is null || OwnContactPrefix().IsMatch(sentence))
+                return false;
+            return HasForeignMarker(previousLine);
+        }
+
         var ownStart = -1;
         var own = OwnContactPrefix().EnumerateMatches(sentence[markerEnd..]);
         if (own.MoveNext())
@@ -314,8 +325,18 @@ internal static partial class DvachFilter
         return ownStart < 0 || offset - start < ownStart;
     }
 
-    /// <summary>Точки, находящиеся внутри адреса: они не завершают предложение.</summary>
-    private static bool[] InteriorDots(string text)
+    /// <summary>Есть ли в строке признак чужого контакта без последующей собственной метки.</summary>
+    private static bool HasForeignMarker(string line)
+    {
+        var markerEnd = -1;
+        var markers = ForeignContactPrefix().EnumerateMatches(line);
+        while (markers.MoveNext())
+            markerEnd = markers.Current.Index + markers.Current.Length;
+        return markerEnd >= 0 && !OwnContactPrefix().IsMatch(line.AsSpan(markerEnd));
+    }
+
+    /// <summary>Пунктуация внутри адреса: она не завершает предложение.</summary>
+    private static bool[] InteriorPunctuation(string text)
     {
         var mask = new bool[text.Length];
         foreach (Match match in ExplicitContact().Matches(text))
@@ -328,7 +349,7 @@ internal static partial class DvachFilter
         {
             for (var i = match.Index; i + 1 < match.Index + match.Length; i++)
             {
-                if (text[i] == '.')
+                if (text[i] is '.' or '?' or '!' or ';')
                     mask[i] = true;
             }
         }

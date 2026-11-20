@@ -1,3 +1,4 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
 
@@ -215,7 +216,11 @@ public static class LlmConfiguration
 
     internal static void EnsureSecretTransport(Uri endpoint, string? key, IReadOnlyDictionary<string, string> headers)
     {
-        if (endpoint.Scheme != Uri.UriSchemeHttps && !endpoint.IsLoopback && (key is not null || headers.Count != 0))
+        // Открытый HTTP с секретами допустим только для loopback IP-литерала:
+        // имя localhost резолвится в адрес, который может им не быть.
+        var loopbackLiteral = endpoint.IsLoopback && IPAddress.TryParse(endpoint.Host.Trim('[', ']'), out var address) &&
+            IPAddress.IsLoopback(address);
+        if (endpoint.Scheme != Uri.UriSchemeHttps && !loopbackLiteral && (key is not null || headers.Count != 0))
             throw Invalid("insecure_secret_transport");
     }
 

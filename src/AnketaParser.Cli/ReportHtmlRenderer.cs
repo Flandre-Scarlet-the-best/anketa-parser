@@ -33,6 +33,8 @@ public static class ReportHtmlRenderer
             --pos: #57c98a; --neg: #ef9184; --warn: #e0c272; --bad: #f28b8b; --wait: #86b6ef; --idle: #9aa6b4;
             --accent: #9dc4ec; --mark: #6b5310;
           }
+          /* Светлые тона тёмной темы требуют тёмного текста в сплошных бейджах. */
+          .badge.solid { color: #12161a; }
         }
         * { box-sizing: border-box; }
         html { -webkit-text-size-adjust: 100%; }
@@ -857,8 +859,15 @@ public static class ReportHtmlRenderer
 
         html.Append("<section id=\"outside\" class=\"card\">\n<h2>Посты вне снимка</h2>\n")
             .Append("<p class=\"note\">Эти посты увидены другим сканом и в снимок не входят: их решения и анкеты ")
-            .Append("не относятся к выбранному снимку и в счётчики не попали.</p>\n")
-            .Append("<div class=\"scroll\">\n<table class=\"data\"><thead><tr><th scope=\"col\">Номер</th>")
+            .Append("не относятся к выбранному снимку и в счётчики не попали.</p>\n");
+        if (document.PostsOutsideWindow.Count < document.Snapshot.PostsOutsideWindow)
+        {
+            html.Append("<p class=\"note\">Показано ").Append(Number(document.PostsOutsideWindow.Count))
+                .Append(" из ").Append(Number(document.Snapshot.PostsOutsideWindow))
+                .Append(" постов вне снимка: остальные не вошли в выборку отчёта.</p>\n");
+        }
+
+        html.Append("<div class=\"scroll\">\n<table class=\"data\"><thead><tr><th scope=\"col\">Номер</th>")
             .Append("<th scope=\"col\">Ссылка</th><th scope=\"col\">Виден</th><th scope=\"col\">Фильтр</th>")
             .Append("<th scope=\"col\">Адресация</th><th scope=\"col\">Исключён</th></tr></thead>\n<tbody>\n");
         foreach (var post in document.PostsOutsideWindow)

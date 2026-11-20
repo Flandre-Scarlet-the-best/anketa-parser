@@ -11,8 +11,16 @@ namespace AnketaParser.Infrastructure.Reporting;
 public static class ReportRunMetadataReader
 {
     private const int MaxItems = 200;
+    private const int MaxNamed = 2_000;
+    private const int MaxFileBytes = 1024 * 1024;
     private const int MaxValueChars = 300;
     private const int MaxSamplingItems = 12;
+
+    /// <summary>Признаки имён полей, значения которых не попадают в отчёт.</summary>
+    private static readonly string[] SensitiveNames =
+        ["key", "token", "secret", "password", "passwd", "credential", "authorization", "auth", "cookie", "session", "bearer"];
+
+    private const string Hidden = "скрыто";
 
     private static readonly string[] ModelNames = ["generalName", "modelName", "model.name", "name"];
     private static readonly string[] EngineNames = ["runtime", "backend", "engine"];
@@ -35,6 +43,26 @@ public static class ReportRunMetadataReader
     public static async Task<ReportRunMetadataView> ReadAsync(string path, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        long length;
+        try
+        {
+            length = new FileInfo(path).Length;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            throw new ReportDiagnosticException("run_metadata_unreadable", [new ReportDiagnosticFact("path", path)]);
+        }
+
+        if (length > MaxFileBytes)
+        {
+            // Файл читается целиком: предел защищает процесс отчёта от исчерпания памяти.
+            throw new ReportDiagnosticException("run_metadata_too_large",
+            [
+                new ReportDiagnosticFact("path", path),
+                new ReportDiagnosticFact("limit", MaxFileBytes.ToString(CultureInfo.InvariantCulture)),
+            ]);
+        }
+
         string json;
         try
         {
@@ -62,7 +90,16 @@ public static class ReportRunMetadataReader
             List<ReportMetadataItem> displayed = [];
             List<ReportMetadataItem> named = [];
             var leaves = 0;
-            Flatten(document.RootElement, string.Empty, displayed, named, ref leaves);
+            try
+            {
+                Flatten(document.RootElement, string.Empty, displayed, named, ref leaves);
+            }
+            catch (InvalidOperationException)
+            {
+                // Непарный суррогат в строке файла не декодируется: файл непригоден.
+                throw new ReportDiagnosticException("run_metadata_invalid", [new ReportDiagnosticFact("path", path)]);
+            }
+
             return new ReportRunMetadataView(path, true, Summarize(named), displayed, leaves > MaxItems);
         }
     }
@@ -147,10 +184,27 @@ public static class ReportRunMetadataReader
         string path, string value, List<ReportMetadataItem> displayed, List<ReportMetadataItem> named, ref int leaves)
     {
         leaves++;
+        var safe = Sanitize(path, value);
         if (displayed.Count < MaxItems)
-            displayed.Add(new ReportMetadataItem(path, value));
-        if (IsFactName(path))
-            named.Add(new ReportMetadataItem(path, value));
+            displayed.Add(new ReportMetadataItem(path, safe));
+        if (named.Count < MaxNamed && IsFactName(path))
+            named.Add(new ReportMetadataItem(path, safe));
+    }
+
+    /// <summary>
+    /// Значение попадает в отчёт: секретные поля маскируются, а из адреса удаляются
+    /// учётные данные, параметры запроса и фрагмент.
+    /// </summary>
+    private static string Sanitize(string name, string value)
+    {
+        if (SensitiveNames.Any(marker => name.Contains(marker, StringComparison.OrdinalIgnoreCase)))
+            return Hidden;
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) ||
+            (uri.UserInfo.Length == 0 && uri.Query.Length == 0 && uri.Fragment.Length == 0))
+            return value;
+        return uri.Scheme + "://" + uri.Host +
+            (uri.IsDefaultPort ? string.Empty : ":" + uri.Port.ToString(CultureInfo.InvariantCulture)) + uri.AbsolutePath;
     }
 
     /// <summary>

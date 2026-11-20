@@ -115,7 +115,17 @@ public sealed class OpenAiLlmEngine(LlmSettings settings, HttpClient client) : I
         var count = await stream.ReadAtLeastAsync(buffer, buffer.Length, false, ct).ConfigureAwait(false);
         if (count > MaxResponseBytes)
             throw new LlmFailureException("output_limit");
-        return JsonDocument.Parse(buffer.AsMemory(0, count), new JsonDocumentOptions { MaxDepth = 16, AllowDuplicateProperties = false });
+        try
+        {
+            return JsonDocument.Parse(buffer.AsMemory(0, count),
+                new JsonDocumentOptions { MaxDepth = 16, AllowDuplicateProperties = false });
+        }
+        catch (InvalidOperationException)
+        {
+            // Непарный суррогат в имени свойства ломает проверку дубликатов:
+            // ответ провайдера непригоден, и это отдельная категория отказа.
+            throw new LlmFailureException("invalid_provider_json", retryable: true);
+        }
     }
 
     private static async Task<LlmFailureException> ReadFailureAsync(HttpResponseMessage response, CancellationToken ct)
@@ -134,7 +144,7 @@ public sealed class OpenAiLlmEngine(LlmSettings settings, HttpClient client) : I
                     "context_length_exceeded" or "context_window_exceeded" or "prompt_too_long")
                     return new("context_limit");
             }
-            catch (Exception error) when (error is JsonException or LlmFailureException)
+            catch (Exception error) when (error is JsonException or LlmFailureException or InvalidOperationException)
             {
                 // Не возвращаем содержимое ошибки провайдера.
             }

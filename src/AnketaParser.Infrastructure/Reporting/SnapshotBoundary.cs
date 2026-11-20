@@ -31,6 +31,9 @@ public static class SnapshotBoundary
         if (scan.StartedAt is null || scan.FinishedAt is null)
             throw new ReportDiagnosticException("scan_bounds_missing",
                 Facts(("startedAt", scan.StartedAt), ("finishedAt", scan.FinishedAt)));
+        if (scan.FinishedAt < scan.StartedAt)
+            throw new ReportDiagnosticException("scan_bounds_invalid",
+                Facts(("startedAt", scan.StartedAt), ("finishedAt", scan.FinishedAt)));
         if (scan.Applied != scan.Received)
             throw new ReportDiagnosticException("scan_partially_applied",
                 Facts(("received", scan.Received), ("applied", scan.Applied)));

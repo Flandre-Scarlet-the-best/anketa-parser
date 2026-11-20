@@ -996,6 +996,128 @@ public sealed class ReportTests
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
     }
 
+    [Fact]
+    public void FieldWithoutStoredValueIsNotConfirmed()
+    {
+        // Координаты есть, а исходное значение поля не сохранено: подтверждение невозможно.
+        var revision = Revision();
+        var analysis = Analysis(revision.Id, fields: [new ReportFieldSpan("age", new TextSpan(0, 2))]) with { Age = null };
+        var document = Compose(Snapshot([Post("100", current: revision, analyses: [analysis])]));
+
+        var field = Assert.Single(Assert.Single(document.Posts).Llm.Fields);
+        Assert.Equal(ReportEvidenceView.ValueMissing, field.Evidence.Status);
+        Assert.Null(field.Evidence.Span);
+    }
+
+    [Fact]
+    public void MissingFilterCodeIsDistinctFromAllValues()
+    {
+        var revision = Revision() with { IngestionReason = null };
+        var document = Compose(Snapshot([Post("100", current: revision)]));
+        var post = Assert.Single(document.Posts);
+
+        // Код «нет данных» не совпадает с пустым значением варианта «все».
+        Assert.Equal("unknown", post.Filter.Reason);
+        var html = ReportHtmlRenderer.Render(document);
+        Assert.Contains("data-reason=\"unknown\"", html, StringComparison.Ordinal);
+        Assert.Contains("<option value=\"unknown\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AverageAttemptTimeWithoutMeasurementsIsNotZeroMilliseconds()
+    {
+        var revision = Revision();
+        var running = Job(revision.Id, "running") with { Attempts = [Attempt(null) with { ElapsedMilliseconds = null }] };
+        var document = Compose(Snapshot([Post("100", current: revision, jobs: [running])]));
+
+        var counter = document.Summary.Single(group => group.Id == "jobs")
+            .Counters.Single(item => item.Id == "attempts.elapsed_mean");
+        Assert.Contains("нет измерений", counter.Label, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ScanFinishedBeforeStartedIsRejected()
+    {
+        var scan = Scan(1, 1, 1) with { FinishedAt = Started.AddMinutes(-5) };
+        var snapshot = new ReportSnapshot(new ReportSourceFacts(SourceId, ThreadUrl, ThreadUrl), scan,
+            [Post("100", current: Revision())], []);
+
+        var error = Assert.Throws<ReportDiagnosticException>(() => Compose(snapshot));
+        Assert.Equal("scan_bounds_invalid", error.Category);
+    }
+
+    [Fact]
+    public void OutsideTableStatesShownCountWhenSelectionIsLimited()
+    {
+        var inside = Post("100", current: Revision());
+        var outside = Post("98", current: Revision(receivedAt: Started.AddDays(-1)));
+        var scan = Scan(1, 1, 1, outsideCount: 2);
+        var snapshot = new ReportSnapshot(new ReportSourceFacts(SourceId, ThreadUrl, ThreadUrl), scan, [inside], [outside]);
+
+        var html = ReportHtmlRenderer.Render(Compose(snapshot));
+        Assert.Contains("Показано 1 из 2", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RunMetadataSecretsAreNotPublished()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            await File.WriteAllTextAsync(path,
+                """{"apiKey":"sk-secret-value","baseUrl":"https://user:pass@example.invalid/v1?token=abc"}""",
+                TestContext.Current.CancellationToken);
+            var metadata = await ReportRunMetadataReader.ReadAsync(path, TestContext.Current.CancellationToken);
+
+            Assert.DoesNotContain(metadata.All, item => item.Value.Contains("sk-secret-value", StringComparison.Ordinal));
+            Assert.DoesNotContain(metadata.All, item => item.Value.Contains("pass", StringComparison.Ordinal));
+            Assert.DoesNotContain(metadata.All, item => item.Value.Contains("token=abc", StringComparison.Ordinal));
+            Assert.Contains(metadata.All, item => item.Value == "https://example.invalid/v1");
+            var html = ReportHtmlRenderer.Render(Compose(Snapshot([]), metadata));
+            Assert.DoesNotContain("sk-secret-value", html, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task RunMetadataWithInvalidSurrogateIsReportedAsInvalid()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            await File.WriteAllTextAsync(path, """{"modelName":"\uD800"}""", TestContext.Current.CancellationToken);
+            var error = await Assert.ThrowsAsync<ReportDiagnosticException>(
+                () => ReportRunMetadataReader.ReadAsync(path, TestContext.Current.CancellationToken));
+            Assert.Equal("run_metadata_invalid", error.Category);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task OversizedRunMetadataIsRejectedBeforeReading()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            // Файл больше предела читается целиком только без этой проверки.
+            await File.WriteAllTextAsync(path, "{\"steps\":\"" + new string('1', 1_200_000) + "\"}",
+                TestContext.Current.CancellationToken);
+            var error = await Assert.ThrowsAsync<ReportDiagnosticException>(
+                () => ReportRunMetadataReader.ReadAsync(path, TestContext.Current.CancellationToken));
+            Assert.Equal("run_metadata_too_large", error.Category);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static string EscapeHtmlText(string value) =>
         value.Replace("&", "&amp;", StringComparison.Ordinal).Replace("\"", "&quot;", StringComparison.Ordinal);
 

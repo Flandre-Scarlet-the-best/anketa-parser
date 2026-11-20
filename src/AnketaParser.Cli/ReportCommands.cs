@@ -257,7 +257,11 @@ internal static class ReportCommands
     {
         try
         {
-            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            // APFS по умолчанию регистронезависим, как и файловые системы Windows:
+            // сравниваем имена так же, как их сравнивает файловая система.
+            var comparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
             return string.Equals(ResolvedPath(first), ResolvedPath(second), comparison);
         }
         catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException or IOException)

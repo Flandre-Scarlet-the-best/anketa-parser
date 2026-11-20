@@ -157,9 +157,9 @@ public static class ReportComposer
     /// <summary>Решение фильтра, адресация и признаки контактов показываются раздельно.</summary>
     private static ReportFilterView BuildFilter(ReportPostFacts post, ReportRevisionFacts revision)
     {
-        var reason = revision.IngestionReason ?? string.Empty;
+        var reason = string.IsNullOrEmpty(revision.IngestionReason) ? "unknown" : revision.IngestionReason;
         var (reasonLabel, reasonNote) = FilterDecisionLabel(reason);
-        var addressing = revision.IngestionReply ?? string.Empty;
+        var addressing = string.IsNullOrEmpty(revision.IngestionReply) ? "unknown" : revision.IngestionReply;
         var addressingLabel = AddressingLabel(addressing);
         var admitted = !post.Excluded && reason == DvachFilter.Candidate && post.CurrentRevisionId == revision.Id;
         var admittedNote = admitted
@@ -255,7 +255,7 @@ public static class ReportComposer
     }
 
     /// <summary>Проверяет сохранённые координаты и возвращает фрагмент только при точном воспроизведении.</summary>
-    private static ReportEvidenceView Verify(TextSpan? span, string? text, bool omitted, string? value)
+    private static ReportEvidenceView Verify(TextSpan? span, string? text, bool omitted, string? value, bool requireValue = false)
     {
         if (span is null)
         {
@@ -282,6 +282,12 @@ public static class ReportComposer
         {
             return new ReportEvidenceView(ReportEvidenceView.MaskChar, fragment,
                 "фрагмент содержит символ маски █: исходный контакт не выделяется как цитата модели", null);
+        }
+
+        if (requireValue && value is null)
+        {
+            return new ReportEvidenceView(ReportEvidenceView.ValueMissing, fragment,
+                "исходное значение поля не сохранено: подтверждение по фрагменту невозможно, подсветка не выполняется", null);
         }
 
         if (value is not null && !fragment.Contains(value, StringComparison.Ordinal))
@@ -455,7 +461,7 @@ public static class ReportComposer
         [.. analysis.FieldSpans.Select(span =>
         {
             var raw = FieldValue(analysis, span.Name);
-            var evidence = Verify(span.Span, text, omitted: false, raw);
+            var evidence = Verify(span.Span, text, omitted: false, raw, requireValue: true);
             var display = evidence.Span is not null ? span.NormalizedValue ?? raw : raw;
             return new ReportFieldView(span.Name, FieldLabels.GetValueOrDefault(span.Name, span.Name), display, evidence);
         })];
@@ -753,7 +759,8 @@ public static class ReportComposer
                     attempts.Length, ReportCounterKind.Share, "FinishedAt заполнен"),
                 new("attempts.failed", "попыток с отказом", attempts.Count(attempt => attempt.FailureCategory is not null),
                     attempts.Length, ReportCounterKind.Share, null),
-                new("attempts.elapsed_mean", "среднее время попытки, мс",
+                new("attempts.elapsed_mean",
+                    measured.Length == 0 ? "среднее время попытки, мс (нет измерений)" : "среднее время попытки, мс",
                     measured.Length == 0 ? 0 : (long)Math.Round(measured.Average(), MidpointRounding.AwayFromZero), null,
                     ReportCounterKind.Count, "по попыткам с измеренным временем"),
                 new("tokens.input", "входных токенов", inputTokens, null, ReportCounterKind.Count,
@@ -819,7 +826,7 @@ public static class ReportComposer
         DvachFilter.OpeningPost => ("открывающий пост", "OP треда не рассматривается как анкета"),
         DvachFilter.NoOwnContact => ("нет своего контакта", "контакт не распознан; адресация на это не влияет"),
         DvachFilter.UnresolvedContact => ("возможный контакт не нормализован", "адрес не подтверждён и не поставлен в очередь модели"),
-        "" => ("нет данных", "решение фильтра не сохранилось для актуальной ревизии"),
+        "" or "unknown" => ("нет данных", "решение фильтра не сохранилось для актуальной ревизии"),
         _ => ("вне контракта", "значение не входит в перечень решений фильтра"),
     };
 
@@ -829,7 +836,8 @@ public static class ReportComposer
         "op_reply" => "ответ на OP",
         "none" => "без адресации",
         DvachFilter.OtherReply => "ответ другому посту",
-        _ => "нет данных",
+        "unknown" => "нет данных",
+        _ => "вне контракта",
     };
 
     private static string Format(DateTimeOffset value) =>

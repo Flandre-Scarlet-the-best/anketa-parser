@@ -180,6 +180,9 @@ public sealed record ReportEvidenceView(string Status, string? Fragment, string 
 
     /// <summary>Значение поля не найдено внутри фрагмента.</summary>
     public const string ValueNotInSpan = "value_not_in_span";
+
+    /// <summary>Исходное значение поля не сохранено: подтверждение невозможно.</summary>
+    public const string ValueMissing = "value_missing";
 }
 
 /// <summary>Подтверждённое поле анкеты с проверенным фрагментом.</summary>

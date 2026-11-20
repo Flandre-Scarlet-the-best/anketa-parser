@@ -170,6 +170,7 @@ public sealed class LlmContractTests
     [InlineData("age", "25", "25 лвл в игре, го катку")]
     [InlineData("age", "80", "Вес 80 кг, го общаться")]
     [InlineData("gender", "тян", "Люблю тян, го общаться")]
+    [InlineData("age", "23", "Мне не 23 года.")]
     public void OmitsClearlyMisassignedFacts(string field, string value, string text)
     {
         var result = SemanticContract.ReadFacts(Fields((field, value, text)), text);
@@ -405,6 +406,35 @@ public sealed class LlmContractTests
     }
 
     [Fact]
+    public void SurrogateInModelPropertyNameIsModelFailure()
+    {
+        // Имя поля с непарным суррогатом не должно давать необработанное исключение.
+        Assert.Throws<LlmFailureException>(() => SemanticContract.ReadFacts("""{"\uD800":null}""", "мне 23"));
+    }
+
+    [Fact]
+    public async Task SurrogateInProviderErrorCodeKeepsCategorizedFailure()
+    {
+        using var handler = new FixtureHandler((_, _) =>
+            Task.FromResult(Reply(HttpStatusCode.BadRequest, """{"error":{"code":"\uD800"}}""")));
+        using var client = new HttpClient(handler);
+        var error = await Assert.ThrowsAsync<LlmFailureException>(() => new OpenAiLlmEngine(Settings(), client)
+            .GenerateAsync(SemanticContract.Request(SemanticOperation.Classify, "данные"), Ct));
+        Assert.Equal("unsupported_request", error.Category);
+    }
+
+    [Fact]
+    public async Task SurrogateInProviderPropertyNameKeepsCategorizedFailure()
+    {
+        using var handler = new FixtureHandler((_, _) =>
+            Task.FromResult(Reply(HttpStatusCode.OK, """{"\uD800":1}""")));
+        using var client = new HttpClient(handler);
+        var error = await Assert.ThrowsAsync<LlmFailureException>(() => new OpenAiLlmEngine(Settings(), client)
+            .GenerateAsync(SemanticContract.Request(SemanticOperation.Classify, "данные"), Ct));
+        Assert.False(string.IsNullOrEmpty(error.Category));
+    }
+
+    [Fact]
     public void SecretBearingRequestsDoNotUseProxyForPlainHttpEndpoint()
     {
         // Открытый HTTP допускается только для loopback: прокси для такого запроса
@@ -484,7 +514,8 @@ public sealed class LlmContractTests
         Assert.True(document.RootElement.TryGetProperty("class", out _));
         using var cancel = CancellationTokenSource.CreateLinkedTokenSource(Ct);
         cancel.CancelAfter(TimeSpan.FromMilliseconds(200));
-        var longText = string.Concat(Enumerable.Repeat("Привет, ищу общение. ", 300));
+        // Вход максимальной длины: генерация гарантированно не успевает закончиться до отмены.
+        var longText = string.Concat(Enumerable.Repeat("Привет, ищу общение. ", 500));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             engine.GenerateAsync(SemanticContract.Request(SemanticOperation.Classify, longText), cancel.Token));
     }
@@ -717,6 +748,9 @@ public sealed class LlmContractTests
             Assert.Equal("insecure_secret_transport", (await Assert.ThrowsAsync<LlmConfigurationException>(() => Load("http://192.0.2.10/v1", header))).Category);
             Assert.NotNull(await Load("http://192.0.2.10/v1", ""));
             Assert.NotNull(await Load("http://127.0.0.1/v1", key));
+            // Имя localhost резолвится в адрес, который может и не быть loopback.
+            Assert.Equal("insecure_secret_transport", (await Assert.ThrowsAsync<LlmConfigurationException>(
+                () => Load("http://localhost/v1", key))).Category);
             Assert.NotNull(await Load("https://example.invalid/v1", header));
         }
         finally

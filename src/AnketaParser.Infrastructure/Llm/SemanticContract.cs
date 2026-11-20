@@ -267,6 +267,9 @@ public static partial class SemanticContract
         if (LevelWord().IsMatch(suffix) && (GameContext().IsMatch(suffix) || GameContext().IsMatch(sentence)))
             return false;
         // Возраст принимается при положительном указании: «мне 23», «кун, 26», «25 лет», «м30».
+        // Отрицание отменяет признак: «Мне не 23 года» возрастом не является.
+        if (NegatedAgePrefix().IsMatch(sentence))
+            return false;
         return AgePrefix().IsMatch(sentence) || AgeSuffix().IsMatch(suffix) || CompactAgeHeader().IsMatch(sentence);
     }
 
@@ -281,6 +284,10 @@ public static partial class SemanticContract
     [GeneratedRegex(@"^(?:лет|год[а-яё]*|г\.|лвл|lvl|левел|level)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex AgeSuffix();
+
+    [GeneratedRegex(@"\b(?:не|ни)\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex NegatedAgePrefix();
 
     [GeneratedRegex(@"(?:^|[\s,;:(—–-])(?:кун\w*|тян\w*|м|ж|парень|девушка|мужчина|женщина)\s*[,;:]?\s*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
@@ -412,6 +419,12 @@ public static partial class SemanticContract
         }
         catch (JsonException)
         {
+            throw new LlmFailureException("invalid_model_json", retryable: true);
+        }
+        catch (InvalidOperationException)
+        {
+            // Непарный суррогат в имени поля ломает проверку дубликатов до обхода:
+            // это непригодный ответ модели, а не сбой процесса.
             throw new LlmFailureException("invalid_model_json", retryable: true);
         }
     }

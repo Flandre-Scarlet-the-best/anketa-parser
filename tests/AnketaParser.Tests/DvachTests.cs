@@ -333,6 +333,26 @@ public sealed class DvachTests
     }
 
     [Fact]
+    public void ForeignLabelOnPreviousLineRejectsTransferredContact()
+    {
+        // Подпись на отдельной строке относится к значению, перенесённому на следующую.
+        Assert.Empty(Prepare("Контакт друга:<br>@friend_user").Contacts);
+    }
+
+    [Fact]
+    public void OwnLabelOnPreviousLineKeepsTransferredContact()
+    {
+        var prepared = Prepare("Мой тг:<br>@owner_user");
+        Assert.Equal("owner_user", Assert.Single(prepared.Contacts).NormalizedValue);
+    }
+
+    [Fact]
+    public void QuestionMarkInsideUrlDoesNotResetForeignContext()
+    {
+        Assert.Empty(Prepare("Не мой контакт https://t.me/friend_user?start=abc и @other_name").Contacts);
+    }
+
+    [Fact]
     public void OwnEnglishPlatformLabelDoesNotAdoptTheForeignContact()
     {
         // Английская метка тоже указывает на собственный контакт, но контакт,

@@ -107,6 +107,18 @@ public sealed class ReportCommandTests
         Assert.Equal("{}", await File.ReadAllTextAsync(metadata, TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task SamePathComparisonFollowsCaseInsensitiveFileSystem()
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
+            Assert.Skip("Регистрозависимая файловая система: такие файлы различаются.");
+        using var root = new Support.TemporaryContentRoot("{}");
+        var metadata = System.IO.Path.Combine(root.Path, "run.json");
+        var output = System.IO.Path.Combine(root.Path, "RUN.json");
+        var result = await RunAsync(["report", "html", "--output", output, "--run-metadata", metadata], root.Path);
+        Assert.Equal(ExitCodes.InvalidUsage, result.ExitCode);
+    }
+
     private static async Task<(int ExitCode, string Stdout, string Stderr)> RunAsync(
         string[] args, string? contentRootPath = null)
     {
