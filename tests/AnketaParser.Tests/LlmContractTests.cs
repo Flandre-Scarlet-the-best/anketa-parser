@@ -76,11 +76,14 @@ public sealed class LlmContractTests
         Assert.True(error.Retryable);
     }
 
-    [Fact]
-    public void EmojiAloneIsNotMeaningfulEvidenceEvenWhenPresent()
+    [Theory]
+    [InlineData("🙂")]
+    [InlineData("❤️")]
+    [InlineData("👩‍💻")]
+    public void EmojiAloneIsNotMeaningfulEvidenceEvenWhenPresent(string emoji)
     {
         var error = Assert.Throws<LlmFailureException>(() => SemanticContract.ReadDecision(
-            """{"class":"profile","reason":"invitation","evidence":"🙂"}""", "🙂 ███"));
+            $$"""{"class":"profile","reason":"invitation","evidence":"{{emoji}}"}""", emoji + " ███"));
         Assert.Equal("invalid_classification_evidence", error.Category);
     }
 

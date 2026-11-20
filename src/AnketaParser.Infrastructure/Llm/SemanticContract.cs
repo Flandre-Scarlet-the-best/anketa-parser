@@ -339,8 +339,7 @@ public static partial class SemanticContract
     }
 
     private static bool HasMeaningfulText(string value) =>
-        value.EnumerateRunes().Any(character => !Rune.IsWhiteSpace(character) && character.Value != Redacted &&
-            !Rune.IsPunctuation(character) && !Rune.IsSymbol(character));
+        value.EnumerateRunes().Any(Rune.IsLetterOrDigit);
 
     private static string ReadString(JsonElement element, int max)
     {
