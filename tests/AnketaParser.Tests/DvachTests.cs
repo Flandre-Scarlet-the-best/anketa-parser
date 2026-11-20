@@ -318,6 +318,18 @@ public sealed class DvachTests
         Assert.Equal("candidate", prepared.Reason);
     }
 
+    [Fact]
+    public void OwnEnglishPlatformLabelDoesNotAdoptTheForeignContact()
+    {
+        // Английская метка тоже указывает на собственный контакт, но контакт,
+        // названный чужим до неё, остаётся исключённым.
+        var prepared = Prepare("Контакт друга @friend_user, мой telegram @owner_user");
+        var contact = Assert.Single(prepared.Contacts);
+        Assert.Equal("telegram", contact.Platform);
+        Assert.Equal("owner_user", contact.NormalizedValue);
+        Assert.Equal("candidate", prepared.Reason);
+    }
+
     [Theory]
     [InlineData("profile telegram: @sampleuser42")]
     [InlineData("write telegram @sampleuser42")]

@@ -257,6 +257,11 @@ public static partial class SemanticContract
         if (suffix.Length > 1 && (suffix[0] == ':' && char.IsAsciiDigit(suffix[1]) ||
             suffix.StartsWith("час", StringComparison.OrdinalIgnoreCase)))
             return false;
+        // Игровой уровень или ранг не является возрастом: «23 уровень в игре».
+        if (suffix.StartsWith("уров", StringComparison.OrdinalIgnoreCase) ||
+            suffix.StartsWith("лвл", StringComparison.OrdinalIgnoreCase) ||
+            suffix.StartsWith("lvl", StringComparison.OrdinalIgnoreCase))
+            return false;
         if (suffix.Length > 0 && suffix[0] is '+' or '-' or '–' or '—' ||
             ApproximateAgePrefix().IsMatch(sentence))
             return false;
@@ -362,7 +367,7 @@ public static partial class SemanticContract
         }
 
         if (text.Length is 0 || text.Length > max || text != text.Trim() ||
-            text.Any(c => char.IsControl(c) && c is not ('\n' or '\t')))
+            text.Any(c => char.IsControl(c) && c is not ('\n' or '\r' or '\t')))
             throw new LlmFailureException("invalid_output_schema", retryable: true);
         return text;
     }

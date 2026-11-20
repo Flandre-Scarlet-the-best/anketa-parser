@@ -166,6 +166,7 @@ public sealed class LlmContractTests
     [InlineData("gender", "девушку", "Ищу девушку")]
     [InlineData("gender", "тян", "Нужна тян")]
     [InlineData("age", "24", "Нужна девушка 24")]
+    [InlineData("age", "23", "У меня 23 уровень в игре. Го поболтаем")]
     public void OmitsClearlyMisassignedFacts(string field, string value, string text)
     {
         var result = SemanticContract.ReadFacts(Fields((field, value, text)), text);
@@ -371,6 +372,18 @@ public sealed class LlmContractTests
         var error = Assert.Throws<LlmFailureException>(() => SemanticContract.ReadFacts(fields, "мне 26"));
         Assert.Equal("invalid_output_schema", error.Category);
         Assert.True(error.Retryable);
+    }
+
+    [Fact]
+    public void EvidenceWithCrlfLineBreaksIsAccepted()
+    {
+        // Перенос строки в свидетельстве не должен превращать корректный ответ
+        // в отказ схемы: сравниваются те же координаты исходного текста.
+        const string text = "мне 23\r\nживу в Москве";
+        var result = SemanticContract.ReadFacts(Fields(("age", "23", "мне 23\r\nживу в Москве")), text);
+        Assert.Equal("23", result.Facts["age"].Value);
+        Assert.Equal(new TextSpan(0, "мне 23\r\nживу в Москве".Length), result.Facts["age"].Evidence);
+        Assert.Empty(result.UnsupportedFields);
     }
 
     [Fact]
@@ -693,6 +706,18 @@ public sealed class LlmContractTests
             Environment.SetEnvironmentVariable(variable, null);
             root.Delete(recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task MissingWorkingDirectoryWithoutConfiguredProfileIsNotAnError()
+    {
+        using var config = new ConfigurationManager();
+        var missing = Path.Combine(Path.GetTempPath(), "anketa-llm-missing-" + Guid.NewGuid().ToString("N"));
+        Assert.Null(await LlmConfiguration.LoadAsync(config, missing, Ct));
+        // Явно выбранный профиль делает отсутствие файла ошибкой конфигурации.
+        config["Llm:ActiveProfile"] = "one";
+        Assert.Equal("toml_missing", (await Assert.ThrowsAsync<LlmConfigurationException>(
+            () => LlmConfiguration.LoadAsync(config, missing, Ct))).Category);
     }
 
     [Fact]

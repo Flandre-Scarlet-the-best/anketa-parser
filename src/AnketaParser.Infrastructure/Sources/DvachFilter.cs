@@ -284,14 +284,20 @@ internal static partial class DvachFilter
                 prefix[i] == '.' && !addresses.Any(address => i >= address.Index && i + 1 < address.Index + address.Length))
                 boundary = i;
         }
-        var sentence = prefix[(boundary + 1)..];
+
+        var start = boundary + 1;
+        var sentence = text[start..offset];
         // Признак чужого контакта действует до явного указания на собственный:
-        // «Не мой контакт @a, а мой тг @b» не делает @b чужим.
+        // «Не мой контакт @a, а мой тг @b» не делает @b чужим, но @a остаётся чужим.
         var markerEnd = -1;
         var markers = ForeignContactPrefix().EnumerateMatches(sentence);
         while (markers.MoveNext())
             markerEnd = markers.Current.Index + markers.Current.Length;
-        return markerEnd >= 0 && !OwnContactPrefix().IsMatch(sentence[markerEnd..]);
+        if (markerEnd < 0)
+            return false;
+        var own = OwnContactPrefix().Match(sentence, markerEnd);
+        // Контакт до собственной метки остаётся чужим, после неё — контактом автора.
+        return !own.Success || offset - start < own.Index;
     }
 
     [GeneratedRegex(@"(?:мне\s+переслали|не\s+мой\s+(?:контакт|аккаунт|телеграм|тг)|чуж(?:ой|ая|ого|ую)\s+(?:контакт|аккаунт|ссылк\w*|телеграм|тг)|(?:контакт|аккаунт|телеграм|тг|дискорд|дс)\s+(?:моего\s+|моей\s+)?(?:друга|подруги|знакомого|знакомой))", IgnoreCase)]
@@ -301,7 +307,7 @@ internal static partial class DvachFilter
     private static partial Regex Url();
 
     /// <summary>Явное указание автора на собственный контакт, снимающее признак чужого.</summary>
-    [GeneratedRegex(@"(?<![\w])(?:(?:мой|моя|моё|мое|моего|моей|мою)\s+(?:тг|телеграм\w*|телега|телегу|дискорд|дис|дс|контакт\w*|аккаунт\w*|ник\w*|юзернейм\w*|почт\w*|мыл\w*|мейл\w*|email\w*|e-mail|xmpp\w*|jabber\w*|жаббер\w*|жабк\w*)|у\s+меня\s+(?:тг|телеграм\w*|контакт\w*|аккаунт\w*|почт\w*|email\w*|xmpp\w*)|(?:а|но|зато)\s+(?:вот\s+)?(?:мой|моя|моё|мое)\b[^\w]{0,3}$)", IgnoreCase)]
+    [GeneratedRegex(@"(?<![\w])(?:(?:мой|моя|моё|мое|моего|моей|мою)\s+(?:тг|telegram\w*|tg|телеграм\w*|телега|телегу|discord|дискорд|дис|дс|контакт\w*|аккаунт\w*|ник\w*|юзернейм\w*|почт\w*|мыл\w*|мейл\w*|email\w*|e-mail|xmpp\w*|jabber\w*|жаббер\w*|жабк\w*)|у\s+меня\s+(?:тг|telegram\w*|tg|discord|телеграм\w*|контакт\w*|аккаунт\w*|почт\w*|email\w*|xmpp\w*)|(?:а|но|зато)\s+(?:вот\s+)?(?:мой|моя|моё|мое)\b[^\w]{0,3}$)", IgnoreCase)]
     private static partial Regex OwnContactPrefix();
 
     private static bool IsLabeledValue(string platform, string value) => platform switch

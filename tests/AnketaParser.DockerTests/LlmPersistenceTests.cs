@@ -511,9 +511,22 @@ public sealed class LlmPersistenceTests(PostgresTestCluster cluster) : IClassFix
         foreach (var argument in arguments)
             start.ArgumentList.Add(argument);
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Не удалось запустить CLI.");
-        var stdout = process.StandardOutput.ReadToEndAsync(Ct);
-        var stderr = process.StandardError.ReadToEndAsync(Ct);
-        await process.WaitForExitAsync(Ct);
+        var stdout = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+        var stderr = process.StandardError.ReadToEndAsync(CancellationToken.None);
+        try
+        {
+            await process.WaitForExitAsync(Ct);
+        }
+        finally
+        {
+            // Отмена ожидания не завершает дочерний процесс: без этого тест удалял бы
+            // каталог и освобождал базу, пока CLI ещё работает.
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync(CancellationToken.None);
+            }
+        }
         await stderr;
         return (process.ExitCode, await stdout);
     }

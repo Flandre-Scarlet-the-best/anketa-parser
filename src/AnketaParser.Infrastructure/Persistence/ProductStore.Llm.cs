@@ -184,9 +184,11 @@ public sealed partial class ProductStore
         attempt.InputTokens = metrics.InputTokens;
         attempt.OutputTokens = metrics.OutputTokens;
         attempt.CachedInputTokens = metrics.CachedInputTokens;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        // Аренда может истечь, пока выполнялась запись: завершение и решение
+        // фиксируются только под действующей арендой, иначе транзакция откатывается.
         if (expiresAt <= Now)
             return "lease_lost";
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
         await transaction.CommitAsync(ct).ConfigureAwait(false);
         return result?.Decision.Class ?? failure!.Category;
     }

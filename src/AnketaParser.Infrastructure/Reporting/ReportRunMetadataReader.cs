@@ -11,7 +11,6 @@ namespace AnketaParser.Infrastructure.Reporting;
 public static class ReportRunMetadataReader
 {
     private const int MaxItems = 200;
-    private const int MaxCollected = 20_000;
     private const int MaxValueChars = 300;
     private const int MaxSamplingItems = 12;
 
@@ -24,6 +23,9 @@ public static class ReportRunMetadataReader
 
     private static readonly string[] SamplingHints =
         ["temperature", "top_p", "top_k", "min_p", "repeat_penalty", "repeat_last_n", "seed", "n_ctx", "ctx", "max_output"];
+
+    /// <summary>Группы имён, из которых собирается сводка распознанных полей.</summary>
+    private static readonly string[][] FactNames = [ModelNames, EngineNames, EngineVersionNames, QuantizationNames, HashNames, EndpointNames];
 
     /// <summary>Читает файл метаданных запуска.</summary>
     /// <param name="path">Путь к JSON-файлу.</param>
@@ -55,12 +57,13 @@ public static class ReportRunMetadataReader
 
         using (document)
         {
-            // Сводка строится по всему файлу: длинный массив не должен скрывать
-            // распознаваемые поля, которые идут после него.
-            List<ReportMetadataItem> collected = [];
-            Flatten(document.RootElement, string.Empty, collected);
-            var displayed = collected.Count > MaxItems ? collected.GetRange(0, MaxItems) : collected;
-            return new ReportRunMetadataView(path, true, Summarize(collected), displayed, collected.Count > MaxItems);
+            // Обход идёт по всему файлу: длинный массив не должен скрывать распознаваемые
+            // поля. Предел относится только к отображаемому списку плоских значений.
+            List<ReportMetadataItem> displayed = [];
+            List<ReportMetadataItem> named = [];
+            var leaves = 0;
+            Flatten(document.RootElement, string.Empty, displayed, named, ref leaves);
+            return new ReportRunMetadataView(path, true, Summarize(named), displayed, leaves > MaxItems);
         }
     }
 
@@ -97,10 +100,13 @@ public static class ReportRunMetadataReader
         }
     }
 
-    private static void Flatten(JsonElement element, string path, List<ReportMetadataItem> items)
+    private static void Flatten(
+        JsonElement element,
+        string path,
+        List<ReportMetadataItem> displayed,
+        List<ReportMetadataItem> named,
+        ref int leaves)
     {
-        if (items.Count >= MaxCollected)
-            return;
         switch (element.ValueKind)
         {
             case JsonValueKind.Object:
@@ -110,9 +116,7 @@ public static class ReportRunMetadataReader
                         property.Name.Length > 0
                         ? (path.Length == 0 ? property.Name : "." + property.Name)
                         : "[" + JsonSerializer.Serialize(property.Name) + "]";
-                    Flatten(property.Value, path + component, items);
-                    if (items.Count >= MaxCollected)
-                        return;
+                    Flatten(property.Value, path + component, displayed, named, ref leaves);
                 }
 
                 break;
@@ -120,26 +124,44 @@ public static class ReportRunMetadataReader
                 var index = 0;
                 foreach (var item in element.EnumerateArray())
                 {
-                    Flatten(item, string.Create(CultureInfo.InvariantCulture, $"{path}[{index}]"), items);
-                    if (items.Count >= MaxCollected)
-                        return;
+                    Flatten(item, string.Create(CultureInfo.InvariantCulture, $"{path}[{index}]"), displayed, named, ref leaves);
                     index++;
                 }
 
                 break;
             case JsonValueKind.String:
-                items.Add(new ReportMetadataItem(path, Shorten(element.GetString() ?? string.Empty)));
+                Collect(path, Shorten(element.GetString() ?? string.Empty), displayed, named, ref leaves);
                 break;
             case JsonValueKind.Number:
             case JsonValueKind.True:
             case JsonValueKind.False:
-                items.Add(new ReportMetadataItem(path, Shorten(element.GetRawText())));
+                Collect(path, Shorten(element.GetRawText()), displayed, named, ref leaves);
                 break;
             default:
                 // null не добавляется: отсутствие значения не является фактом запуска.
                 break;
         }
     }
+
+    private static void Collect(
+        string path, string value, List<ReportMetadataItem> displayed, List<ReportMetadataItem> named, ref int leaves)
+    {
+        leaves++;
+        if (displayed.Count < MaxItems)
+            displayed.Add(new ReportMetadataItem(path, value));
+        if (IsFactName(path))
+            named.Add(new ReportMetadataItem(path, value));
+    }
+
+    /// <summary>
+    /// Имя поля, которое может попасть в сводку: известное имя, суффикс вложенного пути
+    /// либо параметр запуска. Отбор не зависит от предела отображаемого списка.
+    /// </summary>
+    private static bool IsFactName(string name) =>
+        FactNames.Any(names => names.Any(candidate =>
+            name.Equals(candidate, StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith("." + candidate, StringComparison.OrdinalIgnoreCase))) ||
+        SamplingHints.Any(hint => name.Contains(hint, StringComparison.OrdinalIgnoreCase));
 
     private static string Shorten(string value) =>
         value.Length <= MaxValueChars ? value : value[..MaxValueChars] + "…";

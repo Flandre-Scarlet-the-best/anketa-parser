@@ -60,6 +60,12 @@ public static class LlmConfiguration
             {
                 throw Invalid("toml_missing");
             }
+            catch (DirectoryNotFoundException) when (!explicitPath && string.IsNullOrEmpty(activeOverride))
+            {
+                // Необязательный TOML в отсутствующем каталоге равнозначен отсутствию файла:
+                // не настроенный content root не является ошибкой конфигурации.
+                return null;
+            }
             catch (DirectoryNotFoundException)
             {
                 throw Invalid("toml_missing");

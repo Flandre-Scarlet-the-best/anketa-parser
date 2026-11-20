@@ -153,15 +153,20 @@ public sealed class ReportTests
         var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json");
         try
         {
-            var numbers = string.Join(',', Enumerable.Range(0, 250));
+            var numbers = string.Join(',', Enumerable.Range(0, 25_000));
             await File.WriteAllTextAsync(path,
-                "{\"steps\":[" + numbers + "],\"modelName\":\"fixture-model\"}", TestContext.Current.CancellationToken);
+                "{\"steps\":[" + numbers + "],\"modelName\":\"fixture-model\",\"runtime\":\"llama.cpp\"}",
+                TestContext.Current.CancellationToken);
             var metadata = await ReportRunMetadataReader.ReadAsync(path, TestContext.Current.CancellationToken);
 
             Assert.True(metadata.Truncated);
             Assert.Equal(200, metadata.All.Count);
+            // Сводка не ограничена пределом отображаемого списка: поля находятся
+            // и после массива, который целиком в список не попадает.
             Assert.Contains(metadata.Facts,
                 item => item.Name.Contains("modelName", StringComparison.Ordinal) && item.Value == "fixture-model");
+            Assert.Contains(metadata.Facts,
+                item => item.Name.Contains("runtime", StringComparison.Ordinal) && item.Value == "llama.cpp");
             var document = Compose(Snapshot([]), metadata);
             Assert.Contains(document.Notices, notice => notice.Code == "run_metadata_truncated");
         }
