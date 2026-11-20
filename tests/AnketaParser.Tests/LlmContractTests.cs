@@ -416,6 +416,74 @@ public sealed class LlmContractTests
         Assert.Equal("{}", (await new OpenAiLlmEngine(second, client).GenerateAsync(request, Ct)).Text);
     }
 
+    [Fact]
+    public async Task NordRouterHighProfileBuildsStrictJsonRequestWithEnvironmentSecret()
+    {
+        var root = Directory.CreateTempSubdirectory("anketa-llm-nordrouter-");
+        var variable = "ANKETA_TEST_NORDROUTER_" + Guid.NewGuid().ToString("N");
+        const string fixtureSecret = "synthetic-test-secret";
+        Environment.SetEnvironmentVariable(variable, fixtureSecret);
+        try
+        {
+            var path = Path.Combine(root.FullName, "llm.toml");
+            await File.WriteAllTextAsync(path, $"""
+                active_profile = "nordrouter_high"
+                [profiles.nordrouter_high]
+                engine = "openai"
+                base_url = "https://nordrouter.com/v1"
+                model = "deepseek/deepseek-v4.1-flash-1017:fjord"
+                key_env = "{variable}"
+                response_mode = "json_schema"
+                token_parameter = "max_tokens"
+                reasoning_format = "object"
+                reasoning_effort = "high"
+                max_output_tokens = 4096
+                max_input_chars = 12000
+                timeout_seconds = 180
+                concurrency = 2
+                daily_request_limit = 400
+                """, Ct);
+            using var config = new ConfigurationManager();
+            var settings = Assert.IsType<LlmSettings>(await LlmConfiguration.LoadAsync(config, root.FullName, Ct));
+            Assert.Equal("nordrouter_high", settings.Name);
+            Assert.Equal("deepseek/deepseek-v4.1-flash-1017:fjord", settings.Model);
+            Assert.True(settings.ReasoningAsObject);
+            Assert.Equal("high", settings.ReasoningEffort);
+            Assert.Equal(4096, settings.MaxOutputTokens);
+            Assert.Equal(400, settings.DailyRequestLimit);
+            Assert.Null(settings.Temperature);
+
+            using var client = new HttpClient(new FixtureHandler(async (message, ct) =>
+            {
+                Assert.Equal("https://nordrouter.com/v1/chat/completions", message.RequestUri?.AbsoluteUri);
+                Assert.True(message.Headers.TryGetValues("Authorization", out var values));
+                Assert.Equal("Bearer " + fixtureSecret, Assert.Single(values));
+                using var payload = JsonDocument.Parse(await message.Content!.ReadAsStringAsync(ct));
+                var body = payload.RootElement;
+                Assert.Equal(settings.Model, body.GetProperty("model").GetString());
+                Assert.Equal(4096, body.GetProperty("max_tokens").GetInt32());
+                Assert.Equal("high", body.GetProperty("reasoning").GetProperty("effort").GetString());
+                Assert.False(body.TryGetProperty("reasoning_effort", out _));
+                Assert.False(body.TryGetProperty("temperature", out _));
+                var format = body.GetProperty("response_format");
+                Assert.Equal("json_schema", format.GetProperty("type").GetString());
+                Assert.True(format.GetProperty("json_schema").GetProperty("strict").GetBoolean());
+                Assert.Equal(2, body.GetProperty("messages").GetArrayLength());
+                return Reply(HttpStatusCode.OK,
+                    """{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}],"usage":{"prompt_tokens":15,"completion_tokens":3}}""");
+            }));
+            var response = await new OpenAiLlmEngine(settings, client).GenerateAsync(
+                SemanticContract.Request(SemanticOperation.Classify, "Ищу общение"), Ct);
+            Assert.Equal("{}", response.Text);
+            Assert.Equal(new LlmUsage(15, 3, null), response.Usage);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variable, null);
+            root.Delete(recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData("none", """{"enabled":false}""")]
     [InlineData("low", """{"effort":"low"}""")]
