@@ -411,10 +411,12 @@ public sealed class BackupServiceTests : IDisposable
         Assert.DoesNotContain("synthetic_password", info.Arguments, StringComparison.Ordinal);
 
         // Утилите без строки подключения параметры подключения не передаются.
+        var inheritedPassword = Environment.GetEnvironmentVariable("PGPASSWORD");
         var withoutConnection = BackupService.CreateToolStartInfo("pg_restore", ["--version"], connectionString: null);
         Assert.True(withoutConnection.CreateNoWindow);
         Assert.False(withoutConnection.UseShellExecute);
-        Assert.DoesNotContain("PGPASSWORD", withoutConnection.Environment.Keys);
+        withoutConnection.Environment.TryGetValue("PGPASSWORD", out var actualPassword);
+        Assert.Equal(inheritedPassword, actualPassword);
     }
 
     private void Write(string name, DateTime time)
