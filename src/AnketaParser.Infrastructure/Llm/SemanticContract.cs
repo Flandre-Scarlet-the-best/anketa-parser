@@ -249,7 +249,7 @@ public static partial class SemanticContract
 
     private static bool HasAuthorAgeContext(string text, int start, int end)
     {
-        // Не выдаём явно приблизительные числа и пожелания как точный возраст.
+        // Не выдаём приблизительные числа, пожелания и нечисловые признаки как точный возраст.
         // Сверяем соседние символы в посте, даже если модель вернула только число.
         var sentence = SentencePrefix(text, start);
         var suffix = text.AsSpan(end).TrimStart();
@@ -257,20 +257,42 @@ public static partial class SemanticContract
         if (suffix.Length > 1 && (suffix[0] == ':' && char.IsAsciiDigit(suffix[1]) ||
             suffix.StartsWith("час", StringComparison.OrdinalIgnoreCase)))
             return false;
-        // Игровой уровень или ранг не является возрастом: «23 уровень в игре».
-        if (suffix.StartsWith("уров", StringComparison.OrdinalIgnoreCase) ||
-            suffix.StartsWith("лвл", StringComparison.OrdinalIgnoreCase) ||
-            suffix.StartsWith("lvl", StringComparison.OrdinalIgnoreCase))
-            return false;
         if (suffix.Length > 0 && suffix[0] is '+' or '-' or '–' or '—' ||
             ApproximateAgePrefix().IsMatch(sentence))
             return false;
-        return !PartnerPrefix().IsMatch(sentence) && !ThirdPersonSelfPrefix().IsMatch(sentence);
+        if (PartnerPrefix().IsMatch(sentence) || ThirdPersonSelfPrefix().IsMatch(sentence))
+            return false;
+        // Сленговое «25 лвл» — возраст, а уровень в игре — нет: игровой контекст
+        // отменяет возраст только при слове уровня рядом с числом.
+        if (LevelWord().IsMatch(suffix) && (GameContext().IsMatch(suffix) || GameContext().IsMatch(sentence)))
+            return false;
+        // Возраст принимается при положительном указании: «мне 23», «кун, 26», «25 лет», «м30».
+        return AgePrefix().IsMatch(sentence) || AgeSuffix().IsMatch(suffix) || CompactAgeHeader().IsMatch(sentence);
     }
 
     [GeneratedRegex(@"(?:^|\s)(?:до|от|за|около|почти|примерно|плюс-минус|under|over|around|from)\s*$|[0-9]\s*[-–—]\s*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex ApproximateAgePrefix();
+
+    [GeneratedRegex(@"\b(?:мне|меня|возраст\w*|исполнилось|сам(?:а)?|я)\b(?:\s+(?:уже|сейчас|только|ровно|стукнуло))?\s*[,;:]?\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex AgePrefix();
+
+    [GeneratedRegex(@"^(?:лет|год[а-яё]*|г\.|лвл|lvl|левел|level)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex AgeSuffix();
+
+    [GeneratedRegex(@"(?:^|[\s,;:(—–-])(?:кун\w*|тян\w*|м|ж|парень|девушка|мужчина|женщина)\s*[,;:]?\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex CompactAgeHeader();
+
+    [GeneratedRegex(@"^(?:уров\w*|ранг\w*|rank|лвл|lvl|левел|level)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex LevelWord();
+
+    [GeneratedRegex(@"(?:\bигр\w*|\bgame\w*|\bгейм\w*|\bдот[аы]\b|\bcs2\b|\bкатк\w*|\bматч\w*)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex GameContext();
 
     [GeneratedRegex(@"\b(?:ищу|ищем|ищется|нуж(?:ен|на|ны|но)|хочу\s+найти|looking\s+for)\b(?:(?!\b(?:мне|мои|я|сам(?:а|и)?|живу|нахожусь|I\s+am)\b).)*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]

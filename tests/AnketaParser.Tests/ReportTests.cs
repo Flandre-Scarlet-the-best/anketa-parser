@@ -148,6 +148,26 @@ public sealed class ReportTests
     }
 
     [Fact]
+    public async Task MetadataWithoutKnownFieldsStillShowsRawValues()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            await File.WriteAllTextAsync(path, """{"custom":"value"}""", TestContext.Current.CancellationToken);
+            var metadata = await ReportRunMetadataReader.ReadAsync(path, TestContext.Current.CancellationToken);
+            Assert.Empty(metadata.Facts);
+            var html = ReportHtmlRenderer.Render(Compose(Snapshot([]), metadata));
+            // Список исходных полей не скрывается: сводка и он независимы.
+            Assert.Contains("Все поля файла метаданных", html, StringComparison.Ordinal);
+            Assert.Contains("custom", html, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public async Task MetadataSummarySurvivesDisplayedListTruncation()
     {
         var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json");

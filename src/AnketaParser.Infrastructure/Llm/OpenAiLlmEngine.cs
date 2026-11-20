@@ -158,21 +158,30 @@ public sealed class OpenAiLlmEngine(LlmSettings settings, HttpClient client) : I
         // Статистику читаем до проверок формы ответа: провайдер уже израсходовал токены,
         // и отказ не должен скрывать этот расход.
         var usage = ReadUsage(root);
-        var choices = Property(root, "choices");
-        if (choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() != 1)
-            throw new LlmFailureException("unsupported_response", usage: usage);
-        var choice = choices[0];
-        var finish = String(Property(choice, "finish_reason"));
-        var message = Property(choice, "message");
-        if (finish == "length")
-            throw new LlmFailureException("incomplete_output", usage: usage);
-        if (finish == "content_filter" || String(Property(message, "refusal")) is not null)
-            throw new LlmFailureException("model_refusal", usage: usage);
-        if (finish != "stop" || Property(message, "tool_calls").ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null) ||
-            Property(message, "function_call").ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null) ||
-            String(Property(message, "content")) is not { Length: > 0 } text)
-            throw new LlmFailureException("unsupported_response", usage: usage);
-        return new(text, usage);
+        try
+        {
+            var choices = Property(root, "choices");
+            if (choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() != 1)
+                throw new LlmFailureException("unsupported_response", usage: usage);
+            var choice = choices[0];
+            var finish = String(Property(choice, "finish_reason"));
+            var message = Property(choice, "message");
+            if (finish == "length")
+                throw new LlmFailureException("incomplete_output", usage: usage);
+            if (finish == "content_filter" || String(Property(message, "refusal")) is not null)
+                throw new LlmFailureException("model_refusal", usage: usage);
+            if (finish != "stop" || Property(message, "tool_calls").ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null) ||
+                Property(message, "function_call").ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null) ||
+                String(Property(message, "content")) is not { Length: > 0 } text)
+                throw new LlmFailureException("unsupported_response", usage: usage);
+            return new(text, usage);
+        }
+        catch (InvalidOperationException)
+        {
+            // Непарный суррогат в строке ответа не декодируется в UTF-16: это непригодный
+            // ответ модели, и сообщённый провайдером расход сохраняется.
+            throw new LlmFailureException("invalid_output_schema", retryable: true, usage: usage);
+        }
     }
 
     private static LlmUsage? ReadUsage(JsonElement root)
@@ -187,21 +196,7 @@ public sealed class OpenAiLlmEngine(LlmSettings settings, HttpClient client) : I
     private static JsonElement Property(JsonElement element, string name) =>
         element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value) ? value : default;
 
-    private static string? String(JsonElement value)
-    {
-        if (value.ValueKind != JsonValueKind.String)
-            return null;
-        try
-        {
-            return value.GetString();
-        }
-        catch (InvalidOperationException)
-        {
-            // Непарный суррогат в строке ответа не декодируется: это отказ модели,
-            // а не сбой процесса, поэтому попытка завершается штатной категорией.
-            throw new LlmFailureException("invalid_output_schema", retryable: true);
-        }
-    }
+    private static string? String(JsonElement value) => value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
     private static int? Count(JsonElement value) =>
         value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var count) && count >= 0 ? count : null;

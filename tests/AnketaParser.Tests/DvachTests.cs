@@ -330,6 +330,24 @@ public sealed class DvachTests
         Assert.Equal("candidate", prepared.Reason);
     }
 
+    [Fact]
+    public void OwnMixedAlphabetLabelIsRecognized()
+    {
+        // Смешанные «tг» и «тg» уже поддерживаются распознаванием платформ.
+        var prepared = Prepare("Контакт друга @friend_user, а мой tг @owner_user");
+        Assert.Equal("owner_user", Assert.Single(prepared.Contacts).NormalizedValue);
+    }
+
+    [Fact]
+    public void DotInsideDiscordNameDoesNotEndForeignContext()
+    {
+        // Точка внутри чужого Discord-имени не завершает предложение: следующий
+        // контакт остаётся в области действия признака чужого контакта.
+        var prepared = Prepare("Контакт друга Discord: friend.name, @other_name");
+        Assert.Empty(prepared.Contacts);
+        Assert.Equal("no_own_contact", prepared.Reason);
+    }
+
     [Theory]
     [InlineData("profile telegram: @sampleuser42")]
     [InlineData("write telegram @sampleuser42")]

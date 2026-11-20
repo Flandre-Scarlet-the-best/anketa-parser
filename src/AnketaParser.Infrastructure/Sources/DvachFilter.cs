@@ -72,13 +72,16 @@ internal static partial class DvachFilter
 
             var text = line.Text;
             var number = index + 1;
+            // Дорогие проверки выполняются один раз на строку, а не на каждый контакт.
+            var interiorDots = InteriorDots(text);
             List<(int Start, int End)> occupied = [];
             List<(int Start, int End)> labeled = [];
             List<(int Offset, DetectedContact Contact)> found = [];
 
             void Record(int offset, int length, string platform, string raw, string value, decimal confidence, string origin)
             {
-                if (occupied.Any(span => offset < span.End && offset + length > span.Start) || IsExplicitlyForeign(text, offset))
+                if (occupied.Any(span => offset < span.End && offset + length > span.Start) ||
+                    IsExplicitlyForeign(text, offset, interiorDots))
                     return;
                 var contact = Create(platform, raw, value, confidence, number, offset, origin);
                 if (contact is null)
@@ -217,7 +220,8 @@ internal static partial class DvachFilter
             }
             foreach (var link in line.Links)
             {
-                if (link.Target.Length > 2048 || string.IsNullOrWhiteSpace(link.Label) || IsExplicitlyForeign(text, link.Offset))
+                if (link.Target.Length > 2048 || string.IsNullOrWhiteSpace(link.Label) ||
+                    IsExplicitlyForeign(text, link.Offset, interiorDots))
                     continue;
                 var match = ExplicitContact().Match(link.Target);
                 if (!match.Success || match.Length != link.Target.Length)
@@ -251,42 +255,49 @@ internal static partial class DvachFilter
             var text = lines[index].Text;
             if (text.Length > 4096)
                 continue;
+            var interiorDots = InteriorDots(text);
             foreach (Match match in PossibleMalformedAt().Matches(text))
             {
-                if (!InsideUrl(text, match.Index) && !IsExplicitlyForeign(text, match.Index))
+                if (!InsideUrl(text, match.Index) && !IsExplicitlyForeign(text, match.Index, interiorDots))
                     result.Add(new(index + 1, match.Index, match.Length, "ambiguous_at"));
             }
             foreach (Match match in PossibleMixedTelegram().Matches(text))
             {
                 var raw = match.Groups["value"];
                 if (raw.Value.Any(c => c is >= 'А' and <= 'я' or 'Ё' or 'ё') &&
-                    raw.Value.Any(char.IsAsciiLetter) && !InsideUrl(text, raw.Index) && !IsExplicitlyForeign(text, raw.Index))
+                    raw.Value.Any(char.IsAsciiLetter) && !InsideUrl(text, raw.Index) &&
+                    !IsExplicitlyForeign(text, raw.Index, interiorDots))
                     result.Add(new(index + 1, raw.Index, raw.Length, "mixed_alphabet"));
             }
             if (PossibleReverseDiscord().Match(text) is { Success: true } reverse)
             {
                 var raw = reverse.Groups["value"];
-                if (!InsideUrl(text, raw.Index) && !IsExplicitlyForeign(text, raw.Index))
+                if (!InsideUrl(text, raw.Index) && !IsExplicitlyForeign(text, raw.Index, interiorDots))
                     result.Add(new(index + 1, raw.Index, raw.Length, "discord_reverse"));
             }
         }
         return result;
     }
 
-    private static bool IsExplicitlyForeign(string text, int offset)
+    private static bool IsExplicitlyForeign(string text, int offset, bool[] interiorDots)
     {
-        var prefix = text.AsSpan(0, offset);
-        var addresses = ExplicitContact().Matches(text).Cast<Match>().Concat(Url().Matches(text).Cast<Match>()).ToArray();
         var boundary = -1;
-        for (var i = 0; i < prefix.Length; i++)
+        for (var i = 0; i < offset; i++)
         {
-            if (prefix[i] is '!' or '?' or ';' or '\n' ||
-                prefix[i] == '.' && !addresses.Any(address => i >= address.Index && i + 1 < address.Index + address.Length))
+            if (text[i] is '!' or '?' or ';' or '\n')
+            {
+                boundary = i;
+                continue;
+            }
+
+            // Точка внутри имени или адреса не завершает предложение: «friend.name».
+            // Границей остаётся точка, за которой следует пробел или конец фрагмента.
+            if (text[i] == '.' && !interiorDots[i] && (i + 1 == offset || char.IsWhiteSpace(text[i + 1])))
                 boundary = i;
         }
 
         var start = boundary + 1;
-        var sentence = text[start..offset];
+        var sentence = text.AsSpan(start, offset - start);
         // Признак чужого контакта действует до явного указания на собственный:
         // «Не мой контакт @a, а мой тг @b» не делает @b чужим, но @a остаётся чужим.
         var markerEnd = -1;
@@ -295,9 +306,32 @@ internal static partial class DvachFilter
             markerEnd = markers.Current.Index + markers.Current.Length;
         if (markerEnd < 0)
             return false;
-        var own = OwnContactPrefix().Match(sentence, markerEnd);
+        var ownStart = -1;
+        var own = OwnContactPrefix().EnumerateMatches(sentence[markerEnd..]);
+        if (own.MoveNext())
+            ownStart = markerEnd + own.Current.Index;
         // Контакт до собственной метки остаётся чужим, после неё — контактом автора.
-        return !own.Success || offset - start < own.Index;
+        return ownStart < 0 || offset - start < ownStart;
+    }
+
+    /// <summary>Точки, находящиеся внутри адреса: они не завершают предложение.</summary>
+    private static bool[] InteriorDots(string text)
+    {
+        var mask = new bool[text.Length];
+        foreach (Match match in ExplicitContact().Matches(text))
+            Mark(match);
+        foreach (Match match in Url().Matches(text))
+            Mark(match);
+        return mask;
+
+        void Mark(Match match)
+        {
+            for (var i = match.Index; i + 1 < match.Index + match.Length; i++)
+            {
+                if (text[i] == '.')
+                    mask[i] = true;
+            }
+        }
     }
 
     [GeneratedRegex(@"(?:мне\s+переслали|не\s+мой\s+(?:контакт|аккаунт|телеграм|тг)|чуж(?:ой|ая|ого|ую)\s+(?:контакт|аккаунт|ссылк\w*|телеграм|тг)|(?:контакт|аккаунт|телеграм|тг|дискорд|дс)\s+(?:моего\s+|моей\s+)?(?:друга|подруги|знакомого|знакомой))", IgnoreCase)]
@@ -307,7 +341,7 @@ internal static partial class DvachFilter
     private static partial Regex Url();
 
     /// <summary>Явное указание автора на собственный контакт, снимающее признак чужого.</summary>
-    [GeneratedRegex(@"(?<![\w])(?:(?:мой|моя|моё|мое|моего|моей|мою)\s+(?:тг|telegram\w*|tg|телеграм\w*|телега|телегу|discord|дискорд|дис|дс|контакт\w*|аккаунт\w*|ник\w*|юзернейм\w*|почт\w*|мыл\w*|мейл\w*|email\w*|e-mail|xmpp\w*|jabber\w*|жаббер\w*|жабк\w*)|у\s+меня\s+(?:тг|telegram\w*|tg|discord|телеграм\w*|контакт\w*|аккаунт\w*|почт\w*|email\w*|xmpp\w*)|(?:а|но|зато)\s+(?:вот\s+)?(?:мой|моя|моё|мое)\b[^\w]{0,3}$)", IgnoreCase)]
+    [GeneratedRegex(@"(?<![\w])(?:(?:мой|моя|моё|мое|моего|моей|мою)\s+(?:тг|tг|тg|telegram\w*|tg|телеграм\w*|телега|телегу|discord|дискорд|дис|дс|контакт\w*|аккаунт\w*|ник\w*|юзернейм\w*|почт\w*|мыл\w*|мейл\w*|email\w*|e-mail|xmpp\w*|jabber\w*|жаббер\w*|жабк\w*)|у\s+меня\s+(?:тг|tг|тg|telegram\w*|tg|discord|телеграм\w*|контакт\w*|аккаунт\w*|почт\w*|email\w*|xmpp\w*)|(?:а|но|зато)\s+(?:вот\s+)?(?:мой|моя|моё|мое)\b[^\w]{0,3}$)", IgnoreCase)]
     private static partial Regex OwnContactPrefix();
 
     private static bool IsLabeledValue(string platform, string value) => platform switch

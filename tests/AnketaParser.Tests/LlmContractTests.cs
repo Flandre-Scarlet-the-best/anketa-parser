@@ -167,6 +167,9 @@ public sealed class LlmContractTests
     [InlineData("gender", "тян", "Нужна тян")]
     [InlineData("age", "24", "Нужна девушка 24")]
     [InlineData("age", "23", "У меня 23 уровень в игре. Го поболтаем")]
+    [InlineData("age", "25", "25 лвл в игре, го катку")]
+    [InlineData("age", "80", "Вес 80 кг, го общаться")]
+    [InlineData("gender", "тян", "Люблю тян, го общаться")]
     public void OmitsClearlyMisassignedFacts(string field, string value, string text)
     {
         var result = SemanticContract.ReadFacts(Fields((field, value, text)), text);
@@ -188,6 +191,19 @@ public sealed class LlmContractTests
         const string text = "Нужна тян, сам 26";
         var result = SemanticContract.ReadFacts(Fields(("age", "26", "сам 26")), text);
         Assert.Equal("26", result.Facts["age"].Value);
+        Assert.Empty(result.UnsupportedFields);
+    }
+
+    [Theory]
+    [InlineData("25 лвл, кун", "25")]
+    [InlineData("мне 25 лвл, ищу общение", "25")]
+    [InlineData("26 лет, ищу компанию", "26")]
+    [InlineData("Кун, 27. Ищу общение.", "27")]
+    public void RetainsAgeWithPositiveAuthorMarker(string text, string age)
+    {
+        // Сленговое «лвл» без игрового контекста — возраст автора, а не игровой уровень.
+        var result = SemanticContract.ReadFacts(Fields(("age", age, text)), text);
+        Assert.Equal(age, result.Facts["age"].Value);
         Assert.Empty(result.UnsupportedFields);
     }
 
@@ -360,6 +376,8 @@ public sealed class LlmContractTests
             new OpenAiLlmEngine(Settings(), client).GenerateAsync(SemanticContract.Request(SemanticOperation.Classify, "данные"), Ct));
         Assert.Equal("invalid_output_schema", error.Category);
         Assert.True(error.Retryable);
+        // Провайдер уже израсходовал токены: расход сохраняется и при отказе декодирования.
+        Assert.Equal(new LlmUsage(5, 2, null), error.Usage);
     }
 
     [Fact]

@@ -238,8 +238,29 @@ internal static class ReportCommands
             return false;
         }
 
+        if (runMetadata is not null && SamePath(output, runMetadata))
+        {
+            // Результат заменил бы переданные метаданные, которые уже прочитаны для отчёта.
+            problem = "Ошибка: --output и --run-metadata указывают на один файл: исходные метаданные были бы перезаписаны.";
+            return false;
+        }
+
         options = new ReportOptions(output, sourceKey, runMetadata, fixture);
         return true;
+    }
+
+    /// <summary>Пути совпадают после развёртывания в абсолютную форму.</summary>
+    private static bool SamePath(string first, string second)
+    {
+        try
+        {
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            return string.Equals(Path.GetFullPath(first), Path.GetFullPath(second), comparison);
+        }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
     }
 
     internal static async Task WriteHtmlAsync(string path, string html, CancellationToken cancellationToken)

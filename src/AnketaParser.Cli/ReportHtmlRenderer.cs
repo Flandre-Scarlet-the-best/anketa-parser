@@ -405,34 +405,41 @@ public static class ReportHtmlRenderer
         }
 
         html.Append("<h3>Метаданные движка и параметров запуска</h3>\n");
-        if (document.RunMetadata.Facts.Count == 0)
+        if (document.RunMetadata.All.Count == 0)
         {
             html.Append("<p class=\"empty\">Метаданные запуска не переданы либо не содержат известных полей: " +
                 "сведения о модели в детализации ограничены сохранёнными решениями модели.</p>\n");
         }
         else
         {
-            html.Append("<div class=\"scroll\">\n<table class=\"data\">\n<caption>Источник — переданный файл метаданных запуска; " +
-                "это описание стенда, а не исторический факт конкретного решения.</caption>\n")
-                .Append("<thead><tr><th scope=\"col\">Показатель</th><th scope=\"col\">Значение</th></tr></thead>\n<tbody>\n");
-            foreach (var item in document.RunMetadata.Facts)
+            if (document.RunMetadata.Facts.Count == 0)
             {
-                Row(html, item.Name, item.Value, null);
+                html.Append("<p class=\"empty\">Распознаваемых полей не найдено: ниже показаны все значения переданного файла.</p>\n");
             }
-
-            html.Append("</tbody>\n</table>\n</div>\n");
-            if (document.RunMetadata.All.Count > document.RunMetadata.Facts.Count)
+            else
             {
-                html.Append("<details><summary>Все поля файла метаданных (")
-                    .Append(Number(document.RunMetadata.All.Count)).Append(")</summary>\n<div class=\"scroll\">\n")
-                    .Append("<table class=\"data\"><thead><tr><th scope=\"col\">Поле</th><th scope=\"col\">Значение</th></tr></thead>\n<tbody>\n");
-                foreach (var item in document.RunMetadata.All)
+                html.Append("<div class=\"scroll\">\n<table class=\"data\">\n<caption>Источник — переданный файл метаданных запуска; " +
+                    "это описание стенда, а не исторический факт конкретного решения.</caption>\n")
+                    .Append("<thead><tr><th scope=\"col\">Показатель</th><th scope=\"col\">Значение</th></tr></thead>\n<tbody>\n");
+                foreach (var item in document.RunMetadata.Facts)
                 {
                     Row(html, item.Name, item.Value, null);
                 }
 
-                html.Append("</tbody>\n</table>\n</div>\n</details>\n");
+                html.Append("</tbody>\n</table>\n</div>\n");
             }
+
+            // Исходные значения показываются независимо от сводки: одно поле может дать
+            // несколько фактов, а файл без известных имён всё равно должен быть виден.
+            html.Append("<details><summary>Все поля файла метаданных (")
+                .Append(Number(document.RunMetadata.All.Count)).Append(")</summary>\n<div class=\"scroll\">\n")
+                .Append("<table class=\"data\"><thead><tr><th scope=\"col\">Поле</th><th scope=\"col\">Значение</th></tr></thead>\n<tbody>\n");
+            foreach (var item in document.RunMetadata.All)
+            {
+                Row(html, item.Name, item.Value, null);
+            }
+
+            html.Append("</tbody>\n</table>\n</div>\n</details>\n");
         }
 
         html.Append("<h3>Ограничения данных и оговорки</h3>\n<ul class=\"notices\">\n");

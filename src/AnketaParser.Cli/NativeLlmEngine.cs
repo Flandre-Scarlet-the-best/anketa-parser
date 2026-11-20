@@ -120,7 +120,8 @@ internal sealed class NativeLlmEngine(LLamaWeights weights, ModelParams model, L
                     throw new LLamaDecodeError(result);
             }
             if (pieces >= settings.MaxOutputTokens || output.Length == 0)
-                throw new LlmFailureException("incomplete_output");
+                // Неполный ответ не принимается, но уже потраченные токены учитываются.
+                throw new LlmFailureException("incomplete_output", usage: new LlmUsage(inputTokens, pieces, null));
             return new(output.ToString(), new(inputTokens, pieces, null));
         }
         catch (Exception error) when (error is RuntimeError or LLamaDecodeError or MissingTemplateException or TemplateNotFoundException or

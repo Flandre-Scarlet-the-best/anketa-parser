@@ -21,6 +21,8 @@ public sealed class ReportCommandTests
         ["report", "html", "--output"],
         ["report", "html", "--output", "out.html", "--unknown"],
         ["report", "html", "--source-key"],
+        // Результат не может быть записан в тот же файл, из которого прочитаны метаданные.
+        ["report", "html", "--output", "same.json", "--run-metadata", "same.json"],
     ];
 
     [Fact]

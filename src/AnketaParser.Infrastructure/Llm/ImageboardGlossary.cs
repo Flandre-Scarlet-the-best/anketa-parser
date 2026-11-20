@@ -32,7 +32,7 @@ internal static partial class ImageboardGlossary
     internal static bool IsShortGender(string value) => value.Length == 1 && Find(value)?.Field == "gender";
 
     internal static bool RequiresContext(string field, string value) =>
-        Find(value)?.Field == field && (field == "location" || IsShortGender(value));
+        Find(value)?.Field == field && field is "location" or "gender";
 
     internal static bool IsNumberedCityInContext(string value, ReadOnlySpan<char> prefix) =>
         NumberedDiscord().IsMatch(value) && Normalize("location", value, prefix, []) is not null;
