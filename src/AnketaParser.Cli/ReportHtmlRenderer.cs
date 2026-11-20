@@ -275,16 +275,20 @@ public static class ReportHtmlRenderer
         ArgumentNullException.ThrowIfNull(document);
         var html = new StringBuilder(64 * 1024);
         html.Append("<!DOCTYPE html>\n<html lang=\"ru\">\n<head>\n<meta charset=\"utf-8\">\n");
+        // Один и тот же нормализованный текст идёт и в хеш политики, и в документ:
+        // HTML-парсер приводит CRLF к LF до проверки встроенного блока.
+        var styleSheet = NormalizeNewlines(StyleSheet);
+        var clientScript = NormalizeNewlines(ClientScript);
         var policy = ContentSecurityPolicy
-            .Replace("{0}", Hash(ClientScript, "sha256"), StringComparison.Ordinal)
-            .Replace("{1}", Hash(StyleSheet, "sha256"), StringComparison.Ordinal);
+            .Replace("{0}", Hash(clientScript, "sha256"), StringComparison.Ordinal)
+            .Replace("{1}", Hash(styleSheet, "sha256"), StringComparison.Ordinal);
         html.Append("<meta http-equiv=\"Content-Security-Policy\" content=\"").Append(policy).Append("\">\n");
         html.Append("<meta name=\"referrer\" content=\"no-referrer\">\n");
         html.Append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
         html.Append("<meta name=\"generator\" content=\"").Append(Escape("AnketaParser " + document.ToolVersion)).Append("\">\n");
         html.Append("<title>").Append(Escape("Отбор анкет: снимок " + document.Snapshot.SourceKey + " — отчёт")).Append("</title>\n");
         // Текст встроенных блоков совпадает с тем, что покрывает хеш политики: без лишних переводов строки.
-        html.Append("<style>").Append(StyleSheet).Append("</style>\n</head>\n<body>\n<div class=\"wrap\">\n");
+        html.Append("<style>").Append(styleSheet).Append("</style>\n</head>\n<body>\n<div class=\"wrap\">\n");
 
         AppendHeader(html, document);
         AppendJump(html, document);
@@ -299,7 +303,7 @@ public static class ReportHtmlRenderer
             "модель не вызывалась, сеть не использовалась. Файл автономен: стили и сценарий встроены, " +
             "внешние ресурсы отсутствуют.</p>\n<p>Адресация поста — метаданные ответа (op, op_reply, none, other_reply); " +
             "причиной отсева она не является. Отсутствие решения модели не означает «не анкета».</p>\n</footer>\n</div>\n");
-        html.Append("<script>").Append(ClientScript).Append("</script>\n</body>\n</html>\n");
+        html.Append("<script>").Append(clientScript).Append("</script>\n</body>\n</html>\n");
         return html.ToString();
     }
 
@@ -973,6 +977,13 @@ public static class ReportHtmlRenderer
 
     private static string Hash(string content, string algorithm) =>
         algorithm + "-" + Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
+
+    /// <summary>
+    /// Приводит встроенный блок к виду, который получает HTML-парсер: браузер заменяет
+    /// CRLF на LF до проверки политикой, поэтому хеш считается по нормализованному тексту.
+    /// </summary>
+    private static string NormalizeNewlines(string content) =>
+        content.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
 
     /// <summary>
     /// Экранирование текста и значений атрибутов: активная разметка из данных сообщений

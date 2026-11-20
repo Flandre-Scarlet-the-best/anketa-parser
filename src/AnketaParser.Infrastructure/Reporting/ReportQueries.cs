@@ -113,10 +113,12 @@ public sealed class ReportQueries(ProductDbContext database)
                 .Where(revision => outsideIds.Contains(revision.Id))
                 .ToListAsync(cancellationToken).ConfigureAwait(false);
         var views = revisions.ToDictionary(revision => revision.Id, ToRevisionFacts);
+        // Задания и решения постов вне окна не читаются: отчёт не вправе утверждать,
+        // что их нет, поэтому сведения о них помечаются как незагруженные.
         return [.. outsidePosts.Select(post => new ReportPostFacts(
             post.Id, post.ExternalId, post.Url, post.PublishedAt, post.LastSeenAt, post.Excluded,
             post.IngestedRevisionId, post.IngestedRevisionId is { } currentId ? views.GetValueOrDefault(currentId) : null,
-            [], [], [], []))];
+            [], [], [], [], DetailsLoaded: false))];
     }
 
     private async Task<(IReadOnlyList<OriginalPost> Posts, IReadOnlyList<OriginalPost> Outside, int IdsInWindow, int OutsideCount)>

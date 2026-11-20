@@ -42,6 +42,9 @@ public static class ReportComposer
     /// <summary>Решение есть только у устаревшей ревизии поста.</summary>
     public const string StageStaleOnly = "stale_only";
 
+    /// <summary>Пост вне окна скана: задания и решения по нему не загружены.</summary>
+    public const string StageDetailsNotLoaded = "details_not_loaded";
+
     /// <summary>Единственная дата, использованная в отчёте.</summary>
     private const string MomentFormat = "dd.MM.yyyy HH:mm:ss 'UTC'";
 
@@ -117,7 +120,7 @@ public static class ReportComposer
             ?? throw new ReportDiagnosticException("post_revision_missing", [new ReportDiagnosticFact("postNumber", post.ExternalId)]);
         var filter = BuildFilter(post, revision);
         var text = BuildText(post, revision);
-        var llm = BuildLlm(post, revision, filter, text);
+        var llm = post.DetailsLoaded ? BuildLlm(post, revision, filter, text) : DetailsNotLoaded(BuildLlm(post, revision, filter, text));
         return new ReportPostView(
             post.ExternalId,
             post.Url,
@@ -346,6 +349,37 @@ public static class ReportComposer
             [.. post.Jobs.OrderBy(job => job.AvailableAt).ThenBy(job => job.Id).Select(BuildJob)]);
     }
 
+    /// <summary>
+    /// Сведения о заданиях и решениях поста вне окна скана не читались из хранилища:
+    /// отчёт сообщает об этом вместо утверждения, что задания и решения отсутствуют.
+    /// </summary>
+    private static ReportLlmView DetailsNotLoaded(ReportLlmView llm) =>
+        llm with
+        {
+            Status = StageDetailsNotLoaded,
+            StatusLabel = StageLabel(StageDetailsNotLoaded),
+            Note = "пост вне окна последнего скана: задания и решения по нему в отчёт не загружались",
+            Class = null,
+            ClassLabel = null,
+            Reason = null,
+            ReasonLabel = null,
+            Model = null,
+            Engine = null,
+            PipelineVersion = null,
+            SchemaVersion = null,
+            ProfileState = null,
+            ProfileStateLabel = null,
+            Decision = new ReportEvidenceView(ReportEvidenceView.Absent, null,
+                "сведения о решении модели для поста вне окна скана не загружены", null),
+            Fields = [],
+            UnsupportedFields = [],
+            Preferences = null,
+            Description = null,
+            Decisions = [],
+            CurrentJobState = null,
+            Jobs = [],
+        };
+
     private static (string Status, string? Note) ResolveStage(
         ReportFilterView filter,
         ReportAnalysisFacts? effective,
@@ -455,6 +489,7 @@ public static class ReportComposer
         StageSucceededWithoutDecision => "задание завершено без решения",
         StageNotAdmitted => "не допущен к анализу модели",
         StageStaleOnly => "результат только у устаревшей ревизии",
+        StageDetailsNotLoaded => "пост вне окна скана: задания и решения не загружены",
         _ => stage,
     };
 
@@ -546,6 +581,11 @@ public static class ReportComposer
         {
             notices.Add(new("run_metadata", ReportNotice.Info,
                 "Метаданные запуска не переданы: сведения о движке и модели ограничены сохранёнными решениями."));
+        }
+        else if (runMetadata.Truncated)
+        {
+            notices.Add(new("run_metadata_truncated", ReportNotice.Limitation,
+                "Список плоских значений метаданных запуска показан не полностью; сводка распознанных полей построена по всему файлу."));
         }
 
         var unverified = posts.Count(post => post.Llm.Decision.Status is not

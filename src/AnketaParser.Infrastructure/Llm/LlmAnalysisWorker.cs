@@ -101,9 +101,11 @@ public sealed class LlmAnalysisWorker(DbContextOptions<ProductDbContext> databas
         try
         {
             var result = await engine.GenerateAsync(SemanticContract.Request(operation, text), timeout.Token).ConfigureAwait(false);
-            timeout.Token.ThrowIfCancellationRequested();
+            // Провайдер уже израсходовал токены: расход учитывается и при отмене,
+            // которая может произойти сразу после получения ответа.
             if (result.Usage is { } measured)
                 usage.Add(measured);
+            timeout.Token.ThrowIfCancellationRequested();
             return result.Text;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)

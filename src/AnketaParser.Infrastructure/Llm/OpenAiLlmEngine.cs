@@ -10,13 +10,27 @@ public sealed class OpenAiLlmEngine(LlmSettings settings, HttpClient client) : I
 {
     private const int MaxResponseBytes = 256 * 1024;
 
-    public static HttpClient CreateClient() => new(new SocketsHttpHandler
+    public static HttpClient CreateClient(Uri endpoint) =>
+        new(CreateHandler(endpoint)) { Timeout = Timeout.InfiniteTimeSpan };
+
+    /// <summary>
+    /// Создаёт обработчик запросов. Прокси допустим только для HTTPS: адрес с секретными
+    /// заголовками не должен уходить через прокси открытым текстом, а loopback-маршрут
+    /// .NET не исключает из проксирования автоматически.
+    /// </summary>
+    /// <param name="endpoint">Фактический адрес запросов.</param>
+    /// <returns>Новый обработчик для одного клиента.</returns>
+    internal static SocketsHttpHandler CreateHandler(Uri endpoint)
     {
-        AllowAutoRedirect = false,
-        UseCookies = false,
-        AutomaticDecompression = DecompressionMethods.All,
-    })
-    { Timeout = Timeout.InfiniteTimeSpan };
+        ArgumentNullException.ThrowIfNull(endpoint);
+        return new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            UseCookies = false,
+            AutomaticDecompression = DecompressionMethods.All,
+            UseProxy = endpoint.Scheme == Uri.UriSchemeHttps,
+        };
+    }
 
     public async Task<LlmResponse> GenerateAsync(LlmRequest request, CancellationToken cancellationToken)
     {
@@ -173,7 +187,21 @@ public sealed class OpenAiLlmEngine(LlmSettings settings, HttpClient client) : I
     private static JsonElement Property(JsonElement element, string name) =>
         element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value) ? value : default;
 
-    private static string? String(JsonElement value) => value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+    private static string? String(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.String)
+            return null;
+        try
+        {
+            return value.GetString();
+        }
+        catch (InvalidOperationException)
+        {
+            // Непарный суррогат в строке ответа не декодируется: это отказ модели,
+            // а не сбой процесса, поэтому попытка завершается штатной категорией.
+            throw new LlmFailureException("invalid_output_schema", retryable: true);
+        }
+    }
 
     private static int? Count(JsonElement value) =>
         value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var count) && count >= 0 ? count : null;

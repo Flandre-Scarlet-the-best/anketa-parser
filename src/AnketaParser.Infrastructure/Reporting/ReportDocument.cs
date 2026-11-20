@@ -45,11 +45,17 @@ public sealed record ReportNotice(string Code, string Level, string Text)
 }
 
 /// <summary>Метаданные движка и параметров запуска из необязательного входного JSON.</summary>
+/// <param name="Path">Путь к прочитанному файлу либо null.</param>
+/// <param name="Loaded">Файл прочитан.</param>
+/// <param name="Facts">Распознанные поля сводки, собранные по всему файлу.</param>
+/// <param name="All">Показанный список плоских значений.</param>
+/// <param name="Truncated">Показанный список короче содержимого файла.</param>
 public sealed record ReportRunMetadataView(
     string? Path,
     bool Loaded,
     IReadOnlyList<ReportMetadataItem> Facts,
-    IReadOnlyList<ReportMetadataItem> All);
+    IReadOnlyList<ReportMetadataItem> All,
+    bool Truncated = false);
 
 /// <summary>Один факт метаданных запуска с указанием источника.</summary>
 public sealed record ReportMetadataItem(string Name, string Value);

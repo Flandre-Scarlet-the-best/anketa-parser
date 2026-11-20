@@ -164,7 +164,7 @@ internal static class LlmCommands
             }
         }
 
-        using var client = settings!.Engine == LlmEngine.Native ? null : OpenAiLlmEngine.CreateClient();
+        using var client = settings!.Engine == LlmEngine.Native ? null : OpenAiLlmEngine.CreateClient(settings.Endpoint!);
         using var native = client is null ? await NativeLlmEngine.LoadAsync(settings, ct).ConfigureAwait(false) : null;
         ILlmEngine engine = native is null ? new OpenAiLlmEngine(settings, client!) : native;
         var worker = new LlmAnalysisWorker(options, settings, engine);
@@ -177,7 +177,11 @@ internal static class LlmCommands
 
         await stderr.WriteLineAsync($"Обработчик LLM запущен ({LlmConfiguration.EngineName(settings.Engine)}, {settings.PipelineVersion}).")
             .ConfigureAwait(false);
-        await Parallel.ForAsync(0, settings.Concurrency, ct, async (_, stop) =>
+        // Потребители не завершаются до остановки, поэтому предел параллелизма
+        // обязан равняться настроенному: по умолчанию Parallel.ForAsync ограничивает
+        // его числом процессоров, и на одном ядре работал бы один потребитель.
+        var parallel = new ParallelOptions { MaxDegreeOfParallelism = settings.Concurrency, CancellationToken = ct };
+        await Parallel.ForAsync(0, settings.Concurrency, parallel, async (_, stop) =>
         {
             await ConsumeAsync(worker, stderr, stop).ConfigureAwait(false);
         }).ConfigureAwait(false);

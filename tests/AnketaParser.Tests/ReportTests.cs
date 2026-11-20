@@ -24,6 +24,9 @@ public sealed class ReportTests
     private static readonly DateTimeOffset Finished = new(2026, 11, 19, 20, 5, 0, TimeSpan.Zero);
     private static readonly Guid SourceId = Guid.Parse("2f4ba4a0-1f6e-4b46-9d60-0d3a0f6a1c11");
 
+    /// <summary>Метка запуска для выгрузки пограничных сценариев: файлы прежних запусков не перезаписываются.</summary>
+    private static readonly string EdgeDumpRun = DateTime.UtcNow.ToString("yyyyMMdd-HHmmssfff", CultureInfo.InvariantCulture);
+
     /// <summary>Признаки активной разметки, которых не может быть в готовом документе.</summary>
     private static readonly string[] ForbiddenActiveMarkup =
     [
@@ -126,6 +129,46 @@ public sealed class ReportTests
         Assert.Contains("id=\"post-200\"", html, StringComparison.Ordinal);
         Assert.DoesNotContain("id=\"post-99\"", html, StringComparison.Ordinal);
         Assert.Contains("Посты вне снимка", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PostOutsideWindowDeclaresUnloadedDetailsInsteadOfMissingJobs()
+    {
+        var inside = Post("100", current: Revision());
+        var outside = Post("99", current: Revision(receivedAt: Started.AddDays(-1))) with { DetailsLoaded = false };
+        var document = Compose(Snapshot([inside], [outside]));
+
+        var view = Assert.Single(document.PostsOutsideWindow);
+        Assert.Equal(ReportComposer.StageDetailsNotLoaded, view.Llm.Status);
+        Assert.Contains("не загружены", view.Llm.StatusLabel, StringComparison.Ordinal);
+        Assert.Contains("не загружались", view.Llm.Note, StringComparison.Ordinal);
+        Assert.Empty(view.Llm.Decisions);
+        // Пост внутри окна без задания по-прежнему честно сообщает об отсутствии задания.
+        Assert.Equal(ReportComposer.StageNoJob, Assert.Single(document.Posts).Llm.Status);
+    }
+
+    [Fact]
+    public async Task MetadataSummarySurvivesDisplayedListTruncation()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var numbers = string.Join(',', Enumerable.Range(0, 250));
+            await File.WriteAllTextAsync(path,
+                "{\"steps\":[" + numbers + "],\"modelName\":\"fixture-model\"}", TestContext.Current.CancellationToken);
+            var metadata = await ReportRunMetadataReader.ReadAsync(path, TestContext.Current.CancellationToken);
+
+            Assert.True(metadata.Truncated);
+            Assert.Equal(200, metadata.All.Count);
+            Assert.Contains(metadata.Facts,
+                item => item.Name.Contains("modelName", StringComparison.Ordinal) && item.Value == "fixture-model");
+            var document = Compose(Snapshot([]), metadata);
+            Assert.Contains(document.Notices, notice => notice.Code == "run_metadata_truncated");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Theory]
@@ -902,8 +945,12 @@ public sealed class ReportTests
         }
 
         Directory.CreateDirectory(directory);
+        // Отдельный каталог запуска: сохранённый результат прежней проверки
+        // и ручные файлы в указанном каталоге остаются неизменными.
+        var runDirectory = Path.Combine(directory, "run-" + EdgeDumpRun);
+        Directory.CreateDirectory(runDirectory);
         File.WriteAllText(
-            Path.Combine(directory, "edge-" + scenario + ".html"),
+            Path.Combine(runDirectory, "edge-" + scenario + ".html"),
             html,
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
     }

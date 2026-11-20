@@ -11,6 +11,7 @@ namespace AnketaParser.Infrastructure.Reporting;
 public static class ReportRunMetadataReader
 {
     private const int MaxItems = 200;
+    private const int MaxCollected = 20_000;
     private const int MaxValueChars = 300;
     private const int MaxSamplingItems = 12;
 
@@ -54,9 +55,12 @@ public static class ReportRunMetadataReader
 
         using (document)
         {
-            List<ReportMetadataItem> all = [];
-            Flatten(document.RootElement, string.Empty, all);
-            return new ReportRunMetadataView(path, true, Summarize(all), all);
+            // Сводка строится по всему файлу: длинный массив не должен скрывать
+            // распознаваемые поля, которые идут после него.
+            List<ReportMetadataItem> collected = [];
+            Flatten(document.RootElement, string.Empty, collected);
+            var displayed = collected.Count > MaxItems ? collected.GetRange(0, MaxItems) : collected;
+            return new ReportRunMetadataView(path, true, Summarize(collected), displayed, collected.Count > MaxItems);
         }
     }
 
@@ -95,7 +99,7 @@ public static class ReportRunMetadataReader
 
     private static void Flatten(JsonElement element, string path, List<ReportMetadataItem> items)
     {
-        if (items.Count >= MaxItems)
+        if (items.Count >= MaxCollected)
             return;
         switch (element.ValueKind)
         {
@@ -107,7 +111,7 @@ public static class ReportRunMetadataReader
                         ? (path.Length == 0 ? property.Name : "." + property.Name)
                         : "[" + JsonSerializer.Serialize(property.Name) + "]";
                     Flatten(property.Value, path + component, items);
-                    if (items.Count >= MaxItems)
+                    if (items.Count >= MaxCollected)
                         return;
                 }
 
@@ -117,7 +121,7 @@ public static class ReportRunMetadataReader
                 foreach (var item in element.EnumerateArray())
                 {
                     Flatten(item, string.Create(CultureInfo.InvariantCulture, $"{path}[{index}]"), items);
-                    if (items.Count >= MaxItems)
+                    if (items.Count >= MaxCollected)
                         return;
                     index++;
                 }

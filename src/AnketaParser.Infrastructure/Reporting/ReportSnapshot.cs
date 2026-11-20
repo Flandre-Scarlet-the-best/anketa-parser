@@ -46,7 +46,8 @@ public sealed record ReportPostFacts(
     IReadOnlyList<ReportRevisionFacts> Revisions,
     IReadOnlyList<ReportJobFacts> Jobs,
     IReadOnlyList<ReportAnalysisFacts> Analyses,
-    IReadOnlyList<ReportContactFacts> Contacts);
+    IReadOnlyList<ReportContactFacts> Contacts,
+    bool DetailsLoaded = true);
 
 /// <summary>Одна версия содержимого поста и решение первичного фильтра, сохранённое для неё.</summary>
 public sealed record ReportRevisionFacts(

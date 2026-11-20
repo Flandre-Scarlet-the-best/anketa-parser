@@ -201,9 +201,10 @@ public sealed class LlmPersistenceTests(PostgresTestCluster cluster) : IClassFix
         });
         var settings = Settings();
         var first = Worker(db, settings, delayed).ProcessNextAsync(revision, Ct);
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct);
+        LlmWorkOutcome outcome;
         try
         {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct);
             var second = Worker(db, settings, ProfileEngine());
             Assert.Equal("idle", (await second.ProcessNextAsync(revision, Ct)).Status);
             await ExpireAsync(db, revision);
@@ -211,9 +212,12 @@ public sealed class LlmPersistenceTests(PostgresTestCluster cluster) : IClassFix
         }
         finally
         {
+            // Первый worker завершается в любом исходе: иначе он продолжил бы работу
+            // параллельно с удалением тестовой базы и добавил бы фоновые ошибки.
             release.TrySetResult();
+            outcome = await first;
         }
-        Assert.Equal("lease_lost", (await first).Status);
+        Assert.Equal("lease_lost", outcome.Status);
         Assert.Single(await db.Set<Analysis>().ToArrayAsync(Ct));
         Assert.Single(await db.Set<Profile>().ToArrayAsync(Ct));
     }

@@ -301,7 +301,7 @@ internal static partial class DvachFilter
     private static partial Regex Url();
 
     /// <summary>Явное указание автора на собственный контакт, снимающее признак чужого.</summary>
-    [GeneratedRegex(@"(?<![\w])(?:(?:мой|моя|моё|мое|моего|моей|мою)\s+(?:тг|телеграм\w*|телега|телегу|дискорд|дис|дс|контакт\w*|аккаунт\w*|ник\w*|юзернейм\w*)|у\s+меня\s+(?:тг|телеграм\w*|контакт\w*|аккаунт\w*)|(?:а|но|зато)\s+(?:вот\s+)?(?:мой|моя|моё|мое)\b[^\w]{0,3}$)", IgnoreCase)]
+    [GeneratedRegex(@"(?<![\w])(?:(?:мой|моя|моё|мое|моего|моей|мою)\s+(?:тг|телеграм\w*|телега|телегу|дискорд|дис|дс|контакт\w*|аккаунт\w*|ник\w*|юзернейм\w*|почт\w*|мыл\w*|мейл\w*|email\w*|e-mail|xmpp\w*|jabber\w*|жаббер\w*|жабк\w*)|у\s+меня\s+(?:тг|телеграм\w*|контакт\w*|аккаунт\w*|почт\w*|email\w*|xmpp\w*)|(?:а|но|зато)\s+(?:вот\s+)?(?:мой|моя|моё|мое)\b[^\w]{0,3}$)", IgnoreCase)]
     private static partial Regex OwnContactPrefix();
 
     private static bool IsLabeledValue(string platform, string value) => platform switch

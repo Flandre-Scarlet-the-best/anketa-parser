@@ -253,6 +253,10 @@ public static partial class SemanticContract
         // Сверяем соседние символы в посте, даже если модель вернула только число.
         var sentence = SentencePrefix(text, start);
         var suffix = text.AsSpan(end).TrimStart();
+        // Время суток не является возрастом: «созвон в 23:00», «в 23 часа».
+        if (suffix.Length > 1 && (suffix[0] == ':' && char.IsAsciiDigit(suffix[1]) ||
+            suffix.StartsWith("час", StringComparison.OrdinalIgnoreCase)))
+            return false;
         if (suffix.Length > 0 && suffix[0] is '+' or '-' or '–' or '—' ||
             ApproximateAgePrefix().IsMatch(sentence))
             return false;
@@ -343,8 +347,21 @@ public static partial class SemanticContract
 
     private static string ReadString(JsonElement element, int max)
     {
-        if (element.ValueKind != JsonValueKind.String || element.GetString() is not { } text ||
-            text.Length is 0 || text.Length > max || text != text.Trim() ||
+        if (element.ValueKind != JsonValueKind.String)
+            throw new LlmFailureException("invalid_output_schema", retryable: true);
+        string text;
+        try
+        {
+            text = element.GetString()!;
+        }
+        catch (InvalidOperationException)
+        {
+            // Непарный суррогат в строке модели не декодируется в UTF-16:
+            // это непригодный ответ, а не сбой процесса.
+            throw new LlmFailureException("invalid_output_schema", retryable: true);
+        }
+
+        if (text.Length is 0 || text.Length > max || text != text.Trim() ||
             text.Any(c => char.IsControl(c) && c is not ('\n' or '\t')))
             throw new LlmFailureException("invalid_output_schema", retryable: true);
         return text;

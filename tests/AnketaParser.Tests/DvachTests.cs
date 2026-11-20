@@ -282,13 +282,13 @@ public sealed class DvachTests
     }
 
     [Theory]
-    [InlineData("@samp leuser42 (без пробела)", "@samp leuser42")]
-    [InlineData("тг @ sam ple_user42 (минус пробелы)", "@ sam ple_user42")]
-    public void JoinsSpacesOnlyWhenAuthorExplicitlyRequestsIt(string text, string raw)
+    [InlineData("@samp leuser42 (без пробела)", "@samp leuser42", "sampleuser42")]
+    [InlineData("тг @ sam ple_user42 (минус пробелы)", "@ sam ple_user42", "sample_user42")]
+    public void JoinsSpacesOnlyWhenAuthorExplicitlyRequestsIt(string text, string raw, string normalized)
     {
         var prepared = Prepare(text);
         var contact = Assert.Single(prepared.Contacts);
-        Assert.Equal("sampleuser42", contact.NormalizedValue.Replace("_", "", StringComparison.Ordinal));
+        Assert.Equal(normalized, contact.NormalizedValue);
         Assert.Equal(raw, contact.RawValue);
         var masked = AnketaParser.Infrastructure.Llm.LlmInput.Redact(text, [contact.RawValue, contact.NormalizedValue]);
         Assert.DoesNotContain(raw, masked, StringComparison.Ordinal);
@@ -303,6 +303,20 @@ public sealed class DvachTests
     [InlineData("Тн: sampleuser42/path")]
     public void TelegramSeparatorsDoNotAcceptPartialOrForeignTokens(string text) =>
         Assert.DoesNotContain(Prepare(text).Contacts, contact => contact.Platform == "telegram");
+
+    [Theory]
+    [InlineData("Не мой контакт @friend_name, а моя почта: me@example.invalid")]
+    [InlineData("Не мой тг @friend_name, у меня почта me@example.invalid")]
+    public void OwnMailAfterForeignContactIsStillRecognized(string text)
+    {
+        // Признак чужого контакта действует только до явного указания на собственный:
+        // собственная почта после него остаётся контактом автора.
+        var prepared = Prepare(text);
+        var contact = Assert.Single(prepared.Contacts);
+        Assert.Equal("email", contact.Platform);
+        Assert.Equal("me@example.invalid", contact.NormalizedValue);
+        Assert.Equal("candidate", prepared.Reason);
+    }
 
     [Theory]
     [InlineData("profile telegram: @sampleuser42")]

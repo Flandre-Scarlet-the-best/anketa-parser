@@ -267,6 +267,8 @@ public sealed class LlmContractTests
     [InlineData("Кому за 24", "24")]
     [InlineData("Мне почти 24. Ищу общение.", "24")]
     [InlineData("Мне примерно 24. Ищу общение.", "24")]
+    [InlineData("созвон в 23:00", "23")]
+    [InlineData("буду в 23 часа", "23")]
     public void OmitsAgeThatIsOnlyAPreferenceOrApproximation(string text, string age)
     {
         var result = SemanticContract.ReadFacts(Fields(("age", age, age)), text);
@@ -343,6 +345,43 @@ public sealed class LlmContractTests
             .GenerateAsync(SemanticContract.Request(SemanticOperation.Classify, "данные"), Ct);
         Assert.Equal(new LlmUsage(9, 2, null), response.Usage);
         Assert.Equal("{}", response.Text);
+    }
+
+    [Fact]
+    public async Task UnpairedSurrogateInContentIsModelFailureNotProcessFailure()
+    {
+        // Непарный суррогат не декодируется в UTF-16: попытка обязана завершиться
+        // штатной категорией отказа, а не необработанным InvalidOperationException.
+        using var handler = new FixtureHandler((_, _) => Task.FromResult(Reply(HttpStatusCode.OK,
+            """{"choices":[{"finish_reason":"stop","message":{"content":"\uD800"}}],"usage":{"prompt_tokens":5,"completion_tokens":2}}""")));
+        using var client = new HttpClient(handler);
+        var error = await Assert.ThrowsAsync<LlmFailureException>(() =>
+            new OpenAiLlmEngine(Settings(), client).GenerateAsync(SemanticContract.Request(SemanticOperation.Classify, "данные"), Ct));
+        Assert.Equal("invalid_output_schema", error.Category);
+        Assert.True(error.Retryable);
+    }
+
+    [Fact]
+    public void UnpairedSurrogateInModelFieldIsSchemaFailure()
+    {
+        const string fields = """
+            {"age":{"value":"26","evidence":"\uD800"},"gender":null,"location":null,"interests":null,
+             "goals":null,"preferences":null,"description":null}
+            """;
+        var error = Assert.Throws<LlmFailureException>(() => SemanticContract.ReadFacts(fields, "мне 26"));
+        Assert.Equal("invalid_output_schema", error.Category);
+        Assert.True(error.Retryable);
+    }
+
+    [Fact]
+    public void SecretBearingRequestsDoNotUseProxyForPlainHttpEndpoint()
+    {
+        // Открытый HTTP допускается только для loopback: прокси для такого запроса
+        // передал бы секретные заголовки открытым текстом третьей стороне.
+        using var plain = OpenAiLlmEngine.CreateHandler(new Uri("http://127.0.0.1:8765/v1/chat/completions"));
+        Assert.False(plain.UseProxy);
+        using var secure = OpenAiLlmEngine.CreateHandler(new Uri("https://example.invalid/v1/chat/completions"));
+        Assert.True(secure.UseProxy);
     }
 
     [Theory]
