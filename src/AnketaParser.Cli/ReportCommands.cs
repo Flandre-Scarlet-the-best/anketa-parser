@@ -118,7 +118,7 @@ internal static class ReportCommands
             {
                 var runMetadata = options.RunMetadataPath is null
                     ? null
-                    : ReportRunMetadataReader.Read(options.RunMetadataPath);
+                    : await ReportRunMetadataReader.ReadAsync(options.RunMetadataPath, cancellationToken).ConfigureAwait(false);
                 await using var scope = provider.CreateAsyncScope();
                 var context = scope.ServiceProvider.GetRequiredService<ProductDbContext>();
                 var snapshot = await new ReportQueries(context).LoadAsync(sourceKey, cancellationToken).ConfigureAwait(false);
@@ -152,7 +152,7 @@ internal static class ReportCommands
             };
             await TryWriteAsync(stderr, DescribeDiagnostic("Отчёт не построен", error)).ConfigureAwait(false);
         }
-        catch (PostgresException error) when (error.SqlState is "42P01" or "3F000")
+        catch (PostgresException error) when (error.SqlState is "42P01" or "42703" or "3F000")
         {
             status = "schema_unavailable";
             code = ExitCodes.DependencyUnavailable;
@@ -224,6 +224,8 @@ internal static class ReportCommands
                 case "--fixture":
                     fixture = true;
                     break;
+                case "--json":
+                    break;
                 default:
                     problem = $"Ошибка: неизвестный или неполный параметр '{argument}'.";
                     return false;
@@ -240,8 +242,9 @@ internal static class ReportCommands
         return true;
     }
 
-    private static async Task WriteHtmlAsync(string path, string html, CancellationToken cancellationToken)
+    internal static async Task WriteHtmlAsync(string path, string html, CancellationToken cancellationToken)
     {
+        string? temporary = null;
         try
         {
             var full = Path.GetFullPath(path);
@@ -251,14 +254,31 @@ internal static class ReportCommands
                 Directory.CreateDirectory(directory);
             }
 
-            // Файл пишется целиком после успешной сборки документа: частичный отчёт не остаётся.
-            await File.WriteAllTextAsync(full, html, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), cancellationToken)
-                .ConfigureAwait(false);
+            var candidate = Path.Combine(directory!, "." + Path.GetFileName(full) + "." + Guid.NewGuid().ToString("N") + ".tmp");
+            await using (var stream = new FileStream(candidate, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, useAsync: true))
+            {
+                temporary = candidate;
+                await using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+                await writer.WriteAsync(html.AsMemory(), cancellationToken).ConfigureAwait(false);
+                await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(temporary, full, overwrite: true);
+            temporary = null;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or NotSupportedException
             or ArgumentException)
         {
             throw new ReportDiagnosticException("output_unwritable", [new ReportDiagnosticFact("path", path)]);
+        }
+        finally
+        {
+            if (temporary is not null)
+            {
+                try { File.Delete(temporary); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
         }
     }
 

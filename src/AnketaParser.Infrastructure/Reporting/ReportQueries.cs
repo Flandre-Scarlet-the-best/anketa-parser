@@ -1,3 +1,4 @@
+using System.Data;
 using System.Globalization;
 using System.Text.Json;
 
@@ -26,6 +27,9 @@ public sealed class ReportQueries(ProductDbContext database)
     public async Task<ReportSnapshot> LoadAsync(string sourceKey, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourceKey);
+        await using var transaction = await database.Database.BeginTransactionAsync(IsolationLevel.RepeatableRead, cancellationToken)
+            .ConfigureAwait(false);
+        await database.Database.ExecuteSqlRawAsync("SET TRANSACTION READ ONLY", cancellationToken).ConfigureAwait(false);
 
         var source = await database.Set<Source>().AsNoTracking()
             .SingleOrDefaultAsync(item => item.Key == sourceKey, cancellationToken).ConfigureAwait(false)
@@ -39,8 +43,12 @@ public sealed class ReportQueries(ProductDbContext database)
         var scanFacts = ToScanFacts(scan) with { IdsInWindow = idsInWindow, PostsOutsideWindow = outsideCount };
         var sourceFacts = new ReportSourceFacts(source.Id, source.Key, source.Url);
         if (posts.Count == 0)
-            return new ReportSnapshot(sourceFacts, scanFacts, [], await LoadOutsideOnlyAsync(outsidePosts, cancellationToken)
+        {
+            var empty = new ReportSnapshot(sourceFacts, scanFacts, [], await LoadOutsideOnlyAsync(outsidePosts, cancellationToken)
                 .ConfigureAwait(false));
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return empty;
+        }
 
         var postIds = posts.Select(post => post.Id).ToArray();
         var revisions = await database.Set<PostRevision>().AsNoTracking()
@@ -85,12 +93,14 @@ public sealed class ReportQueries(ProductDbContext database)
         var contactsByRevision = observations.ToLookup(row => row.RevisionId);
         var revisionsByPost = revisions.ToLookup(revision => revision.PostId);
 
-        return new ReportSnapshot(
+        var snapshot = new ReportSnapshot(
             sourceFacts,
             scanFacts,
             [.. posts.Select(post => ToPostFacts(post, revisionsByPost, revisionViews, jobsByRevision, attemptsByJob,
                 analysesByRevision, profileByAnalysis, contactsByRevision))],
             await LoadOutsideOnlyAsync(outsidePosts, cancellationToken).ConfigureAwait(false));
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return snapshot;
     }
 
     private async Task<IReadOnlyList<ReportPostFacts>> LoadOutsideOnlyAsync(
@@ -232,8 +242,8 @@ public sealed class ReportQueries(ProductDbContext database)
                 foreach (var field in fieldsElement.EnumerateObject())
                 {
                     if (field.Value.ValueKind != JsonValueKind.Object ||
-                        !field.Value.TryGetProperty("start", out var start) || !start.TryGetInt32(out var startValue) ||
-                        !field.Value.TryGetProperty("length", out var length) || !length.TryGetInt32(out var lengthValue))
+                        !field.Value.TryGetProperty("start", out var start) || start.ValueKind != JsonValueKind.Number || !start.TryGetInt32(out var startValue) ||
+                        !field.Value.TryGetProperty("length", out var length) || length.ValueKind != JsonValueKind.Number || !length.TryGetInt32(out var lengthValue))
                         continue;
                     var label = document.RootElement.TryGetProperty("normalizedFields", out var normalized) &&
                         normalized.ValueKind == JsonValueKind.Object && normalized.TryGetProperty(field.Name, out var labelValue) &&
@@ -267,8 +277,8 @@ public sealed class ReportQueries(ProductDbContext database)
                 omittedElement.ValueKind == JsonValueKind.True;
             if (!document.RootElement.TryGetProperty("evidence", out var evidence) ||
                 evidence.ValueKind != JsonValueKind.Object ||
-                !evidence.TryGetProperty("start", out var start) || !start.TryGetInt32(out var startValue) ||
-                !evidence.TryGetProperty("length", out var length) || !length.TryGetInt32(out var lengthValue))
+                !evidence.TryGetProperty("start", out var start) || start.ValueKind != JsonValueKind.Number || !start.TryGetInt32(out var startValue) ||
+                !evidence.TryGetProperty("length", out var length) || length.ValueKind != JsonValueKind.Number || !length.TryGetInt32(out var lengthValue))
                 return (null, omitted);
             return (new TextSpan(startValue, lengthValue), omitted);
         }
@@ -301,6 +311,8 @@ public sealed class ReportQueries(ProductDbContext database)
     private static ReportScanFacts ToScanFacts(SourceScan scan)
     {
         var metrics = ReadMetrics(scan);
+        if (scan.Status == "complete" && metrics is null)
+            throw new ReportDiagnosticException("scan_metrics_unavailable", []);
         return new ReportScanFacts(
             scan.Status,
             scan.Phase,
@@ -321,11 +333,18 @@ public sealed class ReportQueries(ProductDbContext database)
     {
         try
         {
+            using var document = JsonDocument.Parse(scan.Metrics);
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("Received", out var received) ||
+                received.ValueKind != JsonValueKind.Number || !received.TryGetInt32(out _) ||
+                !document.RootElement.TryGetProperty("Closed", out var closed) ||
+                closed.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                return null;
             return JsonSerializer.Deserialize<DvachScanMetrics>(scan.Metrics);
         }
         catch (JsonException)
         {
-            // Повреждённая строка метрик не должна скрывать снимок: счётчики считаются из постов.
+            // Без сохранённых метрик завершённый снимок нельзя подтвердить.
             return null;
         }
     }
@@ -363,8 +382,8 @@ public sealed class ReportQueries(ProductDbContext database)
                     if (item.ValueKind != JsonValueKind.Object ||
                         !item.TryGetProperty("Board", out var board) || board.ValueKind != JsonValueKind.String ||
                         board.GetString() is not { } boardName ||
-                        !item.TryGetProperty("Thread", out var thread) || !thread.TryGetInt64(out var threadNumber) ||
-                        !item.TryGetProperty("Post", out var target) || !target.TryGetInt64(out var postNumber))
+                        !item.TryGetProperty("Thread", out var thread) || thread.ValueKind != JsonValueKind.Number || !thread.TryGetInt64(out var threadNumber) ||
+                        !item.TryGetProperty("Post", out var target) || target.ValueKind != JsonValueKind.Number || !target.TryGetInt64(out var postNumber))
                         continue;
                     replies.Add(new ReportReplyFacts(boardName, threadNumber, postNumber));
                 }

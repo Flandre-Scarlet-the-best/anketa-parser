@@ -407,6 +407,7 @@ public sealed class ReportTests
     [Theory]
     [InlineData(0, 500, ReportEvidenceView.OutOfRange)]
     [InlineData(-1, 3, ReportEvidenceView.OutOfRange)]
+    [InlineData(int.MaxValue, 1, ReportEvidenceView.OutOfRange)]
     public void UnverifiableCoordinatesAreShownWithoutHighlight(int start, int length, string status)
     {
         const string text = "Ищу знакомства. Пишите: tg @nick";
@@ -540,25 +541,121 @@ public sealed class ReportTests
     }
 
     [Fact]
-    public void InvalidRunMetadataIsReportedWithCategory()
+    public async Task InvalidRunMetadataIsReportedWithCategory()
     {
         var path = Path.Combine(Path.GetTempPath(), "anketa-report-tests", Guid.NewGuid().ToString("N") + ".json");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         try
         {
             File.WriteAllText(path, "{ неверный JSON }", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            var error = Assert.Throws<ReportDiagnosticException>(() => ReportRunMetadataReader.Read(path));
+            var error = await Assert.ThrowsAsync<ReportDiagnosticException>(() => ReportRunMetadataReader.ReadAsync(path, TestContext.Current.CancellationToken));
             Assert.Equal("run_metadata_invalid", error.Category);
             Assert.Equal(path, Assert.Single(error.Facts).Value);
 
-            var missing = Assert.Throws<ReportDiagnosticException>(
-                () => ReportRunMetadataReader.Read(path + ".missing"));
+            var missing = await Assert.ThrowsAsync<ReportDiagnosticException>(
+                () => ReportRunMetadataReader.ReadAsync(path + ".missing", TestContext.Current.CancellationToken));
             Assert.Equal("run_metadata_unreadable", missing.Category);
         }
         finally
         {
             File.Delete(path);
         }
+    }
+
+    [Fact]
+    public async Task MetadataPathsDistinguishDottedKeysAndNestedObjects()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            await File.WriteAllTextAsync(path, """{"model.name":"A","model":{"name":"B"},"temperature":0.5}""", TestContext.Current.CancellationToken);
+            var metadata = await ReportRunMetadataReader.ReadAsync(path, TestContext.Current.CancellationToken);
+            Assert.Contains(metadata.All, item => item.Name == "[\"model.name\"]" && item.Value == "A");
+            Assert.Contains(metadata.All, item => item.Name == "model.name" && item.Value == "B");
+            Assert.Contains(metadata.Facts, item => item.Name.Contains("model.name", StringComparison.Ordinal) && item.Value == "B");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task CancelledReportWritePreservesExistingFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".html");
+        try
+        {
+            await File.WriteAllTextAsync(path, "предыдущий отчёт", TestContext.Current.CancellationToken);
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ReportCommands.WriteHtmlAsync(path, "новый отчёт", cancelled.Token));
+            Assert.Equal("предыдущий отчёт", await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken));
+            await ReportCommands.WriteHtmlAsync(path, "новый отчёт", TestContext.Current.CancellationToken);
+            Assert.Equal("новый отчёт", await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task MetadataReadHonorsCancellation()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            await File.WriteAllTextAsync(path, "{}", TestContext.Current.CancellationToken);
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ReportRunMetadataReader.ReadAsync(path, cancelled.Token));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void CurrentJobWinsOverStaleDecisionAndStaleJob()
+    {
+        var current = Revision();
+        var stale = Revision();
+        var oldJob = Job(stale.Id, "failed", "timeout") with { AvailableAt = Started.AddDays(2) };
+        var currentJob = Job(current.Id, "pending") with { AvailableAt = Started };
+        var document = Compose(Snapshot([Post("100", current: current, stale: [stale],
+            analyses: [Analysis(stale.Id)], jobs: [oldJob, currentJob])]));
+        var post = Assert.Single(document.Posts);
+        Assert.Equal(ReportComposer.StagePending, post.Stage);
+        Assert.Equal("pending", post.Llm.CurrentJobState);
+        Assert.Collection(post.Llm.Jobs, job => Assert.Equal("pending", job.State), job => Assert.Equal("failed", job.State));
+        Assert.Contains("data-job=\"pending\"", ReportHtmlRenderer.Render(document), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void JobsAreSortedBeforeDatesAreFormatted()
+    {
+        var revision = Revision();
+        var october = Job(revision.Id, "pending") with { AvailableAt = new DateTimeOffset(2026, 10, 31, 0, 0, 0, TimeSpan.Zero) };
+        var november = Job(revision.Id, "failed", "timeout") with { AvailableAt = new DateTimeOffset(2026, 11, 1, 0, 0, 0, TimeSpan.Zero) };
+        var post = Assert.Single(Compose(Snapshot([Post("100", current: revision, jobs: [november, october])])).Posts);
+        Assert.Collection(post.Llm.Jobs, job => Assert.Equal("pending", job.State), job => Assert.Equal("failed", job.State));
+        Assert.Equal("failed", post.Llm.CurrentJobState);
+    }
+
+    [Fact]
+    public void EvidenceCrossingContactMaskCannotHighlightOriginalContact()
+    {
+        const string text = "Давай общаться, @sampleuser42";
+        var revision = Revision(text: text, contacts: 1);
+        var document = Compose(Snapshot([Post("100", current: revision,
+            analyses: [Analysis(revision.Id, evidence: new TextSpan(0, text.Length))],
+            contacts: [new ReportContactFacts("telegram", "@sampleuser42", "sampleuser42", 0.9m, "text")])]));
+        var evidence = Assert.Single(document.Posts).Llm.Decision;
+        Assert.Equal(ReportEvidenceView.MaskChar, evidence.Status);
+        Assert.Null(evidence.Span);
+        Assert.DoesNotContain("sampleuser42", evidence.Fragment!, StringComparison.Ordinal);
     }
 
     /// <summary>

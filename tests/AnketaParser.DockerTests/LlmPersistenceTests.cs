@@ -1,3 +1,5 @@
+using System.Data.Common;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -5,9 +7,11 @@ using AnketaParser.Core.Persistence;
 using AnketaParser.Infrastructure;
 using AnketaParser.Infrastructure.Llm;
 using AnketaParser.Infrastructure.Persistence;
+using AnketaParser.Infrastructure.Reporting;
 using AnketaParser.Infrastructure.Sources;
 
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -400,6 +404,130 @@ public sealed class LlmPersistenceTests(PostgresTestCluster cluster) : IClassFix
         Assert.Equal(2, await db.Set<JobAttempt>().CountAsync(x => x.JobId == job.Id && x.FailureCategory == "rate_limited", Ct));
         Assert.Equal(job.Id, await new LlmReports(db).ReprocessAsync(revision, settings, true, Ct));
         Assert.Equal("pending", await db.Set<ProcessingJob>().Where(x => x.Id == job.Id).Select(x => x.State).SingleAsync(Ct));
+    }
+
+    [Fact]
+    public async Task ReportSkipsMalformedCoordinatesAndRejectsMissingScanMetrics()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var revisions = await ImportAsync(db);
+        var revision = revisions["210007"];
+        Assert.Equal("profile", (await Worker(db, Settings(), ProfileEngine()).ProcessNextAsync(revision, Ct)).Status);
+        var analysis = await db.Set<Analysis>().SingleAsync(item => item.RevisionId == revision, Ct);
+        analysis.Observations = """{"fields":{"age":{"start":"0","length":1}}}""";
+        analysis.Assessments = """{"evidence":{"start":null,"length":5}}""";
+        var postRevision = await db.Set<PostRevision>().SingleAsync(item => item.Id == revision, Ct);
+        postRevision.RetrievalMetadata = """{"text":"текст","quotes":[],"replies":[{"Board":"soc","Thread":"42","Post":1},{"Board":"soc","Thread":42,"Post":1}]}""";
+        await db.SaveChangesAsync(Ct);
+        var source = await db.Set<Source>().SingleAsync(Ct);
+        var snapshot = await new ReportQueries(db).LoadAsync(source.Key, Ct);
+        var post = snapshot.Posts.Single(item => item.CurrentRevisionId == revision);
+        var result = Assert.Single(post.Analyses);
+        Assert.Empty(result.FieldSpans);
+        Assert.Null(result.EvidenceSpan);
+        Assert.Single(post.CurrentRevision!.Replies);
+
+        var scan = await db.Set<SourceScan>().SingleAsync(Ct);
+        var originalMetrics = scan.Metrics;
+        scan.Metrics = "null";
+        await db.SaveChangesAsync(Ct);
+        var error = await Assert.ThrowsAsync<ReportDiagnosticException>(() => new ReportQueries(db).LoadAsync(source.Key, Ct));
+        Assert.Equal("scan_metrics_unavailable", error.Category);
+        scan.Metrics = originalMetrics;
+        await db.SaveChangesAsync(Ct);
+        Assert.NotEmpty((await new ReportQueries(db).LoadAsync(source.Key, Ct)).Posts);
+    }
+
+    [Fact]
+    public async Task ReportReadsScanFromSameSnapshotWhenConcurrentWriterCommits()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var writer = database.Open();
+        await ImportAsync(writer);
+        var source = await writer.Set<Source>().SingleAsync(Ct);
+        var scan = await writer.Set<SourceScan>().SingleAsync(Ct);
+        var received = JsonSerializer.Deserialize<DvachScanMetrics>(scan.Metrics)!.Received;
+        var interceptor = new ScanReadInterceptor(async token =>
+        {
+            scan.Metrics = JsonSerializer.Serialize(new DvachScanMetrics(0, false));
+            await writer.SaveChangesAsync(token);
+        });
+        var options = new DbContextOptionsBuilder<ProductDbContext>()
+            .UseNpgsql(writer.Database.GetConnectionString(), ProductDbContext.ConfigureProvider)
+            .AddInterceptors(interceptor).Options;
+        await using var reader = new ProductDbContext(options);
+        var snapshot = await new ReportQueries(reader).LoadAsync(source.Key, Ct);
+        Assert.True(interceptor.Executed);
+        Assert.Equal(received, snapshot.Scan.Received);
+        Assert.Equal(0, JsonSerializer.Deserialize<DvachScanMetrics>(
+            await writer.Set<SourceScan>().AsNoTracking().Select(item => item.Metrics).SingleAsync(Ct))!.Received);
+    }
+
+    [Fact]
+    public async Task RealCliBuildsReportFromIsolatedFixtureWithJsonFlagBeforeOutput()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        var directory = Directory.CreateTempSubdirectory("anketa-report-cli-");
+        try
+        {
+            var path = Path.Combine(directory.FullName, "report.html");
+            var (scanCode, scanJson) = await RunCliAsync(db, ["source", "scan", "--fixture", FixturePath()]);
+            Assert.Equal(0, scanCode);
+            using var scan = JsonDocument.Parse(scanJson);
+            Assert.Equal("complete", scan.RootElement.GetProperty("status").GetString());
+            var (reportCode, reportJson) = await RunCliAsync(db, ["report", "html", "--json", "--output", path, "--fixture"]);
+            Assert.Equal(0, reportCode);
+            using var report = JsonDocument.Parse(reportJson);
+            Assert.Equal("ok", report.RootElement.GetProperty("status").GetString());
+            Assert.True(report.RootElement.GetProperty("result").GetProperty("snapshot").GetProperty("posts").GetInt32() > 0);
+            Assert.Contains("<!DOCTYPE html>", await File.ReadAllTextAsync(path, Ct), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    private static async Task<(int ExitCode, string Stdout)> RunCliAsync(ProductDbContext db, string[] arguments)
+    {
+        var configuration = Directory.GetParent(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar))!.Name;
+        var cli = Path.Combine(ComposeStackSmokeTests.FindRepositoryRoot(), "src", "AnketaParser.Cli", "bin", configuration, "net10.0", "AnketaParser.Cli.dll");
+        var start = new ProcessStartInfo("dotnet") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        foreach (var key in start.Environment.Keys.Where(key => key.StartsWith("ANKETAPARSER_", StringComparison.OrdinalIgnoreCase)).ToArray())
+            start.Environment.Remove(key);
+        start.Environment["ANKETAPARSER_Database__ConnectionString"] = db.Database.GetConnectionString();
+        start.Environment["ANKETAPARSER_Dvach__ThreadUrl"] = "https://2ch.org/soc/res/210000.html";
+        start.Environment["DOTNET_ENVIRONMENT"] = "Test";
+        start.ArgumentList.Add(cli);
+        foreach (var argument in arguments)
+            start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("Не удалось запустить CLI.");
+        var stdout = process.StandardOutput.ReadToEndAsync(Ct);
+        var stderr = process.StandardError.ReadToEndAsync(Ct);
+        await process.WaitForExitAsync(Ct);
+        await stderr;
+        return (process.ExitCode, await stdout);
+    }
+
+    private sealed class ScanReadInterceptor(Func<CancellationToken, Task> concurrentWrite) : DbCommandInterceptor
+    {
+        internal bool Executed { get; private set; }
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            if (!Executed && command.CommandText.Contains("\"SourceScan\"", StringComparison.Ordinal))
+            {
+                Executed = true;
+                await concurrentWrite(cancellationToken);
+            }
+            return result;
+        }
     }
 
     private static async Task<Dictionary<string, Guid>> ImportAsync(ProductDbContext db, string? path = null)

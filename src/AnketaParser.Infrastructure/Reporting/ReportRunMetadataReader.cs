@@ -26,15 +26,16 @@ public static class ReportRunMetadataReader
 
     /// <summary>Читает файл метаданных запуска.</summary>
     /// <param name="path">Путь к JSON-файлу.</param>
+    /// <param name="cancellationToken">Токен отмены чтения.</param>
     /// <returns>Метаданные запуска с полным списком плоских значений.</returns>
     /// <exception cref="ReportDiagnosticException">Файл недоступен или содержит некорректный JSON.</exception>
-    public static ReportRunMetadataView Read(string path)
+    public static async Task<ReportRunMetadataView> ReadAsync(string path, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         string json;
         try
         {
-            json = File.ReadAllText(path);
+            json = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or NotSupportedException)
         {
@@ -101,7 +102,11 @@ public static class ReportRunMetadataReader
             case JsonValueKind.Object:
                 foreach (var property in element.EnumerateObject())
                 {
-                    Flatten(property.Value, path.Length == 0 ? property.Name : path + "." + property.Name, items);
+                    var component = property.Name.All(character => char.IsLetterOrDigit(character) || character == '_') &&
+                        property.Name.Length > 0
+                        ? (path.Length == 0 ? property.Name : "." + property.Name)
+                        : "[" + JsonSerializer.Serialize(property.Name) + "]";
+                    Flatten(property.Value, path + component, items);
                     if (items.Count >= MaxItems)
                         return;
                 }

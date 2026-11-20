@@ -903,8 +903,7 @@ public static class ReportHtmlRenderer
 
     private static string JobState(ReportPostView post)
     {
-        var llmJobs = post.Llm.Jobs.Where(job => job.Kind == "llm").ToArray();
-        return llmJobs.Length == 0 ? "none" : llmJobs[^1].State;
+        return post.Llm.CurrentJobState ?? "none";
     }
 
     private static string JobStateLabel(ReportPostView post) => JobState(post) switch

@@ -264,7 +264,7 @@ public static class ReportComposer
                 "текст ревизии недоступен: смещения не проверяются, подсветка не выполняется", null);
         }
 
-        if (span.Start < 0 || span.Length <= 0 || span.Start + span.Length > text.Length)
+        if (span.Start < 0 || span.Length <= 0 || span.Start > text.Length || span.Length > text.Length - span.Start)
         {
             return new ReportEvidenceView(ReportEvidenceView.OutOfRange, null, string.Create(CultureInfo.InvariantCulture,
                 $"координаты {span.Start}+{span.Length} выходят за границы текста длиной {text.Length} (UTF-16)"), null);
@@ -274,7 +274,7 @@ public static class ReportComposer
         if (fragment.Contains(SemanticContract.Redacted, StringComparison.Ordinal))
         {
             return new ReportEvidenceView(ReportEvidenceView.MaskChar, fragment,
-                "фрагмент содержит символ маски █: контракт не принимает такой фрагмент, подсветка не выполняется", null);
+                "фрагмент содержит символ маски █: исходный контакт не выделяется как цитата модели", null);
         }
 
         if (value is not null && !fragment.Contains(value, StringComparison.Ordinal))
@@ -304,10 +304,10 @@ public static class ReportComposer
 
         var decision = effective is null
             ? new ReportEvidenceView(ReportEvidenceView.Absent, null, "решения модели по актуальной ревизии нет", null)
-            : Verify(effective.EvidenceSpan, revision.Text, effective.EvidenceOmitted, null);
+            : Verify(effective.EvidenceSpan, text.PreparedText, effective.EvidenceOmitted, null);
         var fields = effective is null
             ? []
-            : BuildFields(effective, revision.Text);
+            : BuildFields(effective, text.PreparedText);
         var decisions = post.Analyses
             .OrderBy(analysis => analysis.CreatedAt).ThenBy(analysis => analysis.Id)
             .Select(analysis => new ReportDecisionView(
@@ -342,7 +342,8 @@ public static class ReportComposer
             effective?.Preferences,
             effective?.Description,
             decisions,
-            [.. post.Jobs.Select(BuildJob).OrderBy(job => job.AvailableAt, StringComparer.Ordinal)]);
+            llmJobs.LastOrDefault()?.State,
+            [.. post.Jobs.OrderBy(job => job.AvailableAt).ThenBy(job => job.Id).Select(BuildJob)]);
     }
 
     private static (string Status, string? Note) ResolveStage(
@@ -360,7 +361,7 @@ public static class ReportComposer
 
         if (effective is not null)
             return (effective.SemanticClass ?? StageNoJob, null);
-        if (stale.Length > 0)
+        if (stale.Length > 0 && llmJobs.Length == 0)
         {
             return (StageStaleOnly,
                 "решение модели есть только у устаревшей ревизии поста: для актуальной ревизии результата нет, к классам решения оно не относится");

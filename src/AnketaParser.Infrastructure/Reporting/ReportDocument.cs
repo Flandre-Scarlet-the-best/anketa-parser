@@ -148,6 +148,7 @@ public sealed record ReportLlmView(
     string? Preferences,
     string? Description,
     IReadOnlyList<ReportDecisionView> Decisions,
+    string? CurrentJobState,
     IReadOnlyList<ReportJobView> Jobs);
 
 /// <summary>Проверенный фрагмент-основание; подсветка допустима только при статусе <c>exact</c>.</summary>
