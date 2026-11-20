@@ -64,6 +64,7 @@ public sealed class LlmContractTests
     [InlineData("""{"class":"profile","reason":"invitation","evidence":"████"}""", "invalid_classification_evidence")]
     [InlineData("""{"class":"profile","reason":"contact_only","evidence":null}""", "invalid_decision")]
     [InlineData("""{"class":"profile","reason":"invitation","evidence":null}""", "invalid_output_schema")]
+    [InlineData("""{"class":"profile/invitation","reason":"The author explicitly states they are looking for communication and provides a Telegram contact.","evidence":"нашёл"}""", "invalid_output_schema")]
     [InlineData("""{"class":"profile","reason":"invitation","evidence":"нашёл","action":"publish"}""", "invalid_output_schema")]
     [InlineData("""{"class":"uncertain","reason":"contact_only","reason":"ambiguous","evidence":null}""", "invalid_model_json")]
     [InlineData("""{"class":"profile","reason":"invitation" """, "invalid_model_json")]
@@ -183,6 +184,9 @@ public sealed class LlmContractTests
     [InlineData("ж24, ищу подругу.", "gender", "ж", "ж", "Девушка")]
     [InlineData("🙂 Живу в ДС-1, ищу друга.", "location", "дс-1", "ДС-1", "Москва")]
     [InlineData("Я из дс  2, ищу компанию.", "location", "дс 2", "дс  2", "Санкт-Петербург")]
+    [InlineData("Ищу тян 24, сам из ДС-2.", "location", "ДС-2", "ДС-2", "Санкт-Петербург")]
+    [InlineData("🙂 Кун, 25. Ищу общение.", "gender", "Кун", "Кун", "Парень")]
+    [InlineData("❤️ Тян, 24. Ищу общение.", "gender", "Тян", "Тян", "Девушка")]
     [InlineData("Я из Екб, ищу друзей.", "location", "Екб", "Екб", "Екатеринбург")]
     [InlineData("Нахожусь в Питере", "location", "Питере", "Питере", null)]
     public void SlangHasSeparateDisplayValueAndVerbatimSource(string text, string field, string value, string raw, string? normalized)
@@ -193,8 +197,26 @@ public sealed class LlmContractTests
     }
 
     [Theory]
+    [InlineData("🙂 Ищу тян 24, сам из ДС-2 и хочу общаться.", "location", "ДС-2", "сам из ДС-2", "Санкт-Петербург")]
+    [InlineData("🙂 Ищу тян из ДС-2, сам из ДС-1.", "location", "ДС-1", "сам из ДС-1", "Москва")]
+    [InlineData("Ищу тян, она сама из ДС-2, я из ДС-1.", "location", "ДС-1", "я из ДС-1", "Москва")]
+    [InlineData("🙂 Живу в ДС-1, ищу куна.", "location", "ДС-1", "Живу в ДС-1", "Москва")]
+    [InlineData("🙂 Кун, 25. Ищу тян 24 для общения.", "gender", "Кун", "Кун, 25", "Парень")]
+    [InlineData("🙂 Кун, 25. Ищу тян 24 для общения.", "goals", "общения", "для общения", null)]
+    public void MixedProfilesKeepOriginalEvidenceCoordinates(string text, string field, string value, string quote, string? normalized)
+    {
+        var result = SemanticContract.ReadFacts(Fields((field, value, quote)), text);
+        Assert.Empty(result.UnsupportedFields);
+        Assert.Equal(new ExtractedFact(value, new TextSpan(text.IndexOf(quote, StringComparison.Ordinal), quote.Length), normalized), result.Facts[field]);
+    }
+
+    [Theory]
     [InlineData("Ищу тян.", "gender", "тян")]
     [InlineData("Ищу девушку из СПб.", "location", "СПб")]
+    [InlineData("🙂 Ищу тян 24 из ДС-2.", "location", "ДС-2")]
+    [InlineData("Ищу тян, она сама из ДС-2.", "location", "ДС-2")]
+    [InlineData("Ищу куна, он сам из ДС-1.", "location", "ДС-1")]
+    [InlineData("🙂 Ищу куна 25.", "gender", "куна")]
     [InlineData("Пишите в дс.", "location", "дс")]
     [InlineData("Я из ДС3.", "location", "ДС3")]
     [InlineData("Спишемся онлайн.", "location", "онлайн")]
@@ -225,6 +247,7 @@ public sealed class LlmContractTests
 
     [Theory]
     [InlineData("Ищу тян 24", "24")]
+    [InlineData("Ищу тян, она сама 24", "24")]
     [InlineData("ищу тян 22–24", "24")]
     [InlineData("Мне 24+", "24")]
     [InlineData("Кому за 24", "24")]

@@ -39,7 +39,7 @@ public sealed record SemanticResult(SemanticDecision Decision, SemanticExtractio
 
 public static partial class SemanticContract
 {
-    public const string SchemaVersion = "text-profile-4";
+    public const string SchemaVersion = "text-profile-5";
     public const string Profile = "profile";
     public const string NotProfile = "not_profile";
     public const string Uncertain = "uncertain";
@@ -55,16 +55,17 @@ public static partial class SemanticContract
 
     private const string Classify = """
         Decide whether the author invites conversation or seeks company. Return {"class":"...","reason":"...","evidence":null or "quote"}.
-        Use one of these class/reason pairs:
-        profile/invitation: explicit invitation to chat, play together, talk by voice, make friends or meet.
-        profile/implicit_invitation: an invitation supported by context, e.g. boredom or loneliness with a greeting and contact.
-        not_profile/technical_contact: contact only for a separate task; not_profile/unrelated: clearly another purpose;
-        not_profile/noise: incoherent text. A request for a link or someone else's contact is not an invitation on its own.
-        uncertain/contact_only: a bare contact with no stated intent; uncertain/ambiguous: two plausible readings;
-        uncertain/missing_context: intent cannot be understood without another message.
+        The class and reason are separate keys. Never combine them or explain the reason in prose.
+        For class "profile", use reason "invitation" for an explicit invitation to chat, play together, talk by voice,
+        make friends or meet; use "implicit_invitation" for an invitation supported by context, e.g. loneliness with a greeting and contact.
+        For class "not_profile", use "technical_contact" for contact only for a separate task, "unrelated" for another purpose,
+        or "noise" for incoherent text. A request for a link or someone else's contact is not an invitation on its own.
+        For class "uncertain", use "contact_only" for a bare contact, "ambiguous" for two plausible readings,
+        or "missing_context" when intent cannot be understood without another message.
         Slang, irony, NSFW and a missing bio do not disqualify an invitation. A task does not cancel a separate social invitation.
-        Examples: «го поболтаем» → profile/invitation; «сап, одиноко» with contact → profile/implicit_invitation;
-        «по ошибкам сборки пишите» → not_profile/technical_contact; «дайте ссылку на общий чат» → not_profile/unrelated.
+        Example: «го поболтаем» → {"class":"profile","reason":"invitation","evidence":"го поболтаем"}.
+        «сап, одиноко» with contact supports "profile" and "implicit_invitation";
+        «по ошибкам сборки пишите» supports "not_profile" and "technical_contact".
         Copy a short, continuous quote that directly supports the reason. Preserve letters, punctuation and line breaks.
         Never paraphrase or join distant text. A mask alone is not evidence. Only uncertain may have null evidence.
         """;
@@ -206,7 +207,7 @@ public static partial class SemanticContract
             if (contextual && ((start > 0 && IsWordCharacter(text[start - 1])) ||
                 (!suffix.IsEmpty && IsWordCharacter(suffix[0]) && !(compactGender && char.IsAsciiDigit(suffix[0])))))
                 continue;
-            if (contextual && PartnerPrefix().IsMatch(prefix))
+            if (contextual && (PartnerPrefix().IsMatch(prefix) || ThirdPersonSelfPrefix().IsMatch(prefix)))
                 return null; // Цитата, где это же значение относится к собеседнику, недостаточна.
             var label = ImageboardGlossary.Normalize(name, needle, prefix, suffix);
             if (compactGender && label is null)
@@ -255,7 +256,7 @@ public static partial class SemanticContract
         if (suffix.Length > 0 && suffix[0] is '+' or '-' or '–' or '—' ||
             ApproximateAgePrefix().IsMatch(sentence))
             return false;
-        return !PartnerPrefix().IsMatch(sentence);
+        return !PartnerPrefix().IsMatch(sentence) && !ThirdPersonSelfPrefix().IsMatch(sentence);
     }
 
     [GeneratedRegex(@"(?:^|\s)(?:до|от|за|около|почти|примерно|плюс-минус|under|over|around|from)\s*$|[0-9]\s*[-–—]\s*$",
@@ -265,6 +266,10 @@ public static partial class SemanticContract
     [GeneratedRegex(@"\b(?:ищу|ищем|ищется|нуж(?:ен|на|ны|но)|хочу\s+найти|looking\s+for)\b(?:(?!\b(?:мне|мои|я|сам(?:а|и)?|живу|нахожусь|I\s+am)\b).)*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PartnerPrefix();
+
+    [GeneratedRegex(@"\b(?:он\s+сам|она\s+сама|они\s+сами)\b(?:(?!\b(?:мне|мои|я|живу|нахожусь|I\s+am)\b).)*$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex ThirdPersonSelfPrefix();
 
     private static TextSpan? LocateEvidence(string value, string text)
     {

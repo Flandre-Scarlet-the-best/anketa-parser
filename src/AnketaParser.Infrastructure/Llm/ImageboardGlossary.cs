@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace AnketaParser.Infrastructure.Llm;
@@ -53,10 +54,21 @@ internal static partial class ImageboardGlossary
         // Словарная форма недостаточна: нужна роль автора, а для города ещё и географический контекст.
         return field switch
         {
-            "gender" when SelfPrefix().IsMatch(prefix) || prefix.Trim().IsEmpty && HeaderAge().IsMatch(suffix) => entry.Label,
+            "gender" when SelfPrefix().IsMatch(prefix) || IsHeaderPrefix(prefix) && HeaderAge().IsMatch(suffix) => entry.Label,
             "location" when GeographicPrefix().IsMatch(prefix) => entry.Label,
             _ => null,
         };
+    }
+
+    private static bool IsHeaderPrefix(ReadOnlySpan<char> prefix)
+    {
+        foreach (var rune in prefix.EnumerateRunes())
+        {
+            if (!Rune.IsWhiteSpace(rune) && rune.Value is not (0xFE0E or 0xFE0F) && Rune.GetUnicodeCategory(rune) is not
+                (UnicodeCategory.OtherSymbol or UnicodeCategory.ModifierSymbol or UnicodeCategory.Format))
+                return false;
+        }
+        return true;
     }
 
     internal static string FingerprintLabels { get; } = string.Join('\n', Entries.Select(entry =>
@@ -77,7 +89,7 @@ internal static partial class ImageboardGlossary
     [GeneratedRegex(@"\A\s*,?\s*[0-9]{1,3}(?![\w+–—-])", RegexOptions.CultureInvariant)]
     private static partial Regex HeaderAge();
 
-    [GeneratedRegex(@"(?:\b(?:живу|нахожусь)\s+в|(?:\A|[,;]\s*|\bя\s+)\s*(?:из|город))[\s:]*\z",
+    [GeneratedRegex(@"(?:\b(?:живу|нахожусь)\s+в|(?:\A|[,;]\s*|\b(?:я|сам|сама)\s+)\s*(?:из|город))[\s:]*\z",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex GeographicPrefix();
 }
