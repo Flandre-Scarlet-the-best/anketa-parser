@@ -18,7 +18,7 @@ public sealed class BuildContextTests
             File.Copy(Path.Combine(ComposeStackSmokeTests.FindRepositoryRoot(), ".dockerignore"),
                 Path.Combine(context.FullName, ".dockerignore"));
             File.WriteAllText(Path.Combine(context.FullName, "Dockerfile"), "FROM scratch\nCOPY . /context/\n");
-            foreach (var directory in new[] { "", "src/AnketaParser.Host", "src/deep/nested" })
+            foreach (var directory in new[] { "", "src/AnketaParser.Host", "src/deep/nested", ".codex/local" })
             {
                 var target = Directory.CreateDirectory(Path.Combine(context.FullName, directory));
                 foreach (var name in new[] { ".env", ".env.private", "appsettings.Local.json", "llm.toml", "model.gguf" })

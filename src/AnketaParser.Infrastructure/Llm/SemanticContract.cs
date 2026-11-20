@@ -39,7 +39,7 @@ public sealed record SemanticResult(SemanticDecision Decision, SemanticExtractio
 
 public static partial class SemanticContract
 {
-    public const string SchemaVersion = "text-profile-3";
+    public const string SchemaVersion = "text-profile-4";
     public const string Profile = "profile";
     public const string NotProfile = "not_profile";
     public const string Uncertain = "uncertain";
@@ -262,7 +262,7 @@ public static partial class SemanticContract
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex ApproximateAgePrefix();
 
-    [GeneratedRegex(@"\b(?:ищу|ищем|ищется|хочу\s+найти|looking\s+for)\b(?:(?!\b(?:мне|мои|я|живу|нахожусь|I\s+am)\b).)*$",
+    [GeneratedRegex(@"\b(?:ищу|ищем|ищется|нуж(?:ен|на|ны|но)|хочу\s+найти|looking\s+for)\b(?:(?!\b(?:мне|мои|я|сам(?:а|и)?|живу|нахожусь|I\s+am)\b).)*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PartnerPrefix();
 

@@ -3,6 +3,7 @@
 **/obj/
 .git/
 .github/
+.codex/local/
 tests/
 .vs/
 .idea/

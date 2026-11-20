@@ -150,6 +150,8 @@ public sealed class LlmContractTests
     [InlineData("interests", "ДС2", "Кун, ДС2")]
     [InlineData("gender", "би", "Я би")]
     [InlineData("gender", "девушку", "Ищу девушку")]
+    [InlineData("gender", "тян", "Нужна тян")]
+    [InlineData("age", "24", "Нужна девушка 24")]
     public void OmitsClearlyMisassignedFacts(string field, string value, string text)
     {
         var result = SemanticContract.ReadFacts(Fields((field, value, text)), text);
@@ -163,6 +165,15 @@ public sealed class LlmContractTests
         const string text = "Ищу девушку, я мужчина";
         var result = SemanticContract.ReadFacts(Fields(("gender", "мужчина", text)), text);
         Assert.Equal("мужчина", result.Facts["gender"].Value);
+    }
+
+    [Fact]
+    public void RetainsAuthorAgeAfterPartnerRequirement()
+    {
+        const string text = "Нужна тян, сам 26";
+        var result = SemanticContract.ReadFacts(Fields(("age", "26", "сам 26")), text);
+        Assert.Equal("26", result.Facts["age"].Value);
+        Assert.Empty(result.UnsupportedFields);
     }
 
     [Theory]
@@ -637,6 +648,8 @@ public sealed class LlmContractTests
             var second = Assert.IsType<LlmSettings>(await LlmConfiguration.LoadAsync(config, root.FullName, Ct));
             Assert.Equal(LlmEngine.LlamaServer, second.Engine);
             Assert.NotEqual(first.PipelineVersion, second.PipelineVersion);
+            config["Llm:ActiveProfile"] = "";
+            Assert.Null(await LlmConfiguration.LoadAsync(config, root.FullName, Ct));
             config["Llm:ActiveProfile"] = "unknown";
             Assert.Equal("profile_missing", (await Assert.ThrowsAsync<LlmConfigurationException>(() =>
                 LlmConfiguration.LoadAsync(config, root.FullName, Ct))).Category);

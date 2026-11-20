@@ -74,6 +74,31 @@ public sealed class DockerCliTests
         AssertPassword(services.GetProperty("backup"), "ANKETAPARSER_Backup__ConnectionString", "ANKETAPARSER_Backup__Password", expected["PRODUCT_BACKUP_PASSWORD"]);
     }
 
+    [Fact]
+    public async Task ComposeWorkerUsesTomlActiveProfileByDefault()
+    {
+        if (!ComposeImageFixture.Enabled)
+        {
+            Assert.Skip($"Задайте {ComposeImageFixture.EnableVariable}=1 для проверки конфигурации Compose.");
+        }
+
+        var root = ComposeStackSmokeTests.FindRepositoryRoot();
+        var environment = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["ANKETAPARSER_LLM_ENV_FILE"] = Path.Combine(Path.GetTempPath(), $"missing-llm-env-{Guid.NewGuid():N}"),
+        };
+        var docker = new DockerCli(root, environment);
+        var output = await docker.RunAsync(
+            ["compose", "--profile", "llm", "-f", Path.Combine(root, "compose.yaml"), "config", "--format", "json"],
+            TimeSpan.FromMinutes(2),
+            TestContext.Current.CancellationToken);
+        using var document = JsonDocument.Parse(output);
+        var workerEnvironment = document.RootElement.GetProperty("services").GetProperty("llm-worker").GetProperty("environment");
+
+        Assert.Equal("/config/llm.toml", workerEnvironment.GetProperty("ANKETAPARSER_Llm__ConfigPath").GetString());
+        Assert.False(workerEnvironment.TryGetProperty("ANKETAPARSER_Llm__ActiveProfile", out _));
+    }
+
     private static void AssertPassword(JsonElement service, string connectionStringSetting, string passwordSetting, string expected)
     {
         var environment = service.GetProperty("environment");

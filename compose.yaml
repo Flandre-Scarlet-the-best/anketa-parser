@@ -87,7 +87,6 @@ services:
       ANKETAPARSER_Database__ConnectionString: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-anketa_parser};Username=product_runtime;Timeout=5;Command Timeout=5"
       ANKETAPARSER_Database__Password: ${PRODUCT_RUNTIME_PASSWORD:-local-runtime-password}
       ANKETAPARSER_Llm__ConfigPath: /config/llm.toml
-      ANKETAPARSER_Llm__ActiveProfile:
     volumes:
       - type: bind
         source: ${ANKETAPARSER_LLM_TOML:-./llm.toml}
