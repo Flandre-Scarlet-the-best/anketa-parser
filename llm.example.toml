@@ -1,21 +1,26 @@
 # Скопируйте в llm.toml и выберите один из профилей. Пустое значение отключает Worker.
 active_profile = ""
 
-[profiles.router]
+# Проверенный OpenAI-совместимый маршрут NordRouter; скопируйте в приватный llm.toml.
+# Для включения укажите active_profile = "nordrouter_high" и NORDROUTER_API_KEY.
+# Пример НЕ включает платный Worker автоматически.
+[profiles.nordrouter_high]
 engine = "openai"
-base_url = "https://router.example.invalid/v1"
-model = "vendor/model"
-key_env = "LLM_ROUTER_KEY"
-# Включайте json_schema и max_completion_tokens только при поддержке маршрутом.
-response_mode = "json_object"
+base_url = "https://nordrouter.com/v1"
+model = "deepseek/deepseek-v4.1-flash-1017:fjord"
+key_env = "NORDROUTER_API_KEY"
+response_mode = "json_schema"
 token_parameter = "max_tokens"
-timeout_seconds = 60
-concurrency = 2
-temperature = 0.1
-max_output_tokens = 768
+reasoning_format = "object"
+reasoning_effort = "high"
+# Reasoning расходует общий лимит output; 768 токенов для high недостаточно.
+max_output_tokens = 4096
 max_input_chars = 12000
-# Число резервируемых HTTP-запросов за сутки UTC.
-daily_request_limit = 100
+timeout_seconds = 180
+concurrency = 2
+# Ограничивает число резервируемых HTTP-запросов в сутки UTC, а не сумму в рублях.
+# Обычно одному profile требуются два запроса (Classify + Extract).
+daily_request_limit = 400
 
 [profiles.llama-server]
 engine = "llama_server"
