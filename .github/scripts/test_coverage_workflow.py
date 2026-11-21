@@ -11,15 +11,18 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from typing import cast, override
 from xml.etree import ElementTree
 
+import test_check_dotnet_coverage as dotnet_fixture
 import yaml
 from check_dotnet_coverage import ClassEntry, _line_errors  # pyright: ignore[reportPrivateUsage]
 from check_python_coverage_report import (
@@ -38,6 +41,7 @@ WORKFLOWS = ROOT / ".github/workflows"
 SCRIPTS = ROOT / ".github/scripts"
 FIXTURES = SCRIPTS / "fixtures/coverage_workflow"
 CODECOV_CONFIG = ROOT / "codecov.yml"
+DOTNET_SETTINGS = ROOT / ".github/coverage/dotnet/dotnet-coverage.settings.xml"
 PYTHON_VALIDATOR = SCRIPTS / "check_python_coverage_report.py"
 NORMALIZER = SCRIPTS / "normalize_lcov_paths.py"
 COBERTURA_NORMALIZER = SCRIPTS / "normalize_cobertura_paths.py"
@@ -46,6 +50,9 @@ CODECOV_ACTION = "codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a
 UPLOAD_ARTIFACT = "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
 DOWNLOAD_ARTIFACT = "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333"
 EXPECTED_FLAGS = ("dotnet-unit", "dotnet-docker", "python-linux", "python-windows")
+CI_JOBS = frozenset(
+    ("actions-security", "contracts", "background-wait-windows", "build")
+)
 ENV_SECRET = "${{ secrets.CODECOV_ENV_TOKEN }}"  # noqa: S105 - выражение контекста, не секрет
 UPLOAD_IDS = (
     "upload-dotnet-unit",
@@ -181,7 +188,10 @@ def run_script(script: Path, *arguments: str) -> subprocess.CompletedProcess[str
 
 def triggers(name: str) -> set[str]:
     workflow = load_workflow(name)
-    return set(cast(dict[str, object], workflow["on"]))
+    events = workflow["on"]
+    if isinstance(events, str):
+        return {events}
+    return set(cast("dict[str, object] | list[str]", events))
 
 
 class RoutingContractTests(unittest.TestCase):
@@ -201,66 +211,106 @@ class RoutingContractTests(unittest.TestCase):
         self.text = workflow_text("ci.yml")
 
     def test_events_jobs_and_read_only_permissions_are_preserved(self):
-        all_triggers = cast(dict[str, object], self.workflow["on"])
+        self.assert_ci_routing(self.workflow)
+
+    def assert_ci_routing(self, workflow: dict[str, object]) -> None:
+        all_triggers = cast(dict[str, object], workflow["on"])
         self.assertEqual(set(all_triggers), {"push", "pull_request", "merge_group"})
         self.assertEqual(
             cast(dict[str, list[str]], all_triggers["push"])["branches"], ["main"]
         )
         self.assertEqual(
-            cast(dict[str, str], self.workflow["permissions"]), {"contents": "read"}
+            cast(dict[str, str], workflow["permissions"]), {"contents": "read"}
         )
-        jobs = cast(dict[str, object], self.workflow["jobs"])
-        self.assertEqual(
-            set(jobs),
-            {
-                "actions-security",
-                "contracts",
-                "background-wait-windows",
-                "build",
-            },
-        )
+        jobs = cast(dict[str, dict[str, object]], workflow["jobs"])
+        self.assertLessEqual(CI_JOBS, jobs.keys())
         for name, raw in jobs.items():
-            job = cast(dict[str, object], raw)
-            permissions = cast(
-                dict[str, str], job.get("permissions", {"contents": "read"})
+            permissions = raw.get("permissions", workflow["permissions"])
+            if isinstance(permissions, str):
+                self.assertEqual(permissions, "read-all", name)
+                continue
+            grants = cast(dict[str, str], permissions)
+            self.assertTrue(
+                all(value in {"read", "none"} for value in grants.values()), name
             )
-            self.assertLessEqual(set(permissions), {"contents"}, name)
-            self.assertTrue(all(value == "read" for value in permissions.values()))
-        for forbidden in (": write", "write-all", "id-token", "pull_request_target"):
-            self.assertNotIn(forbidden, self.text, forbidden)
+
+    def test_independent_read_only_job_is_allowed(self):
+        workflow = deepcopy(self.workflow)
+        jobs = cast(dict[str, object], workflow["jobs"])
+        jobs["independent"] = {"permissions": {"actions": "read"}, "steps": []}
+        self.assert_ci_routing(workflow)
+
+    def test_independent_job_cannot_acquire_write_permissions(self):
+        for permissions in ("write-all", {"contents": "write"}, {"id-token": "write"}):
+            with self.subTest(permissions=permissions):
+                workflow = deepcopy(self.workflow)
+                jobs = cast(dict[str, object], workflow["jobs"])
+                jobs["independent"] = {"permissions": permissions}
+                with self.assertRaisesRegex(AssertionError, "independent"):
+                    self.assert_ci_routing(workflow)
 
     def test_ci_workflow_contains_no_repository_secret(self):
         self.assertNotIn("secrets.", self.text)
 
     def test_no_step_interpolates_expressions_into_shell(self):
         for job in cast(dict[str, dict[str, object]], self.workflow["jobs"]).values():
-            for step in cast(list[dict[str, object]], job["steps"]):
+            for step in cast(list[dict[str, object]], job.get("steps", [])):
                 self.assertNotIn("${{", str(step.get("run", "")), str(step.get("name")))
 
     def test_no_step_weakens_failure_handling(self):
         self.assertNotIn("continue-on-error", self.text)
         self.assertNotIn("|| true", self.text)
         for job in cast(dict[str, dict[str, object]], self.workflow["jobs"]).values():
-            for step in cast(list[dict[str, object]], job["steps"]):
+            for step in cast(list[dict[str, object]], job.get("steps", [])):
                 self.assertNotIn("|| true", str(step.get("run", "")))
 
 
 class SecretBoundaryTests(unittest.TestCase):
-    """Ни один workflow с merge_group/pull_request не содержит repository secret."""
+    """Секреты разрешены только доверенному издателю покрытия."""
+
+    def assert_secret_boundary(self, name: str, events: set[str], text: str) -> None:
+        expressions = re.finditer(r"\$\{\{(.*?)\}\}", text, re.DOTALL)
+        uses_context = any(
+            re.search(
+                r"(?<![.\w])secrets\b",
+                re.sub(r"'(?:[^']|'')*'", "", expression.group(1)),
+                re.IGNORECASE,
+            )
+            for expression in expressions
+        )
+        passes_secrets = re.search(r"(?m)(?:^|[{,])\s*secrets\s*:", text)
+        if uses_context or passes_secrets:
+            self.assertEqual(events, {"workflow_run"}, f"{name}: недоверенное событие")
+            self.assertEqual(
+                name, "coverage-publisher.yml", "неразрешённый получатель секрета"
+            )
 
     def test_only_the_trusted_publisher_uses_repository_secrets(self):
-        holders: list[str] = []
-        trusted_trigger = {"workflow_run", "workflow_dispatch", "schedule", "release"}
-        for path in sorted(WORKFLOWS.glob("*.yml")):
-            text = path.read_text(encoding="utf-8")
-            if "secrets." not in text:
-                continue
-            holders.append(path.name)
-            self.assertTrue(
-                triggers(path.name) <= trusted_trigger,
-                f"{path.name}: секрет в workflow, исполняемом PR или merge_group",
+        for path in sorted(WORKFLOWS.iterdir()):
+            if path.suffix in {".yml", ".yaml"}:
+                self.assert_secret_boundary(
+                    path.name, triggers(path.name), path.read_text(encoding="utf-8")
+                )
+
+    def test_secrets_are_rejected_on_untrusted_triggers(self):
+        for event in ("pull_request", "merge_group"):
+            for secret in (
+                ENV_SECRET,
+                "${{ secrets['EXAMPLE'] }}",
+                "${{ toJSON(secrets) }}",
+                "  secrets: inherit",
+            ):
+                with (
+                    self.subTest(event=event, secret=secret),
+                    self.assertRaisesRegex(AssertionError, "недоверенное событие"),
+                ):
+                    self.assert_secret_boundary("ci.yml", {event}, secret)
+
+    def test_only_publisher_may_receive_secrets_even_on_trusted_trigger(self):
+        with self.assertRaisesRegex(AssertionError, "неразрешённый получатель"):
+            self.assert_secret_boundary(
+                "independent.yaml", {"workflow_run"}, ENV_SECRET
             )
-        self.assertEqual(holders, ["coverage-publisher.yml"])
 
     def test_self_token_is_not_a_repository_secret(self):
         for path in sorted(WORKFLOWS.glob("*.yml")):
@@ -297,25 +347,38 @@ class ProducerJobTests(unittest.TestCase):
                 f"python .github/scripts/check_dotnet_coverage.py TestResults/dotnet-{flavour} {flavour}",
                 str(validator["run"]),
             )
-        measure = find_step(steps, "Измерить покрытие unit-тестов")
-        for flag in (
-            "--coverage",
-            "--coverage-output-format cobertura",
-            "--coverage-output dotnet.cobertura.xml",
-            "--coverage-settings .github/coverage/dotnet/dotnet-coverage.settings.xml",
-            "--no-build",
+            self.assertIn(
+                f"--instrumented-report TestResults/dotnet-{flavour}/instrumented.xml",
+                str(validator["run"]),
+            )
+        for label in (
+            "Измерить покрытие unit-тестов",
+            "Измерить покрытие изолированной PostgreSQL",
         ):
-            self.assertIn(flag, str(measure["run"]))
+            measure = str(find_step(steps, label)["run"])
+            for flag in (
+                "--coverage",
+                f"--coverage-settings {DOTNET_SETTINGS.relative_to(ROOT).as_posix()}",
+                "--no-build",
+            ):
+                self.assertIn(flag, measure)
+            self.assertNotIn("--coverage-output", measure)
+        settings = ElementTree.fromstring(DOTNET_SETTINGS.read_text(encoding="utf-8"))  # noqa: S314
+        self.assertEqual(settings.findtext("Format"), "cobertura,xml")
         artifacts = [
             step
             for step in steps
             if "actions/upload-artifact" in str(step.get("uses", ""))
         ]
         self.assertEqual(len(artifacts), 2)
-        for step in artifacts:
+        for flavour, step in zip(("unit", "docker"), artifacts, strict=True):
             self.assertTrue(str(step["uses"]).startswith(UPLOAD_ARTIFACT))
-            self.assertEqual(
-                cast(dict[str, str], step["with"])["if-no-files-found"], "error"
+            artifact = cast(dict[str, str], step["with"])
+            self.assertEqual(artifact["if-no-files-found"], "error")
+            self.assertEqual(artifact["name"], f"dotnet-coverage-{flavour}")
+            self.assertIn(
+                f"TestResults/dotnet-{flavour}/instrumented.xml",
+                artifact["path"].splitlines(),
             )
 
     def test_python_pipeline_is_ordered_on_both_platforms(self):
@@ -480,7 +543,7 @@ class PublisherWorkflowTests(unittest.TestCase):
         # Отдельное имя: отсутствие настройки не даёт незаметного fallback на
         # прежний repository secret.
         self.assertNotIn("secrets.CODECOV_TOKEN", self.text)
-        guard = find_step(self.steps, "Проверить наличие environment secret")
+        guard = find_step(self.steps, "Проверить наличие секрета окружения")
         self.assertEqual(cast(dict[str, str], guard["env"]), {"ENV_TOKEN": ENV_SECRET})
         body = str(guard["run"])
         self.assertIn("::error::", body)
@@ -523,6 +586,16 @@ class PublisherWorkflowTests(unittest.TestCase):
         ):
             step = find_step(self.steps, needle)
             self.assertIn("--repo-root source-tree", str(step["run"]))
+        for flavour in ("unit", "docker"):
+            step = find_step(
+                self.steps, f"check_dotnet_coverage.py coverage/dotnet-{flavour}"
+            )
+            argv = shlex.split(str(step["run"]))
+            self.assertNotIn("--max-age-hours", argv)
+            self.assertIn(
+                f"--instrumented-report coverage/dotnet-{flavour}/instrumented.xml",
+                str(step["run"]),
+            )
 
     def test_source_tree_integrity_guard_rejects_execution_vectors(self):
         script = str(find_step(self.steps, "Проверить целостность source-tree")["run"])
@@ -578,15 +651,21 @@ class PublisherWorkflowTests(unittest.TestCase):
                 if expected:
                     self.assertIn("::error::", result.stdout + result.stderr)
 
-    def test_publisher_rejects_missing_or_mismatched_measured_revision(self):
+    def test_delayed_publisher_still_requires_matching_measured_revision(self):
         script = str(find_step(self.steps, "Сверить измеренную ревизию")["run"])
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source-tree"
             source.mkdir()
+            relative = "src/Example/Source.cs"
+            dotnet_fixture.write_project(
+                source / "src/Example/Example.csproj", "Example"
+            )
+            _ = (source / relative).write_text("class Example { }\n", encoding="utf-8")
             git = ["git", "-C", str(source)]
             for arguments in (
                 ["init", "-q"],
+                ["add", "src"],
                 [
                     "-c",
                     "user.name=Test",
@@ -595,7 +674,6 @@ class PublisherWorkflowTests(unittest.TestCase):
                     "commit",
                     "-qm",
                     "Проверка",
-                    "--allow-empty",
                 ],
             ):
                 _ = subprocess.run([*git, *arguments], check=True, capture_output=True)  # noqa: S603
@@ -609,6 +687,32 @@ class PublisherWorkflowTests(unittest.TestCase):
             env = {"EXPECTED_COMMIT": revision}
             success = run_bash_in(script, root, env)
             self.assertEqual(success.returncode, 0, success.stdout + success.stderr)
+            measured = root / "coverage/dotnet-unit"
+            _ = (measured / "dotnet.cobertura.xml").write_text(
+                dotnet_fixture.make_report(
+                    [("Example", relative, {1: 1})], timestamp=1_700_000_000
+                ),
+                encoding="utf-8",
+            )
+            _ = (measured / "instrumented.xml").write_text(
+                dotnet_fixture.make_instrumented_report(
+                    {"Example": [(relative, True)]}
+                ),
+                encoding="utf-8",
+            )
+            validator = find_step(
+                self.steps, "check_dotnet_coverage.py coverage/dotnet-unit"
+            )
+            _, path, *arguments = shlex.split(str(validator["run"]))
+            checked = subprocess.run(  # noqa: S603 - доверенный валидатор и локальная фикстура
+                [sys.executable, str(ROOT / path), *arguments],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
             wrong_source = run_bash_in(script, root, {"EXPECTED_COMMIT": "a" * 40})
             self.assertNotEqual(wrong_source.returncode, 0)
             self.assertIn("Исходники не соответствуют", wrong_source.stdout)

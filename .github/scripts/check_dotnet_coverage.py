@@ -1,11 +1,8 @@
 """Проверить отчёт покрытия .NET: атрибуцию исходников, метрики строк и ветвей.
 
-Отчёт формирует официальное MTP-расширение Microsoft.Testing.Extensions.CodeCoverage
-в формате Cobertura для одного прогона: unit — все production-сборки решения,
-docker — сборки, которые реально загружает тестовый процесс Docker-проверок.
-Исключения сгенерированных файлов живут в .github/coverage/dotnet/dotnet-coverage.settings.xml;
-проверка не дублирует их, но требует, чтобы рукописные точки входа попадали в отчёт,
-а не исчезали молча.
+Microsoft.Testing.Extensions.CodeCoverage формирует Cobertura и собственный XML
+за один прогон MTP. Собственный XML содержит диапазоны инструментированного кода
+и позволяет сверить список исходников без повторения правил сборки и исключений.
 """
 
 import argparse
@@ -17,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 from xml.etree import ElementTree
+
+from normalize_cobertura_paths import MAX_REPORT_BYTES, relative_source
 
 CHECK_ERROR_CODE = 1
 UNIT_FLAVOUR = "unit"
@@ -34,7 +33,9 @@ DOCKER_TEST_PROJECT = Path(
 DOCKER_EVIDENCE_PREFIX = "src/AnketaParser.Infrastructure/Persistence/"
 ABSOLUTE_PATH = re.compile(r"^(?:[A-Za-z]:/|/)")
 BUILD_OUTPUT = re.compile(r"(?:^|/)(?:obj|bin)/")
-BRANCH_COUNTS = re.compile(r"[0-9]+(?:\.[0-9]+)?% \(([0-9]+)/([0-9]+)\)")
+BRANCH_COVERAGE = re.compile(
+    r"([0-9]{1,3})(?:\.([0-9]{1,2}))?% \(([0-9]{1,10})/([0-9]{1,10})\)"
+)
 TYPE_DECLARATION = re.compile(
     r"(?m)^\s*(?:public|internal|file|private|protected|static|sealed|abstract|partial|readonly|unsafe|\s)*(?:class|struct|interface|enum|record|delegate)\b"
 )
@@ -65,8 +66,9 @@ class Arguments(argparse.Namespace):
         self.directory: Path = Path()
         self.flavour: str = ""
         self.repo_root: Path = Path()
-        self.max_age_hours: float = 24.0
+        self.max_age_hours: float | None = None
         self.require_normalized: bool = False
+        self.instrumented_report: Path | None = None
 
 
 def _attribute(element: ElementTree.Element, name: str) -> str:
@@ -159,10 +161,16 @@ def _required_assemblies(flavour: str, repo_root: Path) -> tuple[tuple[str, ...]
     return tuple(sorted(required)), allowed
 
 
-def _select_report(directory: Path) -> tuple[Path | None, list[str]]:
+def _select_report(
+    directory: Path, instrumented_report: Path | None
+) -> tuple[Path | None, list[str]]:
     if not directory.is_dir():
         return None, [f"каталог отчёта отсутствует: {directory}"]
-    reports = sorted(path for path in directory.rglob("*.xml") if path.is_file())
+    reports = sorted(
+        path
+        for path in directory.rglob("*.xml")
+        if path != instrumented_report and path.is_file()
+    )
     if not reports:
         return None, [f"в каталоге {directory} нет ни одного *.xml"]
     if len(reports) > 1:
@@ -213,6 +221,8 @@ def _freshness_errors(
 ) -> list[str]:
     if max_age_hours is None:
         return []
+    if not math.isfinite(max_age_hours) or max_age_hours < 0:
+        return ["--max-age-hours должен быть конечным неотрицательным числом"]
     stamp = root.get("timestamp")
     try:
         moment = int(stamp) if stamp else int(report.stat().st_mtime)
@@ -396,15 +406,23 @@ def _line_totals_errors(
             coverage = line.get("condition-coverage")
             if coverage is None and (line.get("branch") or "").lower() != "true":
                 continue
-            counts = BRANCH_COUNTS.fullmatch(coverage or "")
-            if counts is None:
+            match = BRANCH_COVERAGE.fullmatch(coverage or "")
+            if match is None:
                 return [
                     f"{namespace}: некорректная condition-coverage в {entry.relative}"
                 ]
-            covered, total = int(counts[1]), int(counts[2])
-            if not 0 <= covered <= total or total == 0:
+            percent = int(match[1]) * 100 + int((match[2] or "").ljust(2, "0"))
+            covered, total = int(match[3]), int(match[4])
+            if not 0 <= covered <= total or total == 0 or percent > 10000:
                 return [
                     f"{namespace}: некорректная condition-coverage в {entry.relative}"
+                ]
+            # Math.Round в MTP масштабирует процент до сотых и округляет
+            # половины к ближайшему чётному. Конечные нули могут отсутствовать.
+            if percent != round(covered / total * 100.0 * 100.0):
+                return [
+                    f"{namespace}: condition-coverage {coverage} в {entry.relative}"
+                    + " не совпадает с долей покрытых ветвей"
                 ]
             branches_covered += covered
             branches_valid += total
@@ -446,6 +464,89 @@ def _docker_evidence_errors(entries: list[ClassEntry], namespace: str) -> list[s
             f"{namespace}: Docker-отчёт не подтверждает выполнение интеграционных"
             f" проверок — нет покрытых строк под {DOCKER_EVIDENCE_PREFIX}"
         )
+    ]
+
+
+def _instrumented_sources(
+    report: Path, repo_root: Path, allowed: tuple[str, ...]
+) -> set[tuple[str, str]]:
+    """Собрать исходники с измеренными диапазонами, включая нулевое покрытие."""
+    with report.open("rb") as stream:
+        raw = stream.read(MAX_REPORT_BYTES + 1)
+    if len(raw) > MAX_REPORT_BYTES:
+        raise ValueError("превышен допустимый размер XML")
+    text = raw.decode("utf-8")
+    if "<!DOCTYPE" in text or "<!ENTITY" in text:
+        raise ValueError("XML содержит DOCTYPE или ENTITY")
+    document = ElementTree.fromstring(text)  # noqa: S314
+    if document.tag != "results":
+        raise ValueError("ожидался корневой элемент results")
+    sources: set[tuple[str, str]] = set()
+    for module in document.findall("modules/module"):
+        assembly = _attribute(module, "name").removesuffix(".dll")
+        if assembly not in allowed:
+            continue
+        paths = {
+            _attribute(element, "id"): _attribute(element, "path")
+            for element in module.findall("source_files/source_file")
+        }
+        instrumented = {
+            _attribute(element, "source_id")
+            for element in module.findall("functions/function/ranges/range")
+        }
+        for source_id in sorted(instrumented):
+            path = paths.get(source_id)
+            if path is None:
+                raise ValueError(f"{assembly}: неизвестный source_id {source_id}")
+            relative, error = relative_source(path, repo_root)
+            if relative is None:
+                raise ValueError(f"{assembly}: {error}")
+            sources.add((assembly, relative))
+    if not sources:
+        raise ValueError("нет диапазонов инструментированного кода")
+    return sources
+
+
+def _source_completeness_errors(
+    report: Path,
+    repo_root: Path,
+    allowed: tuple[str, ...],
+    entries: list[ClassEntry],
+    packages: dict[str, ElementTree.Element],
+    namespace: str,
+) -> list[str]:
+    try:
+        expected = _instrumented_sources(report, repo_root, allowed)
+    except (ElementTree.ParseError, OSError, ValueError) as error:
+        return [f"{namespace}: не удалось сверить XML инструментирования: {error}"]
+
+    measured = {
+        entry.element: entry.relative
+        for entry in entries
+        if entry.element.find("lines/line") is not None
+    }
+    present = {
+        (assembly, measured[element])
+        for assembly, package in packages.items()
+        for element in package.findall("classes/class")
+        if element in measured
+    }
+    return [
+        f"{namespace}: {message}: "
+        + ", ".join(
+            f"{path} ({assembly})" for assembly, path in sorted(diff)[:LIMIT_LISTED]
+        )
+        for diff, message in (
+            (
+                expected - present,
+                "инструментированные исходники отсутствуют в Cobertura",
+            ),
+            (
+                present - expected,
+                "исходники Cobertura не подтверждены XML инструментирования",
+            ),
+        )
+        if diff
     ]
 
 
@@ -515,15 +616,16 @@ def inspect(
     directory: Path,
     flavour: str,
     repo_root: Path,
-    max_age_hours: float | None = 24.0,
+    max_age_hours: float | None = None,
     max_source_bytes: int = MAX_SOURCE_BYTES,
     *,
     require_normalized: bool = False,
+    instrumented_report: Path | None = None,
 ) -> tuple[list[str], str]:
     """Вернуть ошибки проверки и сводку отчёта для журнала."""
     if flavour not in FLAVOURS:
         return [f"неизвестный flavour {flavour!r}; допустимо: {sorted(FLAVOURS)}"], ""
-    report, errors = _select_report(directory)
+    report, errors = _select_report(directory, instrumented_report)
     if report is None:
         return errors, ""
     try:
@@ -608,6 +710,12 @@ def inspect(
         errors.append(f"{namespace}: отчёт ссылается на отсутствующие файлы: {listed}")
     packages = {package.get("name") or "": package for package in root.iter("package")}
     errors.extend(_package_errors(packages, required, allowed, namespace))
+    if instrumented_report is not None:
+        errors.extend(
+            _source_completeness_errors(
+                instrumented_report, repo_root, allowed, entries, packages, namespace
+            )
+        )
     if flavour == DOCKER_FLAVOUR:
         errors.extend(_docker_evidence_errors(entries, namespace))
     summary = (
@@ -625,10 +733,11 @@ def validate(
     directory: Path,
     flavour: str,
     repo_root: Path | None = None,
-    max_age_hours: float | None = 24.0,
+    max_age_hours: float | None = None,
     max_source_bytes: int = MAX_SOURCE_BYTES,
     *,
     require_normalized: bool = False,
+    instrumented_report: Path | None = None,
 ) -> list[str]:
     """Проверить отчёт покрытия .NET и вернуть список ошибок."""
     errors, _ = inspect(
@@ -638,6 +747,7 @@ def validate(
         max_age_hours,
         max_source_bytes,
         require_normalized=require_normalized,
+        instrumented_report=instrumented_report,
     )
     return errors
 
@@ -660,13 +770,17 @@ def build_parser() -> argparse.ArgumentParser:
     _ = parser.add_argument(
         "--max-age-hours",
         type=float,
-        default=24.0,
-        help="предельный возраст отчёта в часах",
+        help="необязательный предельный возраст отчёта в часах для свежего прогона",
     )
     _ = parser.add_argument(
         "--require-normalized",
         action="store_true",
         help="требовать исходные пути src/... без <sources>",
+    )
+    _ = parser.add_argument(
+        "--instrumented-report",
+        type=Path,
+        help="собственный XML Microsoft Code Coverage из того же прогона",
     )
     return parser
 
@@ -680,6 +794,9 @@ def main() -> int:
         args.max_age_hours,
         cast(int, args.max_source_bytes),
         require_normalized=args.require_normalized,
+        instrumented_report=(
+            args.instrumented_report.resolve() if args.instrumented_report else None
+        ),
     )
     if errors:
         for error in errors:

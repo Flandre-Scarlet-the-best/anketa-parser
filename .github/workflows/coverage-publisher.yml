@@ -1,9 +1,8 @@
 name: Публикация покрытия в Codecov
 
-# Доверенный издатель. workflow_run берёт workflow-файл из default branch,
-# поэтому тесты и валидаторы PR/merge_group-ревизии в задании с токеном не
-# исполняются: валидаторы запускаются из этого checkout, а исходники той же
-# ревизии подключаются отдельным checkout-ом как ДАННЫЕ (--repo-root source-tree).
+# Доверенный издатель. Событие workflow_run использует файл из ветки по
+# умолчанию. Она определяет исполняемые валидаторы. Исходники измеренной
+# ревизии читаются как данные из --repo-root source-tree.
 #
 # ОБЛАСТЬ СЕКРЕТА И ПРЕДУСЛОВИЯ (ручные действия, в коде их выполнить нельзя):
 # 1) Создать environment `codecov` (Settings -> Environments).
@@ -16,16 +15,15 @@ name: Публикация покрытия в Codecov
 #    по себе НЕ является доказательством защиты.
 # 5) Проверить руками: repository secrets не содержат CODECOV_TOKEN, а
 #    environment `codecov` содержит CODECOV_ENV_TOKEN; значения не читать.
-# 6) Этот файл должен попасть в default branch: до этого событие workflow_run
+# 6) Этот файл должен попасть в ветку по умолчанию: до этого событие workflow_run
 #    не порождается и публикации нет вовсе.
 #
-# Пока шаги 1-4 не выполнены, задание завершится на шаге проверки наличия
-# environment secret: токен не подставляется и загрузки не происходит.
+# Отсутствие секрета в окружении останавливает задание до загрузки.
 #
 # Чеклист выше проверяется тестом по тексту файла, чтобы шаг удаления
-# repository secret нельзя было потерять при правках.
+# секрета уровня репозитория нельзя было потерять при правках.
 on:
-  workflow_run: # zizmor: ignore[dangerous-triggers] Исполняется только код default branch; исходники ревизии-источника подключаются как данные, ничего из них не выполняется; секрет доступен лишь шагам загрузки и требует environment secret с required reviewers.
+  workflow_run: # zizmor: ignore[dangerous-triggers] Валидаторы исполняются из ветки по умолчанию. Измеренные исходники читаются как данные. Для окружения требуется правило Required reviewers.
     workflows: [CI]
     types: [completed]
 
@@ -53,8 +51,8 @@ jobs:
       contents: read
       actions: read
     steps:
-      # Доверенный код: скрипты и конфигурация берутся из default branch.
-      - name: Получить доверенные валидаторы из default branch
+      # Доверенные скрипты и конфигурация берутся из ветки по умолчанию.
+      - name: Получить доверенные валидаторы из ветки по умолчанию
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -71,7 +69,7 @@ jobs:
           lfs: false
           submodules: false
 
-      # Source-tree приходит из ревизии PR: это данные, но перед чтением
+      # source-tree приходит из измеренной ревизии. Перед чтением
       # проверяется, что в нём нет механизмов исполнения и выхода за пределы
       # каталога (хуки, сабмодули, LFS-указатели, симлинки наружу).
       - name: Проверить целостность source-tree
@@ -118,22 +116,21 @@ jobs:
       # Версия обязана совпадать с пином в requirements.txt: валидатор сверяет
       # исполняемые строки парсером того же coverage, что породил отчёт, и любое
       # расхождение версий диагностируется как ошибка. Совпадение литералов и
-      # отсутствие `pip install -r` в этом job проверяются тестом workflow.
+      # отсутствие `pip install -r` в этом задании проверяются тестом.
       - name: Установить закреплённый coverage
         run: python -m pip install --disable-pip-version-check coverage==7.17.4
 
-      # Отдельное имя environment secret: если настройка не выполнена, токен
-      # пуст и задание падает здесь, а не подставляет repository secret молча.
-      - name: Проверить наличие environment secret
+      # Отдельное имя секрета даёт явный отказ при отсутствии настройки.
+      - name: Проверить наличие секрета окружения
         env:
           ENV_TOKEN: ${{ secrets.CODECOV_ENV_TOKEN }}
         run: |
           set -uo pipefail
           if [[ -z "${ENV_TOKEN}" ]]; then
-            echo "::error::Environment secret CODECOV_ENV_TOKEN не найден. Требуются ручные действия: создать environment codecov, добавить в него environment secret CODECOV_ENV_TOKEN, включить Required reviewers и удалить repository-level CODECOV_TOKEN. Публикация не выполняется."
+            echo "::error::В окружении codecov нет секрета CODECOV_ENV_TOKEN. Создайте окружение, добавьте секрет, включите Required reviewers и удалите секрет CODECOV_TOKEN уровня репозитория. Публикация не выполняется."
             exit 1
           fi
-          echo "Environment secret найден; значение не печатается"
+          echo "Секрет окружения доступен"
 
       # Идентичность публикации проверяется явно: событие, ровно один PR,
       # совпадение его head SHA с head_sha запуска, совпадение репозитория.
@@ -173,7 +170,7 @@ jobs:
             echo "pr=${pr}"
             echo "commit=${HEAD_SHA}"
           } >> "$GITHUB_OUTPUT"
-          echo "Публикация для события ${RUN_EVENT}: commit ${HEAD_SHA}, PR '${pr:-нет}'"
+          echo "Публикация для события ${RUN_EVENT}: коммит ${HEAD_SHA}, PR '${pr:-нет}'"
 
       - name: Получить отчёт покрытия unit-тестов .NET
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -225,14 +222,18 @@ jobs:
             fi
           done
 
-      # Артефакты и исходники — недоверенные данные: их разбирают валидаторы из
-      # default branch, ничего из source-tree не исполняется, а пути к нему
-      # передаются только как --repo-root.
+      # Артефакты и исходники читают валидаторы из ветки по умолчанию.
+      # Ручное разрешение может задержать запуск. Происхождение подтверждают
+      # номер запуска CI и сверка SHA выше, пока артефакты доступны.
       - name: Проверить отчёт unit-покрытия .NET
-        run: python .github/scripts/check_dotnet_coverage.py coverage/dotnet-unit unit --repo-root source-tree --require-normalized
+        run: >-
+          python .github/scripts/check_dotnet_coverage.py coverage/dotnet-unit unit --repo-root source-tree
+          --require-normalized --instrumented-report coverage/dotnet-unit/instrumented.xml
 
       - name: Проверить отчёт покрытия Docker-тестов .NET
-        run: python .github/scripts/check_dotnet_coverage.py coverage/dotnet-docker docker --repo-root source-tree --require-normalized
+        run: >-
+          python .github/scripts/check_dotnet_coverage.py coverage/dotnet-docker docker --repo-root source-tree
+          --require-normalized --instrumented-report coverage/dotnet-docker/instrumented.xml
 
       - name: Проверить отчёт покрытия Python (Linux)
         run: python .github/scripts/check_python_coverage_report.py --report coverage/python-linux/lcov.info --platform linux --repo-root source-tree
@@ -309,7 +310,7 @@ jobs:
           token: ${{ secrets.CODECOV_ENV_TOKEN }}
 
       # Четыре загрузки не являются одной транзакцией. Сводка строится по
-      # фактическим outcome шагов: предупреждение о частичной публикации истинно
+      # фактическому результату шагов: предупреждение о частичной публикации истинно
       # только при хотя бы одной успешной загрузке, иначе это ошибка до
       # публикации (измерение, валидация или сеть) и ничего не опубликовано.
       - name: Сводка публикации покрытия
@@ -372,6 +373,6 @@ jobs:
         run: |
           echo "Событие запуска: ${RUN_EVENT}"
           echo "Итог запуска: ${RUN_CONCLUSION}"
-          echo "Репозиторий head: ${HEAD_REPO}"
+          echo "Репозиторий измеренной ревизии: ${HEAD_REPO}"
           echo "Основной репозиторий: ${REPOSITORY}"
           echo "::notice::Покрытие не публиковалось. Причины: публикуются только успешный push в main и успешный PR из этого же репозитория; fork PR не имеет доступа к секретам, merge_group может содержать изменения внешнего PR, а неуспешный запуск не даёт доверенных отчётов."

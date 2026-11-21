@@ -224,21 +224,31 @@ jobs:
       - name: Собрать решение
         run: dotnet build --no-restore -c Release
 
-      # Покрытие unit-прогона: официальное MTP-расширение Microsoft, формат
-      # Cobertura и явные настройки исключений; иначе в отчёт попадают
-      # сгенерированные файлы, и валидатор отклоняет отчёт.
+      # Настройки включают два формата одного прогона и исключения
+      # сгенерированных файлов. Имя каждому отчёту присваивает MTP.
       - name: Измерить покрытие unit-тестов
         run: |
           dotnet test --project tests/AnketaParser.Tests/AnketaParser.Tests.csproj -c Release --no-build \
             --results-directory TestResults/dotnet-unit -- \
-            --coverage --coverage-output-format cobertura --coverage-output dotnet.cobertura.xml \
-            --coverage-settings .github/coverage/dotnet/dotnet-coverage.settings.xml
+            --coverage --coverage-settings .github/coverage/dotnet/dotnet-coverage.settings.xml
 
       - name: Нормализовать пути отчёта unit-тестов
-        run: python .github/scripts/normalize_cobertura_paths.py --report TestResults/dotnet-unit/dotnet.cobertura.xml --repo-root .
+        run: |
+          shopt -s extglob nullglob
+          cobertura=(TestResults/dotnet-unit/*.cobertura.xml)
+          instrumented=(TestResults/dotnet-unit/!(*.cobertura).xml)
+          if (( ${#cobertura[@]} != 1 || ${#instrumented[@]} != 1 )); then
+            echo '::error::Ожидались один отчёт Cobertura и один XML инструментирования.'
+            exit 1
+          fi
+          mv -- "${cobertura[0]}" TestResults/dotnet-unit/dotnet.cobertura.xml
+          mv -- "${instrumented[0]}" TestResults/dotnet-unit/instrumented.xml
+          python .github/scripts/normalize_cobertura_paths.py --report TestResults/dotnet-unit/dotnet.cobertura.xml --repo-root .
 
       - name: Проверить отчёт покрытия unit-тестов
-        run: python .github/scripts/check_dotnet_coverage.py TestResults/dotnet-unit unit --require-normalized
+        run: >-
+          python .github/scripts/check_dotnet_coverage.py TestResults/dotnet-unit unit
+          --require-normalized --max-age-hours 24 --instrumented-report TestResults/dotnet-unit/instrumented.xml
 
       - name: Записать ревизию отчёта unit-тестов
         if: ${{ github.event_name == 'push' || matrix.revision == 'head' }}
@@ -252,6 +262,7 @@ jobs:
           name: dotnet-coverage-unit
           path: |
             TestResults/dotnet-unit/dotnet.cobertura.xml
+            TestResults/dotnet-unit/instrumented.xml
             TestResults/dotnet-unit/measured-commit.txt
           if-no-files-found: error
           retention-days: 7
@@ -265,14 +276,25 @@ jobs:
         run: |
           dotnet test --project tests/AnketaParser.DockerTests/AnketaParser.DockerTests.csproj -c Release --no-build \
             --results-directory TestResults/dotnet-docker -- \
-            --coverage --coverage-output-format cobertura --coverage-output dotnet.cobertura.xml \
-            --coverage-settings .github/coverage/dotnet/dotnet-coverage.settings.xml
+            --coverage --coverage-settings .github/coverage/dotnet/dotnet-coverage.settings.xml
 
       - name: Нормализовать пути отчёта Docker-тестов
-        run: python .github/scripts/normalize_cobertura_paths.py --report TestResults/dotnet-docker/dotnet.cobertura.xml --repo-root .
+        run: |
+          shopt -s extglob nullglob
+          cobertura=(TestResults/dotnet-docker/*.cobertura.xml)
+          instrumented=(TestResults/dotnet-docker/!(*.cobertura).xml)
+          if (( ${#cobertura[@]} != 1 || ${#instrumented[@]} != 1 )); then
+            echo '::error::Ожидались один отчёт Cobertura и один XML инструментирования.'
+            exit 1
+          fi
+          mv -- "${cobertura[0]}" TestResults/dotnet-docker/dotnet.cobertura.xml
+          mv -- "${instrumented[0]}" TestResults/dotnet-docker/instrumented.xml
+          python .github/scripts/normalize_cobertura_paths.py --report TestResults/dotnet-docker/dotnet.cobertura.xml --repo-root .
 
       - name: Проверить отчёт покрытия Docker-тестов
-        run: python .github/scripts/check_dotnet_coverage.py TestResults/dotnet-docker docker --require-normalized
+        run: >-
+          python .github/scripts/check_dotnet_coverage.py TestResults/dotnet-docker docker
+          --require-normalized --max-age-hours 24 --instrumented-report TestResults/dotnet-docker/instrumented.xml
 
       - name: Записать ревизию отчёта Docker-тестов
         if: ${{ github.event_name == 'push' || matrix.revision == 'head' }}
@@ -286,6 +308,7 @@ jobs:
           name: dotnet-coverage-docker
           path: |
             TestResults/dotnet-docker/dotnet.cobertura.xml
+            TestResults/dotnet-docker/instrumented.xml
             TestResults/dotnet-docker/measured-commit.txt
           if-no-files-found: error
           retention-days: 7

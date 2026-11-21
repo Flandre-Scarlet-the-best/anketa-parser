@@ -7,6 +7,8 @@
   не исключаются: расширение по умолчанию не фильтрует [CompilerGenerated].
 -->
 <Configuration>
+  <!-- Два представления одних данных, чтобы обнаружить пропуски при экспорте Cobertura. -->
+  <Format>cobertura,xml</Format>
   <CodeCoverage>
     <Sources>
       <Exclude>

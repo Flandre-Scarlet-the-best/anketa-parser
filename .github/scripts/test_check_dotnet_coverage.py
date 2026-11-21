@@ -20,7 +20,7 @@ DOCKER_PROJECT = "tests/AnketaParser.DockerTests/AnketaParser.DockerTests.csproj
 
 
 def truncate(covered: int, total: int) -> float:
-    """Повторить усечение процента, которое выполняет coverlet."""
+    """Подготовить усечённую сводную долю для проверки совместимости."""
     return 1.0 if total == 0 else math.floor(covered / total * 10000) / 10000
 
 
@@ -34,7 +34,7 @@ def make_report(
     timestamp: int | None = None,
     root_tag: str = "coverage",
 ) -> str:
-    """Собрать Cobertura-отчёт с метриками, пересчитанными как в coverlet."""
+    """Собрать фикстуру Cobertura с процентами строк с ветвлениями в формате MTP."""
     lines_valid = sum(len(hits) for _, _, hits in entries)
     lines_covered = sum(
         sum(1 for value in hits.values() if value > 0) for _, _, hits in entries
@@ -89,7 +89,7 @@ def make_report(
             branch_line.set("branch", "True")
             branch_line.set(
                 "condition-coverage",
-                f"{100 * branches_covered / branches_valid:g}% ({branches_covered}/{branches_valid})",
+                f"{100 * branches_covered / branches_valid:.2f}% ({branches_covered}/{branches_valid})",
             )
     return ElementTree.tostring(coverage, encoding="unicode")
 
@@ -109,6 +109,27 @@ def write_project(path: Path, assembly: str, references: tuple[str, ...] = ()) -
     _ = path.write_text(
         ElementTree.tostring(project, encoding="unicode"), encoding="utf-8"
     )
+
+
+def make_instrumented_report(sources: dict[str, list[tuple[str, bool]]]) -> str:
+    """Указать пути и наличие диапазонов инструментирования в собственном XML MTP."""
+    results = ElementTree.Element("results")
+    modules = ElementTree.SubElement(results, "modules")
+    for assembly, files in sources.items():
+        module = ElementTree.SubElement(modules, "module", name=f"{assembly}.dll")
+        table = ElementTree.SubElement(module, "source_files")
+        function = ElementTree.SubElement(
+            ElementTree.SubElement(module, "functions"), "function"
+        )
+        ranges = ElementTree.SubElement(function, "ranges")
+        for index, (path, instrumented) in enumerate(files):
+            source_id = str(index)
+            _ = ElementTree.SubElement(table, "source_file", id=source_id, path=path)
+            if instrumented:
+                _ = ElementTree.SubElement(
+                    ranges, "range", source_id=source_id, covered="no"
+                )
+    return ElementTree.tostring(results, encoding="unicode")
 
 
 class DotnetCoverageTests(unittest.TestCase):
@@ -272,8 +293,8 @@ class DotnetCoverageTests(unittest.TestCase):
         mutations = (
             (r"<line [^>]*/>", "", "сводка строк"),
             (r'hits="[0-9]+"', 'hits="0"', "сводка строк"),
-            (r"60% \(6/10\)", "50% (5/10)", "сводка ветвей"),
-            (r"60% \(6/10\)", "110% (11/10)", "некорректная condition-coverage"),
+            (r"60\.00% \(6/10\)", "50% (5/10)", "сводка ветвей"),
+            (r"60\.00% \(6/10\)", "100% (11/10)", "некорректная condition-coverage"),
         )
         for pattern, replacement, message in mutations:
             with self.subTest(
@@ -284,13 +305,86 @@ class DotnetCoverageTests(unittest.TestCase):
                 errors = validate(self.reports, "unit", self.repo)
                 self.assertTrue(any(message in error for error in errors), errors)
 
-    def test_stale_report_is_rejected(self):
-        self.write(self.report(timestamp=int(time.time()) - 48 * 3600))
+    def test_branch_percent_accepts_mtp_rounding(self):
+        for total, covered, percent in (
+            (10, 6, "60"),
+            (8, 7, "87.5"),
+            (6, 1, "16.67"),
+            (6, 5, "83.33"),
+            (32, 1, "3.12"),
+        ):
+            with self.subTest(percent=percent, covered=covered, total=total):
+                report = self.report(brackets=(total, covered))
+                self.write(re.sub(r"[0-9.]+% ", f"{percent}% ", report))
+                self.assertEqual(validate(self.reports, "unit", self.repo), [])
+
+    def test_branch_percent_disagreeing_with_counts_is_rejected(self):
+        for percent in ("100", "50", "59.99", "101", "100.01", "-1", "NaN", "6e1"):
+            with self.subTest(percent=percent):
+                self.write(self.report().replace("60.00% (6/10)", f"{percent}% (6/10)"))
+                errors = validate(self.reports, "unit", self.repo)
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("condition-coverage", errors[0])
+
+        report = self.report(brackets=(32, 1))
+        self.write(report.replace("3.12% (1/32)", "3.13% (1/32)"))
+        self.assertIn(
+            "не совпадает с долей", " ".join(validate(self.reports, "unit", self.repo))
+        )
+
+    def test_report_age_limit_is_opt_in(self):
+        self.write(self.report(timestamp=1_700_000_000))
+        self.assertEqual(validate(self.reports, "unit", self.repo), [])
         errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
         self.assertIn("устарел", errors)
-        self.assertEqual(
-            validate(self.reports, "unit", self.repo, max_age_hours=None), []
+
+    def test_instrumented_sources_are_required_even_with_consistent_totals(self):
+        entries = self.entries()
+        expected = {name: [(f"src/{source}", True)] for name, source, _ in entries}
+        untested = f"{INFRA}/Untested.cs"
+        for filename in (
+            untested,
+            f"{INFRA}/Generated.Designer.cs",
+            f"{INFRA}/IContract.cs",
+        ):
+            _ = (self.repo / "src" / filename).write_text(
+                "class Source {}", encoding="utf-8"
+            )
+        expected[INFRA].extend(
+            [(f"src/{untested}", True), (f"src/{INFRA}/IContract.cs", False)]
         )
+        instrumented = self.reports / "instrumented.xml"
+        self.write(make_instrumented_report(expected), instrumented.name)
+        self.write(
+            make_report([*entries, (INFRA, untested, {1: 0})], sources=self.sources)
+        )
+        self.assertEqual(
+            validate(self.reports, "unit", self.repo, instrumented_report=instrumented),
+            [],
+        )
+
+        self.write(make_report(entries, sources=self.sources))
+        errors = validate(
+            self.reports, "unit", self.repo, instrumented_report=instrumented
+        )
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn(
+            "инструментированные исходники отсутствуют в Cobertura", errors[0]
+        )
+        self.assertIn(untested, errors[0])
+
+    def test_missing_or_invalid_instrumentation_report_is_rejected(self):
+        self.write(self.report())
+        instrumented = self.reports / "instrumented.xml"
+        for contents in (None, "<results/>", "<coverage/>"):
+            with self.subTest(contents=contents):
+                if contents is not None:
+                    self.write(contents, instrumented.name)
+                errors = validate(
+                    self.reports, "unit", self.repo, instrumented_report=instrumented
+                )
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("не удалось сверить XML инструментирования", errors[0])
 
     def test_docker_flavour_requires_persistence_evidence(self):
         entries = [
