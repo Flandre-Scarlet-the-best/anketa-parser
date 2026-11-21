@@ -564,33 +564,66 @@ class PublisherWorkflowTests(unittest.TestCase):
         self.assertNotIn("pull_request_target", self.text)
 
     def test_repository_secret_is_scoped_to_guard_and_four_uploads(self):
+        self.assert_repository_secret_scope(self.workflow)
+
+    def assert_repository_secret_scope(self, workflow: dict[str, object]) -> None:
+        steps = job_steps(workflow, "publish")
         uploads = [
             step
-            for step in self.steps
+            for step in steps
             if "codecov/codecov-action" in str(step.get("uses", ""))
         ]
         self.assertEqual(len(uploads), 4)
         for step in uploads:
             settings = cast(dict[str, str], step["with"])
             self.assertEqual(settings["token"], REPOSITORY_SECRET)
-        guard = find_step(self.steps, "Проверить наличие CODECOV_TOKEN")
+        guard = find_step(steps, "Проверить наличие CODECOV_TOKEN")
         self.assertEqual(guard["env"], {"CODECOV_TOKEN": REPOSITORY_SECRET})
-        self.assertEqual(self.steps[0], guard)
+        self.assertEqual(steps[0], guard)
         self.assertNotIn("if", guard)
-        self.assertNotIn("env", self.workflow)
-        for job in cast(dict[str, dict[str, object]], self.workflow["jobs"]).values():
+        self.assertNotIn("env", workflow)
+        for job in cast(dict[str, dict[str, object]], workflow["jobs"]).values():
             self.assertNotIn("env", job)
             self.assertNotIn("environment", job)
-            for step in cast(list[dict[str, object]], job["steps"]):
-                if step == guard or step in uploads:
-                    continue
-                self.assertNotIn("secrets", json.dumps(step))
+        expressions = re.finditer(r"\$\{\{(.*?)\}\}", json.dumps(workflow), re.DOTALL)
+        secret_expressions = [
+            expression.group(1).strip()
+            for expression in expressions
+            if re.search(r"(?<![.\w])secrets\b", expression.group(1), re.IGNORECASE)
+        ]
         self.assertEqual(
-            re.findall(r"secrets\.([A-Za-z_][A-Za-z_0-9]*)", self.text),
-            ["CODECOV_TOKEN"] * 5,
+            secret_expressions,
+            ["secrets.CODECOV_TOKEN"] * 5,
         )
         for obsolete in ("CODECOV_ENV_TOKEN", "Required reviewers", "ENV_TOKEN"):
             self.assertNotIn(obsolete, self.text)
+
+    def test_secret_scope_rejects_context_dump_in_guard_and_uploads(self):
+        for step_id in ("guard", *UPLOAD_IDS):
+            with self.subTest(step=step_id):
+                workflow = deepcopy(self.workflow)
+                steps = job_steps(workflow, "publish")
+                step = (
+                    steps[0]
+                    if step_id == "guard"
+                    else next(item for item in steps if item.get("id") == step_id)
+                )
+                if step_id == "guard":
+                    step["run"] = str(step["run"]) + "\necho '${{ toJSON(secrets) }}'\n"
+                else:
+                    step["env"] = {"EXTRA_CONTEXT": "${{ toJSON(secrets) }}"}
+                with self.assertRaises(AssertionError):
+                    self.assert_repository_secret_scope(workflow)
+
+    def test_secret_scope_ignores_yaml_comments(self):
+        workflow = cast(
+            dict[str, object],
+            yaml.load(
+                self.text + "\n# Пример: ${{ secrets.CODECOV_TOKEN }}\n",
+                Loader=yaml.BaseLoader,  # noqa: S506 - BaseLoader не создаёт объекты
+            ),
+        )
+        self.assert_repository_secret_scope(workflow)
 
     def test_repository_token_guard_fails_closed_without_disclosing_value(self):
         guard = find_step(self.steps, "Проверить наличие CODECOV_TOKEN")
