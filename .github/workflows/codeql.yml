@@ -28,7 +28,7 @@ jobs:
           global-json-file: global.json
       - name: Инициализировать C#
         id: init
-        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           languages: csharp
           build-mode: manual
@@ -40,7 +40,7 @@ jobs:
           dotnet build --no-restore -c Release
       - name: Выполнить запросы и опубликовать C#
         id: analyze
-        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           category: /language:csharp
           wait-for-processing: true
@@ -80,7 +80,7 @@ jobs:
           python-version: '3.15'
       - name: Инициализировать Python
         id: init
-        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           languages: python
           build-mode: none
@@ -91,7 +91,7 @@ jobs:
               - .github/scripts
       - name: Выполнить запросы и опубликовать Python
         id: analyze
-        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           category: /language:python
           wait-for-processing: true
