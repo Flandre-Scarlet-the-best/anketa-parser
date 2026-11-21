@@ -64,7 +64,7 @@ RUN CGO_ENABLED=0 GOTOOLCHAIN=local GOBIN=/out GOFLAGS=-trimpath \
     go install github.com/tianon/gosu@29b939aa5bd4dc588af765b8248f6e39150d2565
 
 # Общая база сохраняет штатный entrypoint PostgreSQL и обновляет пакеты Alpine.
-FROM postgres:18.7-alpine AS postgres
+FROM postgres:19.0-alpine AS postgres
 COPY --from=gosu-build /out/gosu /usr/local/bin/gosu
 ENV GOSU_VERSION=1.20
 # Обновление установленных пакетов необходимо для исправлений безопасности Alpine;
