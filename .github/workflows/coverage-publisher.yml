@@ -3,10 +3,10 @@ name: Публикация покрытия в Codecov
 # Доверенный издатель. Событие workflow_run использует файл из ветки по
 # умолчанию. Она определяет исполняемые валидаторы. Исходники измеренной
 # ревизии читаются как данные из --repo-root source-tree.
-# Публичный репозиторий и настройки Codecov позволяют загрузку без токена.
+# Загрузки используют только Repository Secret CODECOV_TOKEN без GitHub Environment.
 # Издатель должен находиться в ветке по умолчанию для запуска workflow_run.
 on:
-  workflow_run: # zizmor: ignore[dangerous-triggers] Валидаторы исполняются из ветки по умолчанию. Измеренные исходники читаются как данные; секреты не используются.
+  workflow_run: # zizmor: ignore[dangerous-triggers] Валидаторы исполняются из ветки по умолчанию; измеренные исходники читаются как данные. Секрет доступен только проверке токена и загрузкам доверенного издателя.
     workflows: [CI]
     types: [completed]
 
@@ -36,6 +36,16 @@ jobs:
       contents: read
       actions: read
     steps:
+      - name: Проверить наличие CODECOV_TOKEN в Repository Secrets
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CODECOV_TOKEN}" ]]; then
+            echo "::error::Отсутствует CODECOV_TOKEN. Добавьте токен Codecov в Repository Secrets этого репозитория: Settings → Secrets and variables → Actions → Repository secrets."
+            exit 1
+          fi
+
       # Доверенные скрипты и конфигурация берутся из ветки по умолчанию.
       - name: Получить доверенные валидаторы из ветки по умолчанию
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -196,8 +206,7 @@ jobs:
           done
 
       # Артефакты и исходники читают валидаторы из ветки по умолчанию.
-      # Ручное разрешение может задержать запуск. Происхождение подтверждают
-      # номер запуска CI и сверка SHA выше, пока артефакты доступны.
+      # Происхождение подтверждают номер запуска CI и сверка SHA выше.
       - name: Проверить отчёт unit-покрытия .NET
         run: >-
           python .github/scripts/check_dotnet_coverage.py coverage/dotnet-unit unit --repo-root source-tree
@@ -236,6 +245,7 @@ jobs:
           override_commit: ${{ steps.identity.outputs.commit }}
           override_branch: ${{ github.event.workflow_run.head_branch }}
           override_pr: ${{ steps.identity.outputs.pr }}
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Опубликовать покрытие Docker-тестов .NET
         id: upload-dotnet-docker
@@ -254,6 +264,7 @@ jobs:
           override_commit: ${{ steps.identity.outputs.commit }}
           override_branch: ${{ github.event.workflow_run.head_branch }}
           override_pr: ${{ steps.identity.outputs.pr }}
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Опубликовать покрытие Python (Linux)
         id: upload-python-linux
@@ -272,6 +283,7 @@ jobs:
           override_commit: ${{ steps.identity.outputs.commit }}
           override_branch: ${{ github.event.workflow_run.head_branch }}
           override_pr: ${{ steps.identity.outputs.pr }}
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Опубликовать покрытие Python (Windows)
         id: upload-python-windows
@@ -290,6 +302,7 @@ jobs:
           override_commit: ${{ steps.identity.outputs.commit }}
           override_branch: ${{ github.event.workflow_run.head_branch }}
           override_pr: ${{ steps.identity.outputs.pr }}
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       # Четыре загрузки не являются одной транзакцией. Сводка строится по
       # фактическому результату шагов: предупреждение о частичной публикации истинно
