@@ -805,6 +805,12 @@ class PublisherWorkflowTests(unittest.TestCase):
             self.assertEqual(str(step["uses"]), CODECOV_ACTION)
             settings = cast(dict[str, str], step["with"])
             self.assertEqual(settings["disable_search"], "true")
+            # Список файлов network-секции строится из измеренного дерева, а не
+            # из checkout ветки по умолчанию, где новых файлов PR ещё нет.
+            self.assertEqual(settings["root_dir"], "source-tree")
+            # Загружаются четыре явных файла: плагины загрузчика не нужны и
+            # не должны исполнять код измеренной ревизии.
+            self.assertEqual(settings["plugins"], "noop")
             self.assertEqual(settings["handle_no_reports_found"], "false")
             self.assertEqual(settings["fail_ci_if_error"], "true")
             self.assertEqual(settings["version"], "v11.3.2")
@@ -1056,9 +1062,10 @@ class CodecovConfigurationTests(unittest.TestCase):
 
 class ReportDiagnosticsTests(unittest.TestCase):
     def test_raw_windows_report_is_rejected_until_normalized(self):
-        # Копия фикстуры побайтовая: текстовое чтение на Linux превратило бы CRLF
-        # в LF, и проверка перестала бы доказывать нормализацию окончаний строк.
-        raw = (FIXTURES / "python-lcov-windows-raw.lcov").read_bytes()
+        # Фикстура хранится с LF по .gitattributes, поэтому CRLF собирается явно:
+        # иначе проверка окончаний строк зависела бы от настроек checkout.
+        stored = (FIXTURES / "python-lcov-windows-raw.lcov").read_bytes()
+        raw = stored.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
         self.assertIn(b"\r\n", raw)
         with tempfile.TemporaryDirectory() as temporary:
             report = Path(temporary) / "lcov.info"

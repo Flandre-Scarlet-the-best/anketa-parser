@@ -241,6 +241,11 @@ jobs:
       - name: Проверить отчёт покрытия Python (Windows)
         run: python .github/scripts/check_python_coverage_report.py --report coverage/python-windows/lcov.info --platform windows --repo-root source-tree
 
+      # Загружаются ровно четыре явных файла, поэтому плагины загрузчика не нужны:
+      # `disable_search` отключает только поиск файлов, а плагин pycoverage искал бы
+      # `.coverage` в дереве измеренной ревизии и мог бы исполнить её код.
+      # `root_dir` направляет список файлов network-секции в измеренное дерево:
+      # основной checkout содержит ветку по умолчанию, а не измеренную ревизию.
       - name: Опубликовать покрытие unit-тестов .NET
         id: upload-dotnet-unit
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
@@ -249,6 +254,8 @@ jobs:
           flags: dotnet-unit
           name: dotnet-unit
           disable_search: true
+          root_dir: source-tree
+          plugins: noop
           handle_no_reports_found: false
           fail_ci_if_error: true
           version: v11.3.2
@@ -266,6 +273,8 @@ jobs:
           flags: dotnet-docker
           name: dotnet-docker
           disable_search: true
+          root_dir: source-tree
+          plugins: noop
           handle_no_reports_found: false
           fail_ci_if_error: true
           version: v11.3.2
@@ -283,6 +292,8 @@ jobs:
           flags: python-linux
           name: python-linux
           disable_search: true
+          root_dir: source-tree
+          plugins: noop
           handle_no_reports_found: false
           fail_ci_if_error: true
           version: v11.3.2
@@ -300,6 +311,8 @@ jobs:
           flags: python-windows
           name: python-windows
           disable_search: true
+          root_dir: source-tree
+          plugins: noop
           handle_no_reports_found: false
           fail_ci_if_error: true
           version: v11.3.2

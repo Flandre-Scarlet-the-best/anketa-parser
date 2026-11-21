@@ -648,7 +648,11 @@ def inspect(
     if report is None:
         return errors, ""
     try:
-        text = report.read_text(encoding="utf-8")
+        with report.open("rb") as stream:
+            raw = stream.read(MAX_REPORT_BYTES + 1)
+        if len(raw) > MAX_REPORT_BYTES:
+            return [f"отчёт {report.name} превышает предел {MAX_REPORT_BYTES} байт"], ""
+        text = raw.decode("utf-8")
         root = ElementTree.fromstring(text)  # noqa: S314
     except (ElementTree.ParseError, OSError, UnicodeDecodeError) as error:
         return [f"повреждённый отчёт {report.name}: {error}"], ""
@@ -759,10 +763,11 @@ def validate(
     instrumented_report: Path | None = None,
 ) -> list[str]:
     """Проверить отчёт покрытия .NET и вернуть список ошибок."""
+    root = Path() if repo_root is None else repo_root
     errors, _ = inspect(
         directory,
         flavour,
-        Path() if repo_root is None else repo_root,
+        root.resolve(),
         max_age_hours,
         max_source_bytes,
         require_normalized=require_normalized,

@@ -45,6 +45,11 @@ def run_normalizer(
     )
 
 
+def with_crlf(raw: bytes) -> bytes:
+    """Привести окончания строк к CRLF: `.gitattributes` хранит фикстуры с LF."""
+    return raw.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+
+
 class NormalizerTests(unittest.TestCase):
     directory: Path
     report: Path
@@ -61,7 +66,8 @@ class NormalizerTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.directory, True)
 
     def copy_fixture(self, fixture: Path) -> bytes:
-        raw = fixture.read_bytes()
+        """Скопировать фикстуру с CRLF, как её выпускает генератор на Windows."""
+        raw = with_crlf(fixture.read_bytes())
         _ = self.report.write_bytes(raw)
         return raw
 
@@ -69,8 +75,10 @@ class NormalizerTests(unittest.TestCase):
         _ = self.copy_fixture(RAW_WINDOWS)
         result = run_normalizer("--report", str(self.report), "--repo-root", str(ROOT))
         self.assertEqual(result.returncode, 0, result.stderr)
-        text = self.report.read_text(encoding="utf-8")
-        self.assertNotIn("\r", text)
+        raw = self.report.read_bytes()
+        self.assertNotIn(b"\r", raw)
+        text = raw.decode("utf-8")
+        self.assertNotIn("окончаний строк 0", result.stdout)
         blocks, errors = parse_lcov(text)
         self.assertEqual(errors, [])
         for path in blocks:
@@ -182,8 +190,12 @@ class NormalizerTests(unittest.TestCase):
             str(target),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        text = target.read_text(encoding="utf-8")
-        source_lines = RAW_WINDOWS.read_text(encoding="utf-8").replace("\r\n", "\n")
+        raw = target.read_bytes()
+        self.assertNotIn(b"\r", raw)
+        text = raw.decode("utf-8")
+        source_lines = (
+            with_crlf(RAW_WINDOWS.read_bytes()).decode("utf-8").replace("\r\n", "\n")
+        )
         expected_lines = [
             "SF:" + line[3:].replace("\\", "/") if line.startswith("SF:") else line
             for line in source_lines.split("\n")

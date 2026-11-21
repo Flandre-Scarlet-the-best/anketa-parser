@@ -114,11 +114,12 @@ def main(argv: list[str] | None = None) -> int:
     if not report.is_file():
         print(f"::error::Отчёт отсутствует: {report}", file=sys.stderr)
         return 1
-    raw = report.read_bytes()
     limit = cast(int, settings.max_bytes)
+    with report.open("rb") as stream:
+        raw = stream.read(limit + 1)
     if len(raw) > limit:
         print(
-            f"::error::Отчёт превышает допустимый размер: {len(raw)} байт",
+            f"::error::Отчёт превышает допустимый размер: больше {limit} байт",
             file=sys.stderr,
         )
         return 1

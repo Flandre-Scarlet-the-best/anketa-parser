@@ -1,6 +1,7 @@
 """Регрессионные сценарии проверки отчёта покрытия .NET."""
 
 import math
+import os
 import re
 import tempfile
 import time
@@ -413,6 +414,13 @@ class DotnetCoverageTests(unittest.TestCase):
     def test_unknown_flavour_is_rejected(self):
         self.assertIn(
             "неизвестный flavour", " ".join(validate(self.reports, "legacy", self.repo))
+        )
+
+    def test_relative_repo_root_is_resolved(self):
+        self.write(self.report())
+        relative = Path(os.path.relpath(self.repo, Path.cwd()))
+        self.assertEqual(
+            validate(self.reports, "unit", relative, max_age_hours=24.0), []
         )
 
     def test_absolute_paths_without_sources_are_accepted(self):
