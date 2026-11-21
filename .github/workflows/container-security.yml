@@ -94,7 +94,7 @@ jobs:
           for file in "${files[@]}"; do
             scan_config "$file" dockerfile "$RUNNER_TEMP/config.json"
           done
-          for file in compose.yaml compose.debug.yaml; do
+          for file in compose.yaml compose.debug.yaml compose.llm-native.yaml; do
             scan_config "$file" yaml "$RUNNER_TEMP/config.json" --misconfig-scanners yaml --config-check .github/security/compose.rego --check-namespaces user
             jq -e '[.Results[].Misconfigurations[] | select(.ID == "COMPOSE-001")] | length > 0' "$RUNNER_TEMP/config.json" > /dev/null
           done
@@ -155,6 +155,8 @@ jobs:
           assert_compose "$RUNNER_TEMP/compose-resolved.yaml" PASS ''
           docker compose --project-name anketa-security-audit --profile '*' -f compose.yaml -f compose.debug.yaml config > "$RUNNER_TEMP/compose-resolved.yaml"
           assert_compose "$RUNNER_TEMP/compose-resolved.yaml" PASS ''
+          docker compose --project-name anketa-security-audit --profile '*' -f compose.yaml -f compose.llm-native.yaml config > "$RUNNER_TEMP/compose-resolved.yaml"
+          assert_compose "$RUNNER_TEMP/compose-resolved.yaml" PASS ''
           printf 'services:\n  test:\n    image: alpine:3.20\n    privileged: $%s\n' '{WORKER_PRIVILEGED:-false}' > "$RUNNER_TEMP/compose-interpolation.yaml"
           WORKER_PRIVILEGED=true docker compose --project-name anketa-security-control -f "$RUNNER_TEMP/compose-interpolation.yaml" config > "$RUNNER_TEMP/compose-resolved.yaml"
           assert_compose "$RUNNER_TEMP/compose-resolved.yaml" FAIL privileged
@@ -187,14 +189,15 @@ jobs:
           check_images() {
             jq -e '
               .services as $s |
-              [$s.host, $s.maintenance, $s.postgres] as $required |
+              [$s.host, $s.maintenance, $s.postgres, $s["llm-worker"]] as $required |
               [$required[].image] as $images |
               ($s | type == "object") and
               ($s.host.build.target == "runtime") and
               ($s.maintenance.build.target == "maintenance") and
               ($s.postgres.build.target == "postgres") and
+              ($s["llm-worker"].build.target == "llm-worker") and
               ($s.backup.image == $s.maintenance.image and $s.backup.build == $s.maintenance.build) and
-              ($images | all(type == "string" and length > 0) and (unique | length == 3)) and
+              ($images | all(type == "string" and length > 0) and (unique | length == ($required | length))) and
               ([$s[] | .image] | unique | sort) == ($images | unique | sort) and
               all($s[]; . as $service |
                 any($required[]; .image == $service.image and
@@ -202,17 +205,24 @@ jobs:
             ' "$1" > /dev/null
           }
           check_images "$RUNNER_TEMP/compose.json" || { echo 'Неполный или неоднозначный набор образов Compose' >&2; exit 1; }
-          docker compose --project-name anketa-security-audit --profile '*' -f compose.yaml -f compose.debug.yaml config --format json > "$RUNNER_TEMP/compose-debug.json"
-          check_debug_images() {
+          check_variant_images() {
             check_images "$1" && jq -e --slurpfile base "$RUNNER_TEMP/compose.json" '
-              [.services.host, .services.maintenance, .services.postgres] | map({image, build}) ==
-              ([$base[0].services.host, $base[0].services.maintenance, $base[0].services.postgres] | map({image, build}))
+              def targets: [.services.host, .services.maintenance, .services.postgres, .services["llm-worker"]] | map({image, build});
+              targets == ($base[0] | targets)
             ' "$1" > /dev/null
           }
-          check_debug_images "$RUNNER_TEMP/compose-debug.json" || { echo 'Отладочная модель содержит непроверенные образы или сборки' >&2; exit 1; }
+          docker compose --project-name anketa-security-audit --profile '*' -f compose.yaml -f compose.debug.yaml config --format json > "$RUNNER_TEMP/compose-debug.json"
+          check_variant_images "$RUNNER_TEMP/compose-debug.json" || { echo 'Отладочная модель содержит непроверенные образы или сборки' >&2; exit 1; }
           jq '.services.host.image = "unknown.invalid/unscanned:control"' "$RUNNER_TEMP/compose-debug.json" > "$RUNNER_TEMP/compose-debug-extra.json"
-          if check_debug_images "$RUNNER_TEMP/compose-debug-extra.json"; then
+          if check_variant_images "$RUNNER_TEMP/compose-debug-extra.json"; then
             echo 'Замена образа в отладочной модели не обнаружена' >&2
+            exit 1
+          fi
+          docker compose --project-name anketa-security-audit --profile '*' -f compose.yaml -f compose.llm-native.yaml config --format json > "$RUNNER_TEMP/compose-native.json"
+          check_variant_images "$RUNNER_TEMP/compose-native.json" || { echo 'Модель с GGUF содержит непроверенные образы или сборки' >&2; exit 1; }
+          jq '.services["llm-worker"].image = "unknown.invalid/unscanned:control"' "$RUNNER_TEMP/compose-native.json" > "$RUNNER_TEMP/compose-native-extra.json"
+          if check_variant_images "$RUNNER_TEMP/compose-native-extra.json"; then
+            echo 'Замена образа Worker не обнаружена' >&2
             exit 1
           fi
           jq '.services.synthetic = {image: "unknown.invalid/unscanned:control"}' "$RUNNER_TEMP/compose.json" > "$RUNNER_TEMP/compose-extra.json"
@@ -225,7 +235,7 @@ jobs:
             echo 'Отсутствующая обязательная цель не обнаружена' >&2
             exit 1
           fi
-          docker compose --project-name anketa-security-audit --profile '*' build --pull --no-cache host maintenance postgres
+          docker compose --project-name anketa-security-audit --profile '*' build --pull --no-cache host maintenance postgres llm-worker
       - name: Проверить все образы и свежую базу CVE
         shell: bash
         env:
@@ -234,20 +244,21 @@ jobs:
           set -euo pipefail
           postgres=$(jq -er '.services.postgres.image' "$RUNNER_TEMP/compose.json")
           host=$(jq -er '.services.host.image' "$RUNNER_TEMP/compose.json")
+          worker=$(jq -er '.services["llm-worker"].image' "$RUNNER_TEMP/compose.json")
           maintenance=$(jq -er '.services.maintenance.image' "$RUNNER_TEMP/compose.json")
-          images=("$host" "$maintenance" "$postgres")
+          images=("$host" "$maintenance" "$postgres" "$worker")
           infrastructure_failed=0
           vulnerabilities_found=0
           validate_report() {
             local report="$1" image="$2" id="$3"
-            jq -e --arg image "$image" --arg id "$id" --arg host "$host" --arg maintenance "$maintenance" --arg postgres "$postgres" '
+            jq -e --arg image "$image" --arg id "$id" --arg host "$host" --arg worker "$worker" --arg maintenance "$maintenance" --arg postgres "$postgres" '
               def component($kind; $path):
                 any(.Results[]?; .Class == "lang-pkgs" and .Type == $kind and .Target == $path and (.Packages | type == "array" and length > 0));
               .SchemaVersion == 2 and .ArtifactType == "container_image" and
               .ArtifactName == $image and .Metadata.ImageID == $id and
               (.Metadata.OS.Family | type == "string" and length > 0) and
               any(.Results[]?; .Class == "os-pkgs" and (.Packages | type == "array" and length > 0)) and
-              (if $image == $host then
+              (if $image == $host or $image == $worker then
                 component("dotnet-core"; "app/host/AnketaParser.Host.deps.json") and component("dotnet-core"; "app/cli/AnketaParser.Cli.deps.json")
               elif $image == $maintenance then
                 component("dotnet-core"; "app/cli/AnketaParser.Cli.deps.json") and component("gobinary"; "usr/local/bin/gosu")
@@ -274,7 +285,7 @@ jobs:
               continue
             fi
             required_components=()
-            if [[ "$image" == "$host" ]]; then
+            if [[ "$image" == "$host" || "$image" == "$worker" ]]; then
               required_components+=(app/host/AnketaParser.Host.deps.json app/cli/AnketaParser.Cli.deps.json)
             elif [[ "$image" == "$maintenance" ]]; then
               required_components+=(app/cli/AnketaParser.Cli.deps.json usr/local/bin/gosu)

@@ -1,0 +1,16 @@
+[
+  { "post": 220001, "class": "profile", "independent": true, "fields": { "age": [29], "gender": ["мужчина"], "location": ["Казань"] } },
+  { "post": 220002, "class": "profile", "independent": true, "fields": { "age": [25], "gender": ["Тян"], "location": ["Омск"] } },
+  { "post": 220003, "class": "profile", "independent": true, "fields": { "age": [null], "gender": [null], "location": [null] } },
+  { "post": 220004, "class": "profile", "independent": true, "fields": { "age": [null], "gender": [null], "location": [null] } },
+  { "post": 220005, "class": "profile", "independent": true, "fields": { "age": [null], "gender": [null], "location": [null] } },
+  { "post": 220006, "class": "profile", "independent": true, "fields": { "age": [34], "gender": ["М"], "location": [null] } },
+  { "post": 220007, "class": "not_profile", "independent": true, "fields": {} },
+  { "post": 220008, "class": "not_profile", "independent": true, "fields": {} },
+  { "post": 220009, "class": "not_profile", "independent": true, "fields": {} },
+  { "post": 220010, "class": "uncertain", "independent": true, "fields": {} },
+  { "post": 220011, "class": "uncertain", "independent": true, "fields": {} },
+  { "post": 220012, "class": "uncertain", "independent": true, "fields": {} },
+  { "post": 220013, "class": "profile", "independent": false, "duplicateOf": 220001, "fields": { "age": [29], "gender": ["мужчина"], "location": ["Казань"] } },
+  { "post": 220014, "class": "profile", "independent": false, "duplicateOf": 220001, "fields": { "age": [29], "gender": ["мужчина"], "location": ["Казань"] } }
+]

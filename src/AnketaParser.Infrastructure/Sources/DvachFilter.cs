@@ -3,10 +3,12 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 
 using AnketaParser.Core.Persistence;
+using AnketaParser.Infrastructure.Llm;
 
 namespace AnketaParser.Infrastructure.Sources;
 
 internal sealed record DetectedContact(string Platform, string RawValue, string NormalizedValue, decimal Confidence, string Provenance);
+internal sealed record PossibleContact(int Line, int Offset, int Length, string Kind);
 internal sealed record PreparedPost(PostInput Post, string Reason, string Reply, IReadOnlyList<DetectedContact> Contacts, bool Ambiguous);
 
 internal static partial class DvachFilter
@@ -15,6 +17,7 @@ internal static partial class DvachFilter
     internal const string Excluded = "moderation_excluded";
     internal const string OpeningPost = "opening_post";
     internal const string NoOwnContact = "no_own_contact";
+    internal const string UnresolvedContact = "unresolved_contact";
     internal const string OtherReply = "other_reply";
     internal const string ProcessorVersion = "profile-analysis-v1";
     internal const int MaxAttempts = 5;
@@ -23,7 +26,7 @@ internal static partial class DvachFilter
     private const string Address = @"[A-Za-z0-9_%+-]+(?:\.[A-Za-z0-9_%+-]+)*@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*";
     private const string TelegramId = @"[A-Za-z][A-Za-z0-9_]{4,31}";
     private const string DiscordId = @"(?:[A-Za-z0-9_.-]{2,32}#[0-9]{4}|[A-Za-z0-9_.]{2,32})";
-    private const string Platforms = @"telegram|телеграмм|телеграм|телега|телегу|tg|тг|discord|дискорд|дс|xmpp|jabber|жаббер|жабка|email|e-mail|почта|мыло";
+    private const string Platforms = @"telegram|телеграмм|телеграм|телега|телегу|tg|тг|tг|тg|discord|дискорд|дис|дс|xmpp|jabber|жаббер|жабка|email|e-mail|почта|мыло";
     private static readonly HashSet<string> TelegramReserved = new(StringComparer.OrdinalIgnoreCase)
     {
         "addemoji", "addlist", "addstickers", "boost", "confirmphone", "contact", "giftcode", "invoice",
@@ -38,9 +41,10 @@ internal static partial class DvachFilter
             : body.Replies.All(r => r.Board == thread.Board && r.Thread == thread.Number && r.Post == thread.Number)
                 ? "op_reply" : OtherReply;
         var contacts = reply == "op" ? [] : Extract(body.Lines);
+        var possible = reply == "op" || contacts.Count != 0 ? [] : FindPossibleContacts(body.Lines);
         var ambiguous = contacts.GroupBy(c => c.Platform, StringComparer.Ordinal)
             .Any(group => group.Select(c => c.NormalizedValue).Distinct(StringComparer.Ordinal).Skip(1).Any());
-        var reason = reply == "op" ? OpeningPost : contacts.Count == 0 ? NoOwnContact : Candidate;
+        var reason = reply == "op" ? OpeningPost : contacts.Count != 0 ? Candidate : possible.Count != 0 ? UnresolvedContact : NoOwnContact;
         var id = DvachSnapshot.PostId(post.Number);
         var metadata = JsonSerializer.Serialize(new
         {
@@ -49,6 +53,7 @@ internal static partial class DvachFilter
             text = body.Text,
             quotes = body.Quotes,
             replies = body.Replies,
+            possibleContacts = possible,
         });
 
         return new PreparedPost(new PostInput(sourceKey, id, thread.Url + "#" + id, post.Html, post.PublishedAt, metadata),
@@ -67,19 +72,33 @@ internal static partial class DvachFilter
 
             var text = line.Text;
             var number = index + 1;
+            var previousLine = index > 0 ? lines[index - 1].Text : null;
+            // Дорогие проверки выполняются один раз на строку, а не на каждый контакт.
+            var interiorPunctuation = InteriorPunctuation(text);
             List<(int Start, int End)> occupied = [];
             List<(int Start, int End)> labeled = [];
             List<(int Offset, DetectedContact Contact)> found = [];
 
             void Record(int offset, int length, string platform, string raw, string value, decimal confidence, string origin)
             {
-                if (occupied.Any(span => offset < span.End && offset + length > span.Start))
+                if (occupied.Any(span => offset < span.End && offset + length > span.Start) ||
+                    IsExplicitlyForeign(text, offset, interiorPunctuation, previousLine))
                     return;
                 var contact = Create(platform, raw, value, confidence, number, offset, origin);
                 if (contact is null)
                     return;
                 occupied.Add((offset, offset + length));
                 found.Add((offset, contact));
+            }
+
+            // Удаляем пробелы внутри username только при явной инструкции автора.
+            // В RawValue остаётся точный непрерывный span, включая все пробелы.
+            foreach (Match match in TelegramWithoutSpaces().Matches(text))
+            {
+                var raw = match.Groups["raw"];
+                var value = string.Concat(raw.Value.Where(c => c is not (' ' or '\t'))).TrimStart('@');
+                if (!InsideUrl(text, raw.Index) && TelegramValue().IsMatch(value))
+                    Record(raw.Index, raw.Length, "telegram", raw.Value, value, 0.75m, "label");
             }
 
             // Явный адрес имеет приоритет над соседней меткой другой платформы.
@@ -100,6 +119,15 @@ internal static partial class DvachFilter
                 }
             }
 
+            // Кириллическая подпись, слитая с двоеточием, не является схемой URI.
+            // Почтовый адрес после неё по-прежнему проверяется как email целиком.
+            foreach (Match match in EmailAfterCyrillicLabel().Matches(text))
+            {
+                if (!InsideUrl(text, match.Index))
+                    Record(match.Index, match.Length, PreviousPlatform(text, match.Index, lines, index) == "xmpp" ? "xmpp" : "email",
+                        match.Value, match.Value, 0.8m, "label");
+            }
+
             // Явные контакты строки: они уже описывают значение справа от метки.
             List<(int Offset, string Platform)> explicitContacts =
                 found.Select(item => (item.Offset, item.Contact.Platform)).ToList();
@@ -111,6 +139,11 @@ internal static partial class DvachFilter
                 if (InsideUrl(text, value.Index))
                     continue;
                 if (platform is not ("telegram" or "discord") || !IsLabeledValue(platform, value.Value))
+                    continue;
+                // В явном описании места «живу в ДС-1.» точка заканчивает фразу,
+                // а не образует Discord-идентификатор «1.».
+                if (platform == "discord" && ImageboardGlossary.IsNumberedCityInContext(
+                    text[match.Index..(value.Index + value.Length)].TrimEnd('.'), text.AsSpan(0, match.Index)))
                     continue;
                 // Слэш допустим только как разделитель списка значений: остаток адреса
                 // (`tg: alice_name/path`) не должен давать первый контакт.
@@ -143,6 +176,32 @@ internal static partial class DvachFilter
                 else if (value.Success && platform == "discord" && DiscordValue().IsMatch(value.Value.TrimStart('@')))
                     Record(value.Index, value.Length, platform, value.Value, value.Value.TrimStart('@'), 0.8m, "label");
             }
+            foreach (Match match in DiscordForContact().Matches(text))
+            {
+                var raw = match.Groups["value"];
+                if (!InsideUrl(text, raw.Index) && DiscordValue().IsMatch(raw.Value) &&
+                    SlashList("discord", text, raw.Index + raw.Length) is { Count: 0 })
+                    Record(raw.Index, raw.Length, "discord", raw.Value, raw.Value, 0.75m, "label");
+            }
+            // Опечатку в короткой метке допускаем только с явным двоеточием,
+            // чтобы обычное слово не стало произвольной меткой платформы.
+            foreach (Match match in TelegramTypoLabel().Matches(text))
+            {
+                var raw = match.Groups["value"];
+                if (!InsideUrl(text, raw.Index) && SlashList("telegram", text, raw.Index + raw.Length) is { Count: 0 })
+                    Record(raw.Index, raw.Length, "telegram", raw.Value, raw.Value.TrimStart('@'), 0.7m, "label");
+            }
+            // Метка может быть слита с @, а пробел после @ не меняет username.
+            // Сохраняем исходный span целиком, чтобы маскирование не потеряло части адреса.
+            foreach (Match match in LabeledTelegramAt().Matches(text))
+            {
+                var raw = match.Groups["raw"];
+                if (!InsideUrl(text, raw.Index))
+                {
+                    labeled.Add((match.Index, raw.Index + raw.Length));
+                    Record(raw.Index, raw.Length, "telegram", raw.Value, match.Groups["value"].Value, 0.8m, "label");
+                }
+            }
             foreach (Match match in ReverseTelegram().Matches(text))
             {
                 var value = match.Groups["value"];
@@ -158,11 +217,12 @@ internal static partial class DvachFilter
             foreach (Match match in BareTelegram().Matches(text))
             {
                 if (!InsideUrl(text, match.Index))
-                    Record(match.Index, match.Length, "telegram", match.Value, match.Value[1..], 0.6m, "text");
+                    Record(match.Index, match.Length, "telegram", match.Value, match.Groups["value"].Value, 0.6m, "text");
             }
             foreach (var link in line.Links)
             {
-                if (link.Target.Length > 2048 || string.IsNullOrWhiteSpace(link.Label))
+                if (link.Target.Length > 2048 || string.IsNullOrWhiteSpace(link.Label) ||
+                    IsExplicitlyForeign(text, link.Offset, interiorPunctuation, previousLine))
                     continue;
                 var match = ExplicitContact().Match(link.Target);
                 if (!match.Success || match.Length != link.Target.Length)
@@ -187,6 +247,123 @@ internal static partial class DvachFilter
         }
         return result.Distinct().ToList();
     }
+
+    private static List<PossibleContact> FindPossibleContacts(IReadOnlyList<BodyLine> lines)
+    {
+        List<PossibleContact> result = [];
+        for (var index = 0; index < lines.Count; index++)
+        {
+            var text = lines[index].Text;
+            if (text.Length > 4096)
+                continue;
+            var previousLine = index > 0 ? lines[index - 1].Text : null;
+            var interiorPunctuation = InteriorPunctuation(text);
+            foreach (Match match in PossibleMalformedAt().Matches(text))
+            {
+                if (!InsideUrl(text, match.Index) && !IsExplicitlyForeign(text, match.Index, interiorPunctuation, previousLine))
+                    result.Add(new(index + 1, match.Index, match.Length, "ambiguous_at"));
+            }
+            foreach (Match match in PossibleMixedTelegram().Matches(text))
+            {
+                var raw = match.Groups["value"];
+                if (raw.Value.Any(c => c is >= 'А' and <= 'я' or 'Ё' or 'ё') &&
+                    raw.Value.Any(char.IsAsciiLetter) && !InsideUrl(text, raw.Index) &&
+                    !IsExplicitlyForeign(text, raw.Index, interiorPunctuation, previousLine))
+                    result.Add(new(index + 1, raw.Index, raw.Length, "mixed_alphabet"));
+            }
+            if (PossibleReverseDiscord().Match(text) is { Success: true } reverse)
+            {
+                var raw = reverse.Groups["value"];
+                if (!InsideUrl(text, raw.Index) && !IsExplicitlyForeign(text, raw.Index, interiorPunctuation, previousLine))
+                    result.Add(new(index + 1, raw.Index, raw.Length, "discord_reverse"));
+            }
+        }
+        return result;
+    }
+
+    private static bool IsExplicitlyForeign(string text, int offset, bool[] interiorPunctuation, string? previousLine)
+    {
+        var boundary = -1;
+        for (var i = 0; i < offset; i++)
+        {
+            // Пунктуация внутри адреса не завершает предложение: «friend.name», «?start=».
+            if (interiorPunctuation[i])
+                continue;
+            if (text[i] is '!' or '?' or ';' or '\n')
+            {
+                boundary = i;
+                continue;
+            }
+
+            // Границей остаётся точка, за которой следует пробел или конец фрагмента.
+            if (text[i] == '.' && (i + 1 == offset || char.IsWhiteSpace(text[i + 1])))
+                boundary = i;
+        }
+
+        var start = boundary + 1;
+        var sentence = text.AsSpan(start, offset - start);
+        // Признак чужого контакта действует до явного указания на собственный:
+        // «Не мой контакт @a, а мой тг @b» не делает @b чужим, но @a остаётся чужим.
+        var markerEnd = -1;
+        var markers = ForeignContactPrefix().EnumerateMatches(sentence);
+        while (markers.MoveNext())
+            markerEnd = markers.Current.Index + markers.Current.Length;
+        if (markerEnd < 0)
+        {
+            // Подпись предыдущей строки относится к значению, перенесённому на новую:
+            // «Контакт друга:» на отдельной строке делает следующий контакт чужим.
+            if (previousLine is null || OwnContactPrefix().IsMatch(sentence))
+                return false;
+            return HasForeignMarker(previousLine);
+        }
+
+        var ownStart = -1;
+        var own = OwnContactPrefix().EnumerateMatches(sentence[markerEnd..]);
+        if (own.MoveNext())
+            ownStart = markerEnd + own.Current.Index;
+        // Контакт до собственной метки остаётся чужим, после неё — контактом автора.
+        return ownStart < 0 || offset - start < ownStart;
+    }
+
+    /// <summary>Есть ли в строке признак чужого контакта без последующей собственной метки.</summary>
+    private static bool HasForeignMarker(string line)
+    {
+        var markerEnd = -1;
+        var markers = ForeignContactPrefix().EnumerateMatches(line);
+        while (markers.MoveNext())
+            markerEnd = markers.Current.Index + markers.Current.Length;
+        return markerEnd >= 0 && !OwnContactPrefix().IsMatch(line.AsSpan(markerEnd));
+    }
+
+    /// <summary>Пунктуация внутри адреса: она не завершает предложение.</summary>
+    private static bool[] InteriorPunctuation(string text)
+    {
+        var mask = new bool[text.Length];
+        foreach (Match match in ExplicitContact().Matches(text))
+            Mark(match);
+        foreach (Match match in Url().Matches(text))
+            Mark(match);
+        return mask;
+
+        void Mark(Match match)
+        {
+            for (var i = match.Index; i + 1 < match.Index + match.Length; i++)
+            {
+                if (text[i] is '.' or '?' or '!' or ';')
+                    mask[i] = true;
+            }
+        }
+    }
+
+    [GeneratedRegex(@"(?:мне\s+переслали|не\s+мо[йяеё]\s+(?:контакт\w*|аккаунт\w*|телеграм\w*|тг|почт\w*|email\w*|имейл\w*|мейл\w*|мыл\w*|xmpp\w*|jabber\w*|дискорд\w*|discord|дис|дс)|чуж(?:ой|ая|ого|ую|ей|ие)\s+(?:контакт\w*|аккаунт\w*|ссылк\w*|телеграм\w*|тг|почт\w*|email\w*)|(?:контакт|аккаунт|телеграм|тг|дискорд|дс)\s+(?:моего\s+|моей\s+)?(?:друга|подруги|знакомого|знакомой))", IgnoreCase)]
+    private static partial Regex ForeignContactPrefix();
+
+    [GeneratedRegex(@"https?://[A-Za-z0-9_~:/?#\[\]@!$&'()*+,;=%.-]+", IgnoreCase)]
+    private static partial Regex Url();
+
+    /// <summary>Явное указание автора на собственный контакт, снимающее признак чужого.</summary>
+    [GeneratedRegex(@"(?<![\w])(?:(?:мой|моя|моё|мое|моего|моей|мою)\s+(?:тг|tг|тg|telegram\w*|tg|телеграм\w*|телега|телегу|discord|дискорд|дис|дс|контакт\w*|аккаунт\w*|ник\w*|юзернейм\w*|почт\w*|мыл\w*|мейл\w*|email\w*|e-mail|xmpp\w*|jabber\w*|жаббер\w*|жабк\w*)|у\s+меня\s+(?:тг|tг|тg|telegram\w*|tg|discord|телеграм\w*|контакт\w*|аккаунт\w*|почт\w*|email\w*|xmpp\w*)|(?:а|но|зато)\s+(?:вот\s+)?(?:мой|моя|моё|мое)\b[^\w]{0,3}$)", IgnoreCase)]
+    private static partial Regex OwnContactPrefix();
 
     private static bool IsLabeledValue(string platform, string value) => platform switch
     {
@@ -249,8 +426,8 @@ internal static partial class DvachFilter
 
     private static string Platform(string value) => value.ToLowerInvariant() switch
     {
-        "tg" or "тг" or "telegram" or "телеграм" or "телеграмм" or "телега" or "телегу" => "telegram",
-        "discord" or "дискорд" or "дс" => "discord",
+        "tg" or "тг" or "tг" or "тg" or "telegram" or "телеграм" or "телеграмм" or "телега" or "телегу" => "telegram",
+        "discord" or "дискорд" or "дис" or "дс" => "discord",
         "xmpp" or "jabber" or "жаббер" or "жабка" => "xmpp",
         _ => "email",
     };
@@ -277,13 +454,37 @@ internal static partial class DvachFilter
         return new DetectedContact(platform, raw, normalized, confidence, provenance);
     }
 
+    [GeneratedRegex(@"(?<=[А-Яа-яЁё]:)" + Address + @"(?![\w@%+-]|\.[\w.])", IgnoreCase)]
+    private static partial Regex EmailAfterCyrillicLabel();
+
+    [GeneratedRegex(@"(?<![\w@./:%+-])[A-Za-z0-9]{1,2}@[A-Za-z][A-Za-z0-9_]{4,31}(?![\w@.%+-])", RegexOptions.CultureInvariant)]
+    private static partial Regex PossibleMalformedAt();
+
+    [GeneratedRegex(@"(?<!\w)(?:telegram|телеграмм|телеграм|tg|тг|tг|тg)[ \t]*[:=]?[ \t]*(?<value>@[ \t]*[A-Za-z0-9_А-Яа-яЁё]{5,32})(?![\w@.%+-])", IgnoreCase)]
+    private static partial Regex PossibleMixedTelegram();
+
+    [GeneratedRegex(@"\A[ \t]*(?<value>" + DiscordId + @")[ \t]+(?:discord|дискорд|дис|дс)[ \t]*\z", IgnoreCase)]
+    private static partial Regex PossibleReverseDiscord();
+
     [GeneratedRegex(@"(?<![\w@.:%+-])(?:(?:https?://)?(?:t\.me|telegram\.me)/(?<telegram>" + TelegramId +
         @")(?:/)?(?![\w/?#%+-])|xmpp:(?<xmpp>" + Address + @")|mailto:(?<mailto>" + Address + @")|(?<email>" + Address +
         @"))(?![\w@%+-]|\.[\w.])", IgnoreCase)]
     private static partial Regex ExplicitContact();
 
-    [GeneratedRegex(@"(?<![\w@./:%+-])@" + TelegramId + @"(?![\w@/%+-]|\.[\w.])", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"(?<![\w@./:%+-])(?<raw>@[ \t]*[A-Za-z][A-Za-z0-9_]*(?:[ \t]+[A-Za-z0-9_]+)+)[ \t]*[,(]?[ \t]*(?:без[ \t]+пробел(?:а|ов)|минус[ \t]+пробелы)(?!\w)", IgnoreCase)]
+    private static partial Regex TelegramWithoutSpaces();
+
+    [GeneratedRegex(@"(?:(?<![\w@./:%+-])|(?<=\d\.))@[ \t]*(?<value>" + TelegramId + @")(?![\w@/%+-]|\.[\w.])", RegexOptions.CultureInvariant)]
     private static partial Regex BareTelegram();
+
+    [GeneratedRegex(@"(?<!\w)(?:discord|дискорд|дис)[ \t]+для[ \t]+(?:связи|общения)[ \t]*:[ \t]*(?<value>" + DiscordId + @")(?![\w@.:%+#-])", IgnoreCase)]
+    private static partial Regex DiscordForContact();
+
+    [GeneratedRegex(@"(?<!\w)тн[ \t]*:[ \t]*(?<value>@?" + TelegramId + @")(?![\w@.:%+#-])", IgnoreCase)]
+    private static partial Regex TelegramTypoLabel();
+
+    [GeneratedRegex(@"(?<!\w)(?:telegram|телеграмм|телеграм|телега|телегу|tg|тг|tг|тg)[ \t]*(?<raw>@[ \t]*(?<value>" + TelegramId + @"))(?![\w@/%+-]|\.[\w.])", IgnoreCase)]
+    private static partial Regex LabeledTelegramAt();
 
     [GeneratedRegex(@"(?<![\w])(?<platform>" + Platforms + @")(?![\w])(?:\s*[:=—–-]\s*|\s+)[\""«]?(?<value>@?[A-Za-z0-9_.#-]+)[\""»]?(?![\w@.:%+#-])", IgnoreCase)]
     private static partial Regex LabeledValue();

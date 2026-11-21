@@ -3,12 +3,15 @@
 **/obj/
 .git/
 .github/
+.codex/local/
 tests/
 .vs/
 .idea/
 **/.env
 **/.env.*
 **/appsettings.Local.json
+**/llm.toml
+**/*.gguf
 *.user
 *.log
 README.md

@@ -6,6 +6,25 @@ namespace AnketaParser.DockerTests;
 
 public sealed class DockerCliTests
 {
+    private static readonly string[] ExpectedComposeArguments = ["compose", "ps"];
+
+    [Fact]
+    public void StartInfoStartsDockerWithoutConsoleWindow()
+    {
+        // Запуск Docker CLI из тестов не должен создавать видимое окно консоли.
+        var environment = new Dictionary<string, string>(StringComparer.Ordinal) { ["PRODUCT_BACKUP_PASSWORD"] = "synthetic" };
+        var info = DockerCli.CreateStartInfo("docker", Path.GetTempPath(), environment, ["compose", "ps"]);
+
+        Assert.Equal("docker", info.FileName);
+        Assert.Equal(Path.GetTempPath(), info.WorkingDirectory);
+        Assert.False(info.UseShellExecute);
+        Assert.True(info.CreateNoWindow);
+        Assert.True(info.RedirectStandardOutput);
+        Assert.True(info.RedirectStandardError);
+        Assert.Equal(ExpectedComposeArguments, info.ArgumentList);
+        Assert.Equal("synthetic", info.Environment["PRODUCT_BACKUP_PASSWORD"]);
+    }
+
     [Fact]
     public async Task RunAsyncPassesConfiguredEnvironmentToChildProcess()
     {
@@ -53,6 +72,31 @@ public sealed class DockerCliTests
         AssertPassword(services.GetProperty("maintenance"), "ANKETAPARSER_Database__ConnectionString", "ANKETAPARSER_Database__Password", expected["PRODUCT_MIGRATION_PASSWORD"]);
         AssertPassword(services.GetProperty("maintenance"), "ANKETAPARSER_Backup__ConnectionString", "ANKETAPARSER_Backup__Password", expected["PRODUCT_BACKUP_PASSWORD"]);
         AssertPassword(services.GetProperty("backup"), "ANKETAPARSER_Backup__ConnectionString", "ANKETAPARSER_Backup__Password", expected["PRODUCT_BACKUP_PASSWORD"]);
+    }
+
+    [Fact]
+    public async Task ComposeWorkerUsesTomlActiveProfileByDefault()
+    {
+        if (!ComposeImageFixture.Enabled)
+        {
+            Assert.Skip($"Задайте {ComposeImageFixture.EnableVariable}=1 для проверки конфигурации Compose.");
+        }
+
+        var root = ComposeStackSmokeTests.FindRepositoryRoot();
+        var environment = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["ANKETAPARSER_LLM_ENV_FILE"] = Path.Combine(Path.GetTempPath(), $"missing-llm-env-{Guid.NewGuid():N}"),
+        };
+        var docker = new DockerCli(root, environment);
+        var output = await docker.RunAsync(
+            ["compose", "--profile", "llm", "-f", Path.Combine(root, "compose.yaml"), "config", "--format", "json"],
+            TimeSpan.FromMinutes(2),
+            TestContext.Current.CancellationToken);
+        using var document = JsonDocument.Parse(output);
+        var workerEnvironment = document.RootElement.GetProperty("services").GetProperty("llm-worker").GetProperty("environment");
+
+        Assert.Equal("/config/llm.toml", workerEnvironment.GetProperty("ANKETAPARSER_Llm__ConfigPath").GetString());
+        Assert.False(workerEnvironment.TryGetProperty("ANKETAPARSER_Llm__ActiveProfile", out _));
     }
 
     private static void AssertPassword(JsonElement service, string connectionStringSetting, string passwordSetting, string expected)

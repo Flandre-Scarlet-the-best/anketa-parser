@@ -12,6 +12,8 @@ this map deliberately omits full schemas, settings and command tables.
 | JSON names, omitted nulls and output streams | [DiagnosticsDocument](../../src/AnketaParser.Cli/DiagnosticsDocument.cs), [CliApplication](../../src/AnketaParser.Cli/CliApplication.cs) | `VersionInMachineModeIsSingleJsonDocument`, doctor cases in [CLI tests](../../tests/AnketaParser.Tests/CliApplicationTests.cs) | [Diagnostics](../../docs/diagnostics.md) |
 | Exit codes | [ExitCodes](../../src/AnketaParser.Core/ExitCodes.cs), CLI and Host owners | [CLI tests](../../tests/AnketaParser.Tests/CliApplicationTests.cs), [Host tests](../../tests/AnketaParser.Tests/HostApplicationTests.cs) | [Diagnostics](../../docs/diagnostics.md) |
 | Dvach scan, decisions, durable status and queue | [SourceCommands](../../src/AnketaParser.Cli/SourceCommands.cs), [DvachScanStore](../../src/AnketaParser.Infrastructure/Persistence/DvachScanStore.cs) | [Source tests](../../tests/AnketaParser.Tests/DvachTests.cs), [PostgreSQL fault cases](../../tests/AnketaParser.DockerTests/DvachPersistenceTests.cs) | [Dvach](../../docs/dvach.md) |
+| LLM profiles, decisions, leases and replay | [LlmCommands](../../src/AnketaParser.Cli/LlmCommands.cs), [SemanticContract](../../src/AnketaParser.Infrastructure/Llm/SemanticContract.cs), [queue operations](../../src/AnketaParser.Infrastructure/Persistence/ProductStore.Llm.cs) | [Contract tests](../../tests/AnketaParser.Tests/LlmContractTests.cs), [PostgreSQL tests](../../tests/AnketaParser.DockerTests/LlmPersistenceTests.cs) | [Text analysis](../../docs/llm.md) |
+| Standalone HTML report over one scan snapshot | [ReportCommands](../../src/AnketaParser.Cli/ReportCommands.cs), [ReportQueries](../../src/AnketaParser.Infrastructure/Reporting/ReportQueries.cs), [SnapshotBoundary](../../src/AnketaParser.Infrastructure/Reporting/SnapshotBoundary.cs), [ReportHtmlRenderer](../../src/AnketaParser.Cli/ReportHtmlRenderer.cs) | [Report tests](../../tests/AnketaParser.Tests/ReportTests.cs), [command tests](../../tests/AnketaParser.Tests/ReportCommandTests.cs) | [Report](../../docs/report.md) |
 | Source precedence and environment selection | [AnketaParserConfiguration](../../src/AnketaParser.Infrastructure/Configuration/AnketaParserConfiguration.cs) | [Configuration tests](../../tests/AnketaParser.Tests/ConfigurationTests.cs) | [Configuration](../../docs/configuration.md) |
 | Settings, ranges and effective defaults | [Settings and validators](../../src/AnketaParser.Infrastructure/Configuration/), [Host JSON](../../src/AnketaParser.Host/appsettings.json), [CLI JSON](../../src/AnketaParser.Cli/appsettings.json) | [Configuration tests](../../tests/AnketaParser.Tests/ConfigurationTests.cs) | [Configuration](../../docs/configuration.md) |
 | Probe timeout, cancellation, aggregation | [DiagnosticsRunner](../../src/AnketaParser.Core/Diagnostics/DiagnosticsRunner.cs) | [Runner tests](../../tests/AnketaParser.Tests/DiagnosticsRunnerTests.cs) | [Diagnostics](../../docs/diagnostics.md) |
@@ -28,6 +30,8 @@ not terminate Host on dependency loss. Docker health runs a separate CLI process
 not a query of Host memory. Missing files are allowed; malformed JSON and
 unexpected exceptions do not necessarily yield a diagnostic JSON body.
 Tests are evidence for their assertions, not complete interface coverage.
+`report html` writes no file when the scan snapshot cannot be proved from one
+completed scan; its diagnostic JSON then carries the actual counters instead.
 
 ## Product storage
 

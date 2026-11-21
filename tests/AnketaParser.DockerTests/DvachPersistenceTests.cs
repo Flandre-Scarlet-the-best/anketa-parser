@@ -285,6 +285,31 @@ public sealed class DvachPersistenceTests(PostgresTestCluster cluster) : IClassF
     }
 
     [Fact]
+    public async Task UnresolvedContactIsRecordedWithoutObservationOrLlmJob()
+    {
+        RequireDocker();
+        await using var database = await cluster.CreateDatabaseAsync(Ct);
+        await using var db = database.Open();
+        using var handler = new ThreadHandler((_, _) => Task.FromResult(Response(Payload("tg @ sampleюser42"))));
+        await using var provider = CreateService(database, handler, TimeProvider.System);
+        var scanner = provider.GetRequiredService<DvachIngestion>();
+        var scan = await scanner.ScanAsync(null, Ct);
+        Assert.Equal("complete", scan.Status);
+        Assert.Equal(1, scan.Metrics!.UnresolvedContacts);
+        var post = await scanner.PostAsync(false, Thread + 1, Ct);
+        Assert.Equal(DvachFilter.UnresolvedContact, post.Reason);
+        Assert.Equal(0, post.Contacts);
+        Assert.Null(post.JobState);
+        Assert.Empty(await db.Set<ContactObservation>().AsNoTracking().ToArrayAsync(Ct));
+        Assert.Empty(await db.Set<ProcessingJob>().AsNoTracking().ToArrayAsync(Ct));
+        var revision = await db.Set<PostRevision>().AsNoTracking().SingleAsync(x => x.Id == post.RevisionId, Ct);
+        using var metadata = JsonDocument.Parse(revision.RetrievalMetadata);
+        Assert.Single(metadata.RootElement.GetProperty("possibleContacts").EnumerateArray());
+        Assert.Equal("complete", (await scanner.ScanAsync(null, Ct)).Status);
+        Assert.Empty(await db.Set<ProcessingJob>().AsNoTracking().ToArrayAsync(Ct));
+    }
+
+    [Fact]
     public async Task ReobservingDecisionsRefreshesContactsWithoutResettingJobsOrModeration()
     {
         RequireDocker();

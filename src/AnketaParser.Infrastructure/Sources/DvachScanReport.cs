@@ -26,7 +26,10 @@ public sealed record DvachScanMetrics(
     int OpeningPosts = 0,
     int OtherReplies = 0,
     int NoOwnContact = 0,
-    int Excluded = 0);
+    int Excluded = 0)
+{
+    public int UnresolvedContacts { get; init; }
+}
 
 public sealed record DvachPostReport(
     string Status,
@@ -35,6 +38,7 @@ public sealed record DvachPostReport(
     int Revisions = 0,
     int Contacts = 0,
     bool Ambiguous = false,
-    string? JobState = null);
+    string? JobState = null,
+    Guid? RevisionId = null);
 
 public sealed record DvachQueueCount(string State, bool Current, int Count);

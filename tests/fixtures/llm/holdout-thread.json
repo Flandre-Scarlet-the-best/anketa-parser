@@ -1,0 +1,26 @@
+{
+  "board": { "id": "soc" },
+  "current_thread": 220000,
+  "is_board": false,
+  "is_index": false,
+  "is_closed": 0,
+  "max_num": 220014,
+  "posts_count": 15,
+  "threads": [{ "posts": [
+    { "board": "soc", "num": 220000, "number": 1, "parent": 0, "comment": "Синтетические примеры." },
+    { "board": "soc", "num": 220001, "number": 2, "parent": 220000, "comment": "Ищу компанию созвониться. Мне 29, я мужчина, Казань. Тг: @holdout_alpha42" },
+    { "board": "soc", "num": 220002, "number": 3, "parent": 220000, "comment": "Тян, 25, Омск. Пишите, поболтаем. @holdout_bravo42" },
+    { "board": "soc", "num": 220003, "number": 4, "parent": 220000, "comment": "Го вместе в кооп вечером. @holdout_charlie42" },
+    { "board": "soc", "num": 220004, "number": 5, "parent": 220000, "comment": "Хочу подругу для разговоров о кино. @holdout_delta42" },
+    { "board": "soc", "num": 220005, "number": 6, "parent": 220000, "comment": "Давай пообщаемся голосом. @holdout_echo42" },
+    { "board": "soc", "num": 220006, "number": 7, "parent": 220000, "comment": "М, 34<br>Общение<br>@holdout_foxtrot42" },
+    { "board": "soc", "num": 220007, "number": 8, "parent": 220000, "comment": "Продаю старый монитор. По цене пишите @holdout_golf42" },
+    { "board": "soc", "num": 220008, "number": 9, "parent": 220000, "comment": "Подскажите ссылку на конференцию, ответ сюда или @holdout_hotel42" },
+    { "board": "soc", "num": 220009, "number": 10, "parent": 220000, "comment": "Помогите проверить ошибки сборки, отчёт отправьте на @holdout_india42" },
+    { "board": "soc", "num": 220010, "number": 11, "parent": 220000, "comment": "@holdout_juliet42" },
+    { "board": "soc", "num": 220011, "number": 12, "parent": 220000, "comment": "Ну если так, тогда пишите @holdout_kilo42" },
+    { "board": "soc", "num": 220012, "number": 13, "parent": 220000, "comment": "Вот мой контакт: @holdout_lima42" },
+    { "board": "soc", "num": 220013, "number": 14, "parent": 220000, "comment": "Ищу компанию созвониться. Мне 29, я мужчина, Казань. Тг: @holdout_alpha42" },
+    { "board": "soc", "num": 220014, "number": 15, "parent": 220000, "comment": "Ищу компанию созвониться. Мне 29, я мужчина, Казань. Тг: @holdout_alpha42" }
+  ] }]
+}

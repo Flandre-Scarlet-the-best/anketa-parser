@@ -33,6 +33,12 @@
     <PackageVersion Include="AngleSharp" Version="1.10.5" />
   </ItemGroup>
 
+  <ItemGroup Label="Text inference">
+    <PackageVersion Include="Tomlyn" Version="2.11.1" />
+    <PackageVersion Include="LLamaSharp" Version="0.30.0" />
+    <PackageVersion Include="LLamaSharp.Backend.Cpu" Version="0.30.0" />
+  </ItemGroup>
+
   <ItemGroup Label="Testing">
     <!-- Официальное MTP-расширение сбора покрытия (line и branch, Cobertura).
          VSTest, coverlet.collector и coverlet.MTP не используются: расширение Microsoft

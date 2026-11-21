@@ -17,6 +17,8 @@ A shared database is the only state they normally share.
 | Inspect diagnostics, stored source decisions, queue counts, schema state | A read-only command against the verified configuration. Inspection does not need extra permission beyond running the process, but it does open real connections. |
 | Inspect backup metadata or list archives | A read-only backup command whose directory belongs to the intended installation, with the environment of that installation. |
 | Reproduce an ingestion or source failure | A disposable migrated database and a sanitized fixture. Fixture polling writes product rows and a durable journal, so it must stay inside that disposable database. |
+| Inspect LLM configuration, queue or revision decisions | Use the actual CLI and read `docs/llm.md` for output and configuration. A configured profile is not evidence of model availability. |
+| Run or reprocess LLM work | Verify the exact database and revision, active model/profile and external cost boundary. Use a disposable migrated database, a sanitized fixture and a local engine for acceptance unless a remote profile is explicitly selected for the test. |
 | Poll the real configured source | Explicit authorization covering that source and that target. Respect a stored retry deadline, and read the shared result afterwards instead of assuming the run changed it. |
 | Change schema, rotate or verify backups, restore, alter roles | Authorization that names the operation and the exact target, plus the preconditions of `docs/persistence.md`. |
 

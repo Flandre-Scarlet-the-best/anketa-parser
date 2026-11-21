@@ -7,8 +7,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="LLamaSharp" />
+    <PackageReference Include="LLamaSharp.Backend.Cpu" />
     <ProjectReference Include="..\AnketaParser.Core\AnketaParser.Core.csproj" />
     <ProjectReference Include="..\AnketaParser.Infrastructure\AnketaParser.Infrastructure.csproj" />
+    <InternalsVisibleTo Include="AnketaParser.Tests" />
   </ItemGroup>
 
   <ItemGroup>

@@ -68,9 +68,9 @@ or make their justified scope explicit.
 
 The repository implements a .NET Generic Host, a diagnostic CLI, a shared
 configuration and readiness pipeline, PostgreSQL product persistence and
-maintenance, and deterministic ingestion of one configured Dvach thread.
-Telegram clients and LLM integrations are outside the implemented surface.
-See [source ingestion](docs/dvach.md) and [storage](docs/persistence.md).
+maintenance, deterministic ingestion of one configured Dvach thread, and an isolated
+text analysis worker. Telegram clients are outside the implemented surface.
+See [source ingestion](docs/dvach.md), [text analysis](docs/llm.md) and [storage](docs/persistence.md).
 Do not introduce fictitious domain entities or future frameworks.
 
 | Owner | Responsibility |
@@ -78,7 +78,7 @@ Do not introduce fictitious domain entities or future frameworks.
 | [Core](src/AnketaParser.Core) | Package-free diagnostic contracts, `DiagnosticsRunner`, reports, status and exit codes. |
 | [Infrastructure](src/AnketaParser.Infrastructure) | Configuration, readiness, PostgreSQL adapters, and Dvach polling and filtering. |
 | [Host](src/AnketaParser.Host) | Executable composition, startup diagnostics, readiness monitor, scheduled ingestion and shutdown. |
-| [Cli](src/AnketaParser.Cli) | Executable composition, command parsing and diagnostic JSON presentation. |
+| [Cli](src/AnketaParser.Cli) | Executable composition, command parsing, diagnostic JSON and the isolated LLM worker process. |
 | [Unit tests](tests/AnketaParser.Tests) | Configuration, diagnostics, CLI, host and DI contracts without external services. |
 | [Docker smoke](tests/AnketaParser.DockerTests) | Opt-in isolated Docker/PostgreSQL integration. |
 
@@ -87,8 +87,7 @@ reference Core directly. Keep composition in executables; Infrastructure
 registers adapters through `AddAnketaParserInfrastructure`. Reuse
 `DiagnosticsRunner` for both entry points. Core must not depend on CLI, hosting,
 database or network implementation packages. Keep adapter logic separate from
-application contracts. The current topology is one application process and one
-database, not a distributed domain architecture.
+application contracts. The Host and optional Worker share one PostgreSQL database.
 
 ## Configuration, diagnostics and data
 
@@ -116,6 +115,13 @@ The PostgreSQL probe performs `SELECT 1` and checks migration compatibility; it
 does not apply migrations. Storage maintenance is an explicit CLI operation.
 An optional unconfigured dependency is skipped/degraded; an unavailable required
 dependency must not be reported healthy.
+
+The LLM worker opens the optional TOML through the shared configuration controls.
+Host readiness and ingestion are independent from the worker. Treat source text and
+model output as untrusted data, keep secrets and raw replies out of diagnostics, and
+commit the semantic decision and completion under the same lease and transaction.
+Only a valid profile decision may create a Candidate. Account confirmation, links and
+publication require their own explicit product workflows.
 
 [compose.yaml](compose.yaml) owns the persistent PostgreSQL volume and private
 container network. [compose.debug.yaml](compose.debug.yaml) explicitly enables

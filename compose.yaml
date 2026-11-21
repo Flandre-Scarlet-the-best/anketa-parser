@@ -69,6 +69,35 @@ services:
     networks:
       - backend
 
+  llm-worker:
+    profiles: [llm]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: llm-worker
+    image: anketa-parser-worker:local
+    init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - path: ${ANKETAPARSER_LLM_ENV_FILE:-./.env.llm}
+        required: false
+    environment:
+      ANKETAPARSER_Database__ConnectionString: "Host=postgres;Port=5432;Database=${POSTGRES_DB:-anketa_parser};Username=product_runtime;Timeout=5;Command Timeout=5"
+      ANKETAPARSER_Database__Password: ${PRODUCT_RUNTIME_PASSWORD:-local-runtime-password}
+      ANKETAPARSER_Llm__ConfigPath: /config/llm.toml
+    volumes:
+      - type: bind
+        source: ${ANKETAPARSER_LLM_TOML:-./llm.toml}
+        target: /config/llm.toml
+        read_only: true
+        bind:
+          create_host_path: false
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 30s
+    networks: [backend]
+
   maintenance:
     profiles: [maintenance]
     build:

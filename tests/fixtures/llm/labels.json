@@ -1,0 +1,288 @@
+[
+  {
+    "post": 210001,
+    "class": "uncertain",
+    "justification": "Уточнение контакта без текста исходного объявления.",
+    "fields": {}
+  },
+  {
+    "post": 210002,
+    "class": "profile",
+    "justification": "Приветствие и признание скуки рядом с контактом подразумевают приглашение.",
+    "fields": {
+      "age": [
+        null
+      ],
+      "gender": [
+        null
+      ],
+      "location": [
+        null
+      ]
+    }
+  },
+  {
+    "post": 210003,
+    "class": "not_profile",
+    "justification": "Ответ о чужих контактах.",
+    "fields": {}
+  },
+  {
+    "post": 210004,
+    "class": "profile",
+    "justification": "Прямое приглашение к общению, грубая лексика относится к самоописанию.",
+    "fields": {
+      "age": [
+        32
+      ],
+      "gender": [
+        "кун"
+      ],
+      "location": [
+        "ДС1"
+      ]
+    }
+  },
+  {
+    "post": 210005,
+    "class": "profile",
+    "justification": "Короткое приглашение созвониться.",
+    "fields": {
+      "age": [
+        null
+      ],
+      "gender": [
+        null
+      ],
+      "location": [
+        null
+      ]
+    }
+  },
+  {
+    "post": 210006,
+    "class": "profile",
+    "justification": "Ответ с самостоятельным поиском собеседника для звонка.",
+    "fields": {
+      "age": [
+        25
+      ],
+      "gender": [
+        null
+      ],
+      "location": [
+        null
+      ]
+    }
+  },
+  {
+    "post": 210007,
+    "class": "profile",
+    "justification": "Одно приглашение, без сведений об авторе.",
+    "fields": {
+      "age": [
+        null
+      ],
+      "gender": [
+        null
+      ],
+      "location": [
+        null
+      ]
+    }
+  },
+  {
+    "post": 210008,
+    "class": "profile",
+    "justification": "Странное и грубое, но явное обращение к ищущим общения.",
+    "fields": {
+      "age": [
+        null
+      ],
+      "gender": [
+        null
+      ],
+      "location": [
+        null
+      ]
+    }
+  },
+  {
+    "post": 210009,
+    "class": "uncertain",
+    "justification": "Пожелание без ясной цели или приглашения.",
+    "fields": {}
+  },
+  {
+    "post": 210010,
+    "class": "profile",
+    "justification": "Ответ с ясной целью познакомиться и данными автора.",
+    "fields": {
+      "age": [
+        27
+      ],
+      "gender": [
+        "Парень"
+      ],
+      "location": [
+        null
+      ]
+    }
+  },
+  {
+    "post": 210011,
+    "class": "profile",
+    "justification": "Обсуждение работы заявлено как тема общения. Нижняя граница возраста относится к собеседникам.",
+    "fields": {
+      "age": [
+        null
+      ],
+      "gender": [
+        null
+      ],
+      "location": [
+        null
+      ],
+      "preferences": [
+        "Кому за 30.",
+        "Кому за 30",
+        "Желательно голосовые.",
+        "Желательно голосовые"
+      ]
+    }
+  },
+  {
+    "post": 210012,
+    "class": "not_profile",
+    "justification": "Адресный вопрос к конкретному знакомому человеку.",
+    "fields": {}
+  },
+  {
+    "post": 210013,
+    "class": "profile",
+    "justification": "Поиск общения и обмена творчеством.",
+    "fields": {
+      "age": [
+        null
+      ],
+      "gender": [
+        null
+      ],
+      "location": [
+        null
+      ]
+    }
+  },
+  {
+    "post": 210014,
+    "class": "not_profile",
+    "justification": "Контакт нужен для проверки, а не для знакомства.",
+    "fields": {}
+  },
+  {
+    "post": 210015,
+    "class": "profile",
+    "justification": "Контакт для знакомства и разговора на конкретную тему.",
+    "fields": {
+      "age": [
+        28
+      ],
+      "gender": [
+        "Тян"
+      ],
+      "location": [
+        "дс"
+      ]
+    }
+  },
+  {
+    "post": 210016,
+    "class": "profile",
+    "justification": "Короткий поиск напарника в игре.",
+    "fields": {
+      "age": [
+        26
+      ],
+      "gender": [
+        "Тян"
+      ],
+      "location": [
+        null
+      ]
+    }
+  },
+  {
+    "post": 210017,
+    "class": "uncertain",
+    "justification": "Обновление прежнего текста без предмета поиска.",
+    "fields": {}
+  },
+  {
+    "post": 210018,
+    "class": "uncertain",
+    "justification": "Только контакт в ответе.",
+    "fields": {}
+  },
+  {
+    "post": 210019,
+    "class": "profile",
+    "justification": "Поиск напарника для игры. Указанный пол относится к автору, отсутствие требований — к собеседнику.",
+    "fields": {
+      "age": [
+        null
+      ],
+      "gender": [
+        "тян"
+      ],
+      "location": [
+        null
+      ]
+    }
+  },
+  {
+    "post": 210020,
+    "class": "profile",
+    "justification": "Сленг при явном поиске общения. Пол автора отделён от пожелания.",
+    "fields": {
+      "age": [
+        25
+      ],
+      "gender": [
+        "кун"
+      ],
+      "location": [
+        "Урал/Екб",
+        "Урал",
+        "Екб"
+      ]
+    }
+  },
+  {
+    "post": 210021,
+    "class": "profile",
+    "justification": "Разговорный поиск собеседника. 20+ — диапазон, точный возраст неизвестен.",
+    "fields": {
+      "age": [
+        null
+      ],
+      "gender": [
+        "мужской пол"
+      ],
+      "location": [
+        null
+      ]
+    }
+  },
+  {
+    "post": 210022,
+    "class": "not_profile",
+    "justification": "Просьба подсказать чаты без поиска конкретного собеседника.",
+    "fields": {}
+  },
+  {
+    "post": 210023,
+    "class": "uncertain",
+    "justification": "Цифры и город без понятного намерения.",
+    "fields": {}
+  }
+]

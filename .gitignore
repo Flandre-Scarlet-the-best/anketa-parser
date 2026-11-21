@@ -482,6 +482,8 @@ $RECYCLE.BIN/
 *.swp
 
 # anketa-parser local state
+llm.toml
+*.gguf
 .env
 .env.*
 !.env.example
@@ -498,3 +500,5 @@ coverage*.xml
 .venv/
 __pycache__/
 .ruff_cache/
+
+.agent-teams/

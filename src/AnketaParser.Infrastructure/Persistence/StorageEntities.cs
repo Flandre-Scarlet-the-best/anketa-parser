@@ -56,6 +56,11 @@ public sealed class Analysis
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid RevisionId { get; set; }
+    public Guid? ProcessingJobId { get; set; }
+    public string? PipelineVersion { get; set; }
+    public string? SemanticClass { get; set; }
+    public string? SemanticReason { get; set; }
+    public string? Model { get; set; }
     public string Processor { get; set; } = string.Empty;
     public string SchemaVersion { get; set; } = string.Empty;
     public int? Age { get; set; }
@@ -183,6 +188,7 @@ public sealed class ProcessingJob
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid RevisionId { get; set; }
     public string ProcessorVersion { get; set; } = string.Empty;
+    public string? LlmVersion { get; set; }
     public int MaxAttempts { get; set; }
     public int Attempts { get; set; }
     public string State { get; set; } = "pending";
@@ -201,4 +207,12 @@ public sealed class JobAttempt
     public DateTimeOffset StartedAt { get; set; }
     public DateTimeOffset? FinishedAt { get; set; }
     public string? FailureCategory { get; set; }
+    public string? Classification { get; set; }
+    public string? BudgetKey { get; set; }
+    public int ReservedRequests { get; set; }
+    public int MeasuredRequests { get; set; }
+    public long? InputTokens { get; set; }
+    public long? OutputTokens { get; set; }
+    public long? CachedInputTokens { get; set; }
+    public long? ElapsedMilliseconds { get; set; }
 }

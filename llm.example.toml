@@ -1,0 +1,44 @@
+# Используйте как шаблон только если llm.toml ещё не существует.
+# Не перезаписывайте локальную конфигурацию; пустое значение отключает Worker.
+active_profile = ""
+
+# Проверенный OpenAI-совместимый маршрут NordRouter; скопируйте в приватный llm.toml.
+# Для включения укажите active_profile = "nordrouter_high" и NORDROUTER_API_KEY.
+# Пример НЕ включает платный Worker автоматически.
+[profiles.nordrouter_high]
+engine = "openai"
+base_url = "https://nordrouter.com/v1"
+model = "deepseek/deepseek-v4.1-flash-1017:fjord"
+key_env = "NORDROUTER_API_KEY"
+response_mode = "json_schema"
+token_parameter = "max_tokens"
+reasoning_format = "object"
+reasoning_effort = "high"
+# Reasoning расходует общий лимит output; 768 токенов для high недостаточно.
+max_output_tokens = 4096
+max_input_chars = 12000
+timeout_seconds = 180
+concurrency = 2
+# Ограничивает число резервируемых HTTP-запросов в сутки UTC, а не сумму в рублях.
+# Обычно одному profile требуются два запроса (Classify + Extract).
+daily_request_limit = 400
+
+[profiles.llama-server]
+engine = "llama_server"
+base_url = "http://127.0.0.1:8080/v1"
+model = "local-model"
+response_mode = "llama_schema"
+timeout_seconds = 180
+max_output_tokens = 768
+
+[profiles.native]
+engine = "native"
+model = "local-model"
+# Относительный путь считается от llm.toml.
+gguf_path = "models/model.gguf"
+context_tokens = 8192
+max_output_tokens = 768
+timeout_seconds = 180
+# 0 — автоматический выбор потоков CPU движком.
+threads = 0
+gpu_layers = 0

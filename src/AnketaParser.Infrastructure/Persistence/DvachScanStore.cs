@@ -97,6 +97,7 @@ internal sealed class DvachScanStore(ProductDbContext db)
             OtherReplies = metrics.OtherReplies + (input.Reply == DvachFilter.OtherReply ? 1 : 0),
             NoOwnContact = metrics.NoOwnContact + (reason == DvachFilter.NoOwnContact ? 1 : 0),
             Excluded = metrics.Excluded + (reason == DvachFilter.Excluded ? 1 : 0),
+            UnresolvedContacts = metrics.UnresolvedContacts + (reason == DvachFilter.UnresolvedContact ? 1 : 0),
         });
         await SaveAsync(ct).ConfigureAwait(false);
         await tx.CommitAsync(ct).ConfigureAwait(false);
@@ -128,7 +129,7 @@ internal sealed class DvachScanStore(ProductDbContext db)
                                 rev.IngestionReply, db.Set<PostRevision>().Count(r => r.PostId == post.Id),
                                 rev.IngestionContacts, rev.IngestionAmbiguous,
                                 db.Set<ProcessingJob>().Where(j => j.RevisionId == rev.Id && j.ProcessorVersion == DvachFilter.ProcessorVersion)
-                                    .Select(j => j.State).FirstOrDefault())).SingleOrDefaultAsync(ct).ConfigureAwait(false);
+                                    .Select(j => j.State).FirstOrDefault(), rev.Id)).SingleOrDefaultAsync(ct).ConfigureAwait(false);
         return report ?? new DvachPostReport("post_not_found");
     }
 
