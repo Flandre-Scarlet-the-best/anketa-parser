@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Настройки официального MTP-расширения сбора покрытия (Microsoft.Testing.Extensions.CodeCoverage).
+  Исключаются только сгенерированные артефакты сборки и сгенерированные EF-файлы:
+  исходники в obj/ не входят в репозиторий, а *.Designer.cs и ProductDbContextModelSnapshot.cs
+  создаются средством миграций. Рукописные файлы, включая top-level точки входа Program.cs,
+  не исключаются: расширение по умолчанию не фильтрует [CompilerGenerated].
+-->
+<Configuration>
+  <CodeCoverage>
+    <Sources>
+      <Exclude>
+        <Source>.*[\\/]obj[\\/].*</Source>
+        <Source>.*[\\/]bin[\\/].*</Source>
+        <Source>.*\.Designer\.cs$</Source>
+        <Source>.*ProductDbContextModelSnapshot\.cs$</Source>
+      </Exclude>
+    </Sources>
+  </CodeCoverage>
+</Configuration>

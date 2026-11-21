@@ -1,0 +1,73 @@
+# Публикация покрытия в Codecov.
+#
+# Четыре отчёта загружаются отдельными шагами одного задания CI и относятся к
+# раздельным логическим группам: dotnet-unit и dotnet-docker (исходники .NET),
+# python-linux и python-windows (исполняемые скрипты .github и навыков).
+# Загрузки не являются одной транзакцией, поэтому Codecov ждёт все четыре отчёта
+# (after_n_builds) и не отправляет статусы при частичной публикации: отсутствие
+# статусов означает неполную публикацию, а не успех.
+#
+# Численные пороги не вводятся: первый прогон фиксирует фактический baseline, а
+# project/patch работают в информационном режиме. Блокировка PR по проценту —
+# отдельное решение после подтверждённого baseline в main.
+codecov:
+  # Статусы учитывают остальные проверки CI и не отчитываются поверх упавших.
+  require_ci_to_pass: true
+  notify:
+    after_n_builds: 4
+    wait_for_ci: true
+
+coverage:
+  precision: 2
+  round: down
+  status:
+    project:
+      default:
+        target: auto
+        informational: true
+    patch:
+      default:
+        target: auto
+        informational: true
+
+comment:
+  layout: "diff, flags, files"
+  behavior: default
+  require_changes: false
+  # Комментарий требует отчёт head и не требует базу: у первого коммита в main
+  # базового отчёта ещё нет, и это не дефект публикации.
+  require_head: true
+  require_base: false
+  show_carryforward_flags: false
+
+# Флаги описаны явно, потому что каждый отчёт загружается отдельной загрузкой и
+# должен быть виден в отчёте и статусах отдельно. carryforward выключен: все
+# четыре отчёта публикуются одним заданием, и отсутствующий флаг должен
+# обозначать неполную публикацию, а не подставлять исторические данные.
+#
+# Пути .NET-отчёта (Cobertura от Microsoft.Testing.Extensions.CodeCoverage)
+# содержат абсолютные пути без <sources>, поэтому перед публикацией их приводит
+# к виду ``src/...`` шаг `.github/scripts/normalize_cobertura_paths.py`: граница
+# отсечения вычисляется по сегменту ``src``, а не по временному каталогу runner,
+# поэтому отчёт воспроизводим на любой машине. Правило fixes не требуется.
+# Фактическое сопоставление файлов и project/patch в Codecov подтверждается
+# только после hosted-загрузки (t15) и до этого не заявляется.
+flags:
+  dotnet-unit:
+    paths:
+      - "src/"
+    carryforward: false
+  dotnet-docker:
+    paths:
+      - "src/"
+    carryforward: false
+  python-linux:
+    paths:
+      - ".github/scripts/"
+      - ".agents/skills/"
+    carryforward: false
+  python-windows:
+    paths:
+      - ".github/scripts/"
+      - ".agents/skills/"
+    carryforward: false

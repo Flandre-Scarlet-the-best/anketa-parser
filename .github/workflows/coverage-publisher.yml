@@ -1,0 +1,345 @@
+name: Публикация покрытия в Codecov
+
+# Доверенный издатель. workflow_run берёт workflow-файл из default branch,
+# поэтому тесты и валидаторы PR/merge_group-ревизии в задании с токеном не
+# исполняются: валидаторы запускаются из этого checkout, а исходники той же
+# ревизии подключаются отдельным checkout-ом как ДАННЫЕ (--repo-root source-tree).
+#
+# ОБЛАСТЬ СЕКРЕТА И ПРЕДУСЛОВИЯ (ручные действия, в коде их выполнить нельзя):
+# 1) Создать environment `codecov` (Settings -> Environments).
+# 2) Добавить в него environment secret `CODECOV_ENV_TOKEN` (именно это имя:
+#    отдельное от прежнего repository secret, чтобы отсутствие настройки давало
+#    явный отказ, а не незаметный fallback на repository secret).
+# 3) Включить для environment `codecov` protection rule Required reviewers.
+# 4) УДАЛИТЬ repository-level secret `CODECOV_TOKEN`: пока он существует, GitHub
+#    отдаёт его любому workflow без environment, и объявление `environment:` само
+#    по себе НЕ является доказательством защиты.
+# 5) Проверить руками: repository secrets не содержат CODECOV_TOKEN, а
+#    environment `codecov` содержит CODECOV_ENV_TOKEN; значения не читать.
+# 6) Этот файл должен попасть в default branch: до этого событие workflow_run
+#    не порождается и публикации нет вовсе.
+#
+# Пока шаги 1-4 не выполнены, задание завершится на шаге проверки наличия
+# environment secret: токен не подставляется и загрузки не происходит.
+#
+# Чеклист выше проверяется тестом по тексту файла, чтобы шаг удаления
+# repository secret нельзя было потерять при правках.
+on:
+  workflow_run: # zizmor: ignore[dangerous-triggers] Исполняется только код default branch; исходники ревизии-источника подключаются как данные, ничего из них не выполняется; секрет доступен лишь шагам загрузки и требует environment secret с required reviewers.
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  publish:
+    name: Публикация покрытия
+    # Публикуются только доверенные источники: успешный push в main и успешный PR
+    # из этого же репозитория. fork PR не имеет секретов, а merge_group может
+    # содержать изменения внешнего PR, поэтому там привилегированная загрузка не
+    # выполняется (см. задание not-published).
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'push' ||
+       (github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    environment:
+      name: codecov
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      # Доверенный код: скрипты и конфигурация берутся из default branch.
+      - name: Получить доверенные валидаторы из default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Исходники той же ревизии, что измерил CI: только данные для --repo-root.
+      # Ничего из этого каталога не исполняется: команды ниже запускают скрипты
+      # из текущего checkout по относительному пути .github/scripts.
+      - name: Получить исходники измеренной ревизии как данные
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          path: source-tree
+          persist-credentials: false
+          lfs: false
+          submodules: false
+
+      # Source-tree приходит из ревизии PR: это данные, но перед чтением
+      # проверяется, что в нём нет механизмов исполнения и выхода за пределы
+      # каталога (хуки, сабмодули, LFS-указатели, симлинки наружу).
+      - name: Проверить целостность source-tree
+        env:
+          SOURCE_TREE: source-tree
+        run: |
+          set -uo pipefail
+          fail() { echo "::error::source-tree отклонён: $1"; exit 1; }
+          [[ -d "${SOURCE_TREE}" ]] || fail "каталог отсутствует"
+          hooks=$(find "${SOURCE_TREE}/.git/hooks" -maxdepth 1 -type f ! -name '*.sample' 2>/dev/null | wc -l)
+          (( hooks == 0 )) || fail "найдены git-хуки: ${hooks}"
+          [[ ! -e "${SOURCE_TREE}/.gitmodules" ]] || fail "сабмодули не допускаются"
+          lfs=$(grep -rl --binary-files=without-match 'version https://git-lfs.github.com/spec' "${SOURCE_TREE}" --exclude-dir=.git 2>/dev/null | wc -l)
+          (( lfs == 0 )) || fail "найдены LFS-указатели: ${lfs}"
+          root=$(cd "${SOURCE_TREE}" && pwd -P) || fail "не удалось определить корень"
+          outside=0
+          while IFS= read -r link; do
+            target=$(readlink -f "${link}" 2>/dev/null) || { outside=$((outside + 1)); continue; }
+            case "${target}" in
+              "${root}"|"${root}"/*) ;;
+              *) outside=$((outside + 1)) ;;
+            esac
+          done < <(find "${SOURCE_TREE}" -type l 2>/dev/null)
+          (( outside == 0 )) || fail "символические ссылки вне source-tree: ${outside}"
+          echo "source-tree проверен: хуков, сабмодулей, LFS-указателей и внешних симлинков нет"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.15.2'
+
+      # Версия обязана совпадать с пином в requirements.txt: валидатор сверяет
+      # исполняемые строки парсером того же coverage, что породил отчёт, и любое
+      # расхождение версий диагностируется как ошибка. Совпадение литералов и
+      # отсутствие `pip install -r` в этом job проверяются тестом workflow.
+      - name: Установить закреплённый coverage
+        run: python -m pip install --disable-pip-version-check coverage==7.17.4
+
+      # Отдельное имя environment secret: если настройка не выполнена, токен
+      # пуст и задание падает здесь, а не подставляет repository secret молча.
+      - name: Проверить наличие environment secret
+        env:
+          ENV_TOKEN: ${{ secrets.CODECOV_ENV_TOKEN }}
+        run: |
+          set -uo pipefail
+          if [[ -z "${ENV_TOKEN}" ]]; then
+            echo "::error::Environment secret CODECOV_ENV_TOKEN не найден. Требуются ручные действия: создать environment codecov, добавить в него environment secret CODECOV_ENV_TOKEN, включить Required reviewers и удалить repository-level CODECOV_TOKEN. Публикация не выполняется."
+            exit 1
+          fi
+          echo "Environment secret найден; значение не печатается"
+
+      # Идентичность публикации проверяется явно: событие, ровно один PR,
+      # совпадение его head SHA с head_sha запуска, совпадение репозитория.
+      # Для push номер PR не подставляется. При неоднозначности — отказ.
+      - name: Проверить идентичность ревизии и PR
+        id: identity
+        env:
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          REPOSITORY: ${{ github.repository }}
+          PR_COUNT: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          PR_SHA: ${{ github.event.workflow_run.pull_requests[0].head.sha }}
+        run: |
+          set -uo pipefail
+          fail() { echo "::error::Публикация отклонена: $1"; exit 1; }
+          [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] || fail "некорректный head_sha '${HEAD_SHA}'"
+          [[ "${HEAD_REPO}" == "${REPOSITORY}" ]] || fail "head_repository '${HEAD_REPO}' не совпадает с '${REPOSITORY}'"
+          pr=""
+          case "${RUN_EVENT}" in
+            push)
+              [[ -z "${PR_NUMBER}" ]] || fail "для push номер PR не подставляется, получено '${PR_NUMBER}'"
+              ;;
+            pull_request)
+              count=$(python -c 'import json,sys;print(len(json.loads(sys.argv[1])))' "${PR_COUNT}") || fail "не удалось разобрать список PR"
+              (( count == 1 )) || fail "ожидался ровно один PR, получено ${count}: идентичность неоднозначна"
+              [[ "${PR_SHA}" == "${HEAD_SHA}" ]] || fail "head.sha PR '${PR_SHA}' не совпадает с head_sha '${HEAD_SHA}'"
+              [[ "${PR_NUMBER}" =~ ^[0-9]+$ ]] || fail "некорректный номер PR '${PR_NUMBER}'"
+              pr="${PR_NUMBER}"
+              ;;
+            *)
+              fail "событие '${RUN_EVENT}' не публикуется"
+              ;;
+          esac
+          {
+            echo "pr=${pr}"
+            echo "commit=${HEAD_SHA}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Публикация для события ${RUN_EVENT}: commit ${HEAD_SHA}, PR '${pr:-нет}'"
+
+      - name: Получить отчёт покрытия unit-тестов .NET
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dotnet-coverage-unit
+          path: coverage/dotnet-unit
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Получить отчёт покрытия Docker-тестов .NET
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dotnet-coverage-docker
+          path: coverage/dotnet-docker
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Получить отчёт покрытия Python (Linux)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: python-coverage-linux
+          path: coverage/python-linux
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Получить отчёт покрытия Python (Windows)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: python-coverage-windows
+          path: coverage/python-windows
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      # Артефакты и исходники — недоверенные данные: их разбирают валидаторы из
+      # default branch, ничего из source-tree не исполняется, а пути к нему
+      # передаются только как --repo-root.
+      - name: Проверить отчёт unit-покрытия .NET
+        run: python .github/scripts/check_dotnet_coverage.py coverage/dotnet-unit unit --repo-root source-tree
+
+      - name: Проверить отчёт покрытия Docker-тестов .NET
+        run: python .github/scripts/check_dotnet_coverage.py coverage/dotnet-docker docker --repo-root source-tree
+
+      - name: Проверить отчёт покрытия Python (Linux)
+        run: python .github/scripts/check_python_coverage_report.py --report coverage/python-linux/lcov.info --platform linux --repo-root source-tree
+
+      - name: Проверить отчёт покрытия Python (Windows)
+        run: python .github/scripts/check_python_coverage_report.py --report coverage/python-windows/lcov.info --platform windows --repo-root source-tree
+
+      - name: Опубликовать покрытие unit-тестов .NET
+        id: upload-dotnet-unit
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: coverage/dotnet-unit/dotnet.cobertura.xml
+          flags: dotnet-unit
+          name: dotnet-unit
+          disable_search: true
+          handle_no_reports_found: false
+          fail_ci_if_error: true
+          version: v11.3.2
+          cleanup: true
+          override_commit: ${{ steps.identity.outputs.commit }}
+          override_branch: ${{ github.event.workflow_run.head_branch }}
+          override_pr: ${{ steps.identity.outputs.pr }}
+          token: ${{ secrets.CODECOV_ENV_TOKEN }}
+
+      - name: Опубликовать покрытие Docker-тестов .NET
+        id: upload-dotnet-docker
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: coverage/dotnet-docker/dotnet.cobertura.xml
+          flags: dotnet-docker
+          name: dotnet-docker
+          disable_search: true
+          handle_no_reports_found: false
+          fail_ci_if_error: true
+          version: v11.3.2
+          cleanup: true
+          override_commit: ${{ steps.identity.outputs.commit }}
+          override_branch: ${{ github.event.workflow_run.head_branch }}
+          override_pr: ${{ steps.identity.outputs.pr }}
+          token: ${{ secrets.CODECOV_ENV_TOKEN }}
+
+      - name: Опубликовать покрытие Python (Linux)
+        id: upload-python-linux
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: coverage/python-linux/lcov.info
+          flags: python-linux
+          name: python-linux
+          disable_search: true
+          handle_no_reports_found: false
+          fail_ci_if_error: true
+          version: v11.3.2
+          cleanup: true
+          override_commit: ${{ steps.identity.outputs.commit }}
+          override_branch: ${{ github.event.workflow_run.head_branch }}
+          override_pr: ${{ steps.identity.outputs.pr }}
+          token: ${{ secrets.CODECOV_ENV_TOKEN }}
+
+      - name: Опубликовать покрытие Python (Windows)
+        id: upload-python-windows
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: coverage/python-windows/lcov.info
+          flags: python-windows
+          name: python-windows
+          disable_search: true
+          handle_no_reports_found: false
+          fail_ci_if_error: true
+          version: v11.3.2
+          cleanup: true
+          override_commit: ${{ steps.identity.outputs.commit }}
+          override_branch: ${{ github.event.workflow_run.head_branch }}
+          override_pr: ${{ steps.identity.outputs.pr }}
+          token: ${{ secrets.CODECOV_ENV_TOKEN }}
+
+      # Четыре загрузки не являются одной транзакцией. Сводка строится по
+      # фактическим outcome шагов: предупреждение о частичной публикации истинно
+      # только при хотя бы одной успешной загрузке, иначе это ошибка до
+      # публикации (измерение, валидация или сеть) и ничего не опубликовано.
+      - name: Сводка публикации покрытия
+        if: always()
+        env:
+          OUTCOME_UNIT: ${{ steps.upload-dotnet-unit.outcome }}
+          OUTCOME_DOCKER: ${{ steps.upload-dotnet-docker.outcome }}
+          OUTCOME_LINUX: ${{ steps.upload-python-linux.outcome }}
+          OUTCOME_WINDOWS: ${{ steps.upload-python-windows.outcome }}
+        run: |
+          set -uo pipefail
+          succeeded=""
+          failed=""
+          for pair in "dotnet-unit:${OUTCOME_UNIT}" "dotnet-docker:${OUTCOME_DOCKER}" "python-linux:${OUTCOME_LINUX}" "python-windows:${OUTCOME_WINDOWS}"; do
+            flag="${pair%%:*}"
+            outcome="${pair#*:}"
+            if [[ "${outcome}" == "success" ]]; then
+              succeeded="${succeeded} ${flag}"
+            else
+              failed="${failed} ${flag}(${outcome:-unknown})"
+            fi
+          done
+          successes=$(wc -w <<< "${succeeded}")
+          echo "Успешных загрузок: ${successes} из 4"
+          echo "Успешно:${succeeded:- нет}"
+          echo "Неуспешно:${failed:- нет}"
+          if (( successes == 4 )); then
+            echo "Публикация завершена: все 4 отчёта приняты Codecov."
+          elif (( successes > 0 )); then
+            echo "::warning::Частичная публикация: принято ${successes} из 4 отчётов; Codecov не отправит статусы, пока не получит все 4 (after_n_builds), поэтому отсутствие статусов не означает полный успех."
+          else
+            echo "::error::Ни один отчёт не загружен: ошибка возникла до первой успешной публикации (измерение, валидация или сеть). Покрытие не опубликовано."
+          fi
+
+      - name: Отметить отменённое выполнение
+        if: cancelled()
+        run: |
+          echo "::warning::Выполнение отменено или прервано по таймауту: состояние публикации неизвестно, часть отчётов могла не загрузиться. Повторите запуск, чтобы получить полный набор из 4 отчётов."
+
+  not-published:
+    name: Публикация покрытия не выполнялась
+    # Диагностический статус для всех остальных случаев: fork PR, merge_group,
+    # неуспешный или отменённый запуск CI. Он не выдаёт пропуск за успех.
+    if: >-
+      !(github.event.workflow_run.conclusion == 'success' &&
+        (github.event.workflow_run.event == 'push' ||
+         (github.event.workflow_run.event == 'pull_request' &&
+          github.event.workflow_run.head_repository.full_name == github.repository)))
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Объяснить, почему покрытие не публиковалось
+        env:
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          echo "Событие запуска: ${RUN_EVENT}"
+          echo "Итог запуска: ${RUN_CONCLUSION}"
+          echo "Репозиторий head: ${HEAD_REPO}"
+          echo "Основной репозиторий: ${REPOSITORY}"
+          echo "::notice::Покрытие не публиковалось. Причины: публикуются только успешный push в main и успешный PR из этого же репозитория; fork PR не имеет доступа к секретам, merge_group может содержать изменения внешнего PR, а неуспешный запуск не даёт доверенных отчётов."

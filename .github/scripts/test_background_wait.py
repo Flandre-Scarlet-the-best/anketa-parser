@@ -82,11 +82,17 @@ class QueueProcess:
         return self.returncode
 
 
+# Ограниченное ожидание завершения дочерних процессов перед удалением каталога.
+CLEANUP_TIMEOUT_SECONDS = 30.0
+CLEANUP_RETRY_SECONDS = 0.05
+# Windows отвечает этими кодами, пока каталог занят живым процессом или его файл открыт.
+SHARING_ERROR_CODES = frozenset({5, 32, 145})
+
+
 @unittest.skipUnless(os.name == "nt", "Для проверки требуется Windows")
 class BackgroundWaitTests(unittest.TestCase):
     def __init__(self, methodName: str = "runTest") -> None:
         super().__init__(methodName)
-        self.temp: tempfile.TemporaryDirectory[str] | None = None
         self.root: Path = Path()
         self.bin: Path = Path()
         self.queue: Path = Path()
@@ -94,9 +100,8 @@ class BackgroundWaitTests(unittest.TestCase):
 
     @override
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(tempfile.mkdtemp(prefix="anketa-background-wait-"))
+        self.addCleanup(self.remove_root)
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.queue = self.bin / "codex.cmd"
@@ -105,6 +110,27 @@ class BackgroundWaitTests(unittest.TestCase):
         self.env["PATH"] = str(self.bin) + os.pathsep + self.env["PATH"]
         self.env["CODEX_HOME"] = str(self.root / "codex")
         self.env["CODEX_THREAD_ID"] = str(uuid.uuid4())
+
+    def remove_root(self) -> None:
+        """Удалить каталог задания, повторяя только sharing-ошибки Windows.
+
+        Пока дочерний процесс завершает работу (в том числе запись данных
+        покрытия), каталог занят как его рабочий каталог. Повторение ограничено
+        по времени и не подавляет другие исключения: по истечении срока ошибка
+        пробрасывается, поэтому незавершённый процесс не остаётся незамеченным.
+        """
+        deadline = time.monotonic() + CLEANUP_TIMEOUT_SECONDS
+        while True:
+            try:
+                shutil.rmtree(self.root)
+                return
+            except FileNotFoundError:
+                return
+            except OSError as error:
+                sharing = getattr(error, "winerror", None) in SHARING_ERROR_CODES
+                if not sharing or time.monotonic() >= deadline:
+                    raise
+            time.sleep(CLEANUP_RETRY_SECONDS)
 
     def queue_script(self, body: str) -> str:
         """Сценарий очереди: отвечает на справку о --resume и выполняет тест."""

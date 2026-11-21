@@ -59,6 +59,7 @@ jobs:
   contracts:
     name: Контракты агента
     runs-on: ubuntu-26.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -70,8 +71,25 @@ jobs:
           cache-dependency-path: .github/scripts/requirements.txt
       - name: Установить зависимости проверки контрактов
         run: python -m pip install -r .github/scripts/requirements.txt
-      - name: Проверить валидаторы и их регрессионные сценарии
-        run: python -m unittest discover -s .github/scripts -p 'test_*.py'
+      # Покрытие измеряется только прогоном unittest; штатные вызовы валидаторов
+      # ниже не оборачиваются в coverage, чтобы метрика не считала работу CI.
+      - name: Прогнать тесты под инструментированием покрытия
+        # Данные и отчёты покрытия живут вне дерева репозитория: они не попадают
+        # ни в артефакты исходников, ни в git-мусор локального прогона.
+        env:
+          COVERAGE_DIR: ${{ runner.temp }}/coverage-python
+        run: |
+          python -m coverage erase
+          python -m coverage run -m unittest discover -s .github/scripts -p 'test_*.py'
+          python -m coverage combine
+          python -m coverage report --show-missing
+      - name: Нормализовать и проверить LCOV-отчёт
+        env:
+          COVERAGE_DIR: ${{ runner.temp }}/coverage-python
+        run: |
+          python -m coverage lcov -o "$COVERAGE_DIR/lcov.info"
+          python .github/scripts/normalize_lcov_paths.py --report "$COVERAGE_DIR/lcov.info" --repo-root .
+          python .github/scripts/check_python_coverage_report.py --report "$COVERAGE_DIR/lcov.info" --platform linux --repo-root . --data-dir "$COVERAGE_DIR"
       - name: Проверить линтинг и форматирование Python
         run: |
           ruff check .github/scripts .agents/skills
@@ -86,10 +104,18 @@ jobs:
         run: python .github/scripts/check_skill_contracts.py
       - name: Проверить ссылки во всём отслеживаемом Markdown
         run: python .github/scripts/check_markdown_links.py
+      - name: Сохранить отчёт покрытия Python (Linux)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: python-coverage-linux
+          path: ${{ runner.temp }}/coverage-python/lcov.info
+          if-no-files-found: error
+          retention-days: 7
 
   background-wait-windows:
     name: Фоновое ожидание в Windows
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -97,11 +123,40 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.15.2'
-      - name: Проверить выполнение и управление заданиями
-        run: python -m unittest discover -s .github/scripts -p test_background_wait.py -v
+      # Интерпретатор Windows-задания не использует POSIX-утилиты: версия
+      # инструмента берётся из единственного пина в requirements.txt, а
+      # совпадение литерала проверяется поведенческим тестом workflow.
+      - name: Установить закреплённый coverage
+        run: python -m pip install --disable-pip-version-check coverage==7.17.4
+      - name: Прогнать тесты под инструментированием покрытия
+        # Данные и отчёты покрытия живут вне дерева репозитория: они не попадают
+        # ни в артефакты исходников, ни в git-мусор локального прогона.
+        env:
+          COVERAGE_DIR: ${{ runner.temp }}/coverage-python
+        run: |
+          python -m coverage erase
+          python -m coverage run -m unittest discover -s .github/scripts -p test_background_wait.py -v
+          python -m coverage combine
+          python -m coverage report --show-missing
+      - name: Нормализовать и проверить LCOV-отчёт
+        env:
+          COVERAGE_DIR: ${{ runner.temp }}/coverage-python
+        run: |
+          python -m coverage lcov -o "$env:COVERAGE_DIR/lcov.info"
+          python .github/scripts/normalize_lcov_paths.py --report "$env:COVERAGE_DIR/lcov.info" --repo-root .
+          python .github/scripts/check_python_coverage_report.py --report "$env:COVERAGE_DIR/lcov.info" --platform windows --repo-root . --data-dir "$env:COVERAGE_DIR"
+      - name: Сохранить отчёт покрытия Python (Windows)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: python-coverage-windows
+          path: ${{ runner.temp }}/coverage-python/lcov.info
+          if-no-files-found: error
+          retention-days: 7
 
   build:
+    name: Сборка и покрытие .NET
     runs-on: ubuntu-26.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -126,13 +181,52 @@ jobs:
       - name: Собрать решение
         run: dotnet build --no-restore -c Release
 
-      - name: Запустить тесты
-        run: dotnet test --no-build -c Release
+      # Покрытие unit-прогона: официальное MTP-расширение Microsoft, формат
+      # Cobertura и явные настройки исключений; иначе в отчёт попадают
+      # сгенерированные файлы, и валидатор отклоняет отчёт.
+      - name: Измерить покрытие unit-тестов
+        run: |
+          dotnet test --project tests/AnketaParser.Tests/AnketaParser.Tests.csproj -c Release --no-build \
+            --results-directory TestResults/dotnet-unit -- \
+            --coverage --coverage-output-format cobertura --coverage-output dotnet.cobertura.xml \
+            --coverage-settings .github/coverage/dotnet/dotnet-coverage.settings.xml
+
+      - name: Нормализовать пути отчёта unit-тестов
+        run: python .github/scripts/normalize_cobertura_paths.py --report TestResults/dotnet-unit/dotnet.cobertura.xml --repo-root .
+
+      - name: Проверить отчёт покрытия unit-тестов
+        run: python .github/scripts/check_dotnet_coverage.py TestResults/dotnet-unit unit
+
+      - name: Сохранить отчёт покрытия unit-тестов
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dotnet-coverage-unit
+          path: TestResults/dotnet-unit/dotnet.cobertura.xml
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Проверить контейнерное описание
         run: docker compose config --quiet
 
-      - name: Проверить изолированную PostgreSQL, права и восстановление
+      - name: Измерить покрытие изолированной PostgreSQL и восстановления
         env:
           ANKETAPARSER_DOCKER_TESTS: '1'
-        run: dotnet test --project tests/AnketaParser.DockerTests --no-build -c Release
+        run: |
+          dotnet test --project tests/AnketaParser.DockerTests/AnketaParser.DockerTests.csproj -c Release --no-build \
+            --results-directory TestResults/dotnet-docker -- \
+            --coverage --coverage-output-format cobertura --coverage-output dotnet.cobertura.xml \
+            --coverage-settings .github/coverage/dotnet/dotnet-coverage.settings.xml
+
+      - name: Нормализовать пути отчёта Docker-тестов
+        run: python .github/scripts/normalize_cobertura_paths.py --report TestResults/dotnet-docker/dotnet.cobertura.xml --repo-root .
+
+      - name: Проверить отчёт покрытия Docker-тестов
+        run: python .github/scripts/check_dotnet_coverage.py TestResults/dotnet-docker docker
+
+      - name: Сохранить отчёт покрытия Docker-тестов
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dotnet-coverage-docker
+          path: TestResults/dotnet-docker/dotnet.cobertura.xml
+          if-no-files-found: error
+          retention-days: 7
