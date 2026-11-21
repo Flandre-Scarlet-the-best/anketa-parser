@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -18,6 +19,9 @@ from pathlib import Path
 from typing import cast
 
 import coverage
+from coverage.config import read_coverage_config
+from coverage.exceptions import ConfigError
+from coverage.misc import join_regex
 from coverage.parser import PythonParser
 
 SCOPE_PREFIXES = (".github/scripts/", ".agents/skills/")
@@ -29,16 +33,20 @@ SUBPROCESS_EVIDENCE = {
 MAX_REPORT_BYTES = 64 * 1024 * 1024
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
 REQUIREMENTS = Path(__file__).resolve().parent / "requirements.txt"
+DECIMAL = re.compile(r"[0-9]+")
 
 
 @dataclass
 class Block:
-    """Один блок LCOV: попадания по строкам, счётчики и число ветвей."""
+    """Один блок LCOV: записи строк и ветвей со сводными счётчиками."""
 
     lines: dict[int, int] = field(default_factory=dict)
     statements: int | None = None
     hits: int | None = None
     branches: int = 0
+    branches_hit: int = 0
+    branches_found: int | None = None
+    branches_covered: int | None = None
 
 
 def in_scope(path: str) -> bool:
@@ -64,7 +72,7 @@ def check_path(path: str, number: int) -> str | None:
 
 
 def parse_lcov(text: str) -> tuple[dict[str, Block], list[str]]:
-    """Разобрать LCOV построчно; payload ``BRDA`` не интерпретируется."""
+    """Разобрать записи и сводные счётчики строк и ветвей."""
     errors: list[str] = []
     blocks: dict[str, Block] = {}
     current: Block | None = None
@@ -101,22 +109,41 @@ def parse_lcov(text: str) -> tuple[dict[str, Block], list[str]]:
             continue
         if kind == "DA":
             fields = payload.split(",")
-            if len(fields) < 2 or not fields[0].isdigit() or not fields[1].isdigit():
+            if len(fields) < 2 or not all(
+                DECIMAL.fullmatch(field) for field in fields[:2]
+            ):
                 errors.append(f"Строка {number}: некорректная запись DA ({payload})")
                 continue
             current.lines[int(fields[0])] = int(fields[1])
-        elif kind in ("LF", "LH"):
-            if not payload.isdigit():
+        elif kind in ("LF", "LH", "BRF", "BRH"):
+            if not DECIMAL.fullmatch(payload):
                 errors.append(
                     f"Строка {number}: некорректное значение {kind} ({payload})"
                 )
                 continue
             if kind == "LF":
                 current.statements = int(payload)
-            else:
+            elif kind == "LH":
                 current.hits = int(payload)
+            elif kind == "BRF":
+                current.branches_found = int(payload)
+            else:
+                current.branches_covered = int(payload)
         elif kind == "BRDA":
+            fields = payload.split(",", 2)
+            description, separator, taken = fields[-1].rpartition(",")
+            if (
+                len(fields) != 3
+                or not all(DECIMAL.fullmatch(field) for field in fields[:2])
+                or int(fields[0]) == 0
+                or not separator
+                or not description.strip()
+                or (taken != "-" and not DECIMAL.fullmatch(taken))
+            ):
+                errors.append(f"Строка {number}: некорректная запись BRDA ({payload})")
+                continue
             current.branches += 1
+            current.branches_hit += taken != "-" and int(taken) > 0
     if current is not None:
         errors.append(f"Блок {current_path} не завершён end_of_record (отчёт обрезан)")
     return blocks, errors
@@ -201,16 +228,30 @@ def check_evidence(root: Path, path: str, blocks: dict[str, Block]) -> list[str]
     return []
 
 
-def statement_lines(path: str, text: str) -> set[int]:
+def statement_lines(path: str, text: str, exclude: str = "") -> set[int]:
     """Вернуть исполняемые строки исходника достоверным парсером coverage.
 
     Отчёт формирует сам coverage, поэтому набор ``DA`` обязан совпадать с его
     множеством операторов. Грубый подсчёт по ``ast`` не используется: он даёт
     ложные отказы на корректных отчётах.
     """
-    parser = PythonParser(text=text, filename=path)
+    parser = PythonParser(text=text, filename=path, exclude=exclude)
     parser.parse_source()
     return set(parser.statements)
+
+
+def report_exclusions(root: Path) -> str:
+    """Прочитать настройки отчёта измеренной ревизии без загрузки плагинов."""
+    config_file = root / ".coveragerc"
+    config = read_coverage_config(
+        str(config_file) if config_file.exists() else False,
+        warn=lambda message: print(f"::warning::{message}", file=sys.stderr),
+    )
+    if config.plugins:
+        raise ValueError(
+            "плагины coverage в конфигурации измеренной ревизии не поддерживаются"
+        )
+    return join_regex(config.exclude_list)
 
 
 def coverage_pin() -> str | None:
@@ -246,7 +287,12 @@ def coverage_version_errors() -> list[str]:
 
 
 def check_source_lines(
-    root: Path, path: str, block: Block, max_bytes: int = MAX_SOURCE_BYTES
+    root: Path,
+    path: str,
+    block: Block,
+    max_bytes: int = MAX_SOURCE_BYTES,
+    *,
+    exclude: str = "",
 ) -> list[str]:
     """Сверить DA с исполняемыми строками исходника и отвергнуть подделку."""
     source = root / path
@@ -263,10 +309,10 @@ def check_source_lines(
     if size > max_bytes:
         return [f"Исходник {path} превышает предел {max_bytes} байт ({size})"]
     try:
-        statements = statement_lines(path, source.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, SyntaxError, ValueError) as error:
+        statements = statement_lines(path, source.read_text(encoding="utf-8"), exclude)
+    except (OSError, UnicodeDecodeError, SyntaxError, ValueError, re.error) as error:
         return [f"Не удалось определить исполняемые строки {path}: {error}"]
-    if not statements:
+    if not statements and block.lines:
         return [f"В {path} нет исполняемых строк, но отчёт содержит записи DA"]
     reported = set(block.lines)
     errors: list[str] = []
@@ -286,17 +332,33 @@ def check_source_lines(
 
 
 def check_block(path: str, block: Block) -> list[str]:
-    """Сверить счётчики блока с фактическими записями DA."""
-    if block.statements is None or block.hits is None:
-        return [f"{path}: нет записей LF/LH"]
+    """Сверить счётчики блока с фактическими записями DA и BRDA."""
     errors: list[str] = []
     covered = covered_lines(block)
-    if block.statements != len(block.lines):
-        errors.append(
-            f"{path}: LF={block.statements} не совпадает с числом DA={len(block.lines)}"
-        )
-    if block.hits != covered:
-        errors.append(f"{path}: LH={block.hits} не совпадает с покрытыми DA={covered}")
+    for label, reported, actual, required, description in (
+        ("LF", block.statements, len(block.lines), bool(block.lines), "числом DA"),
+        ("LH", block.hits, covered, bool(block.lines), "покрытыми DA"),
+        (
+            "BRF",
+            block.branches_found,
+            block.branches,
+            block.branches > 0,
+            "числом BRDA",
+        ),
+        (
+            "BRH",
+            block.branches_covered,
+            block.branches_hit,
+            block.branches > 0,
+            "покрытыми BRDA",
+        ),
+    ):
+        if reported is None and required:
+            errors.append(f"{path}: нет записи {label}")
+        elif reported is not None and reported != actual:
+            errors.append(
+                f"{path}: {label}={reported} не совпадает с {description}={actual}"
+            )
     return errors
 
 
@@ -350,9 +412,14 @@ def validate_report(
         errors.append("В отчёте отсутствуют ожидаемые файлы: " + ", ".join(missing))
     if extra:
         errors.append("В отчёте есть файлы вне ожидаемого набора: " + ", ".join(extra))
+    try:
+        exclude = report_exclusions(root)
+    except (OSError, ValueError, ConfigError) as error:
+        errors.append(f"Не удалось прочитать исключения coverage: {error}")
+        return errors
     for path in sorted(present & expected):
         errors.extend(check_block(path, blocks[path]))
-        errors.extend(check_source_lines(root, path, blocks[path]))
+        errors.extend(check_source_lines(root, path, blocks[path], exclude=exclude))
     if not any(block.branches for block in blocks.values()):
         errors.append("В отчёте нет записей BRDA: ветви не измерялись")
     if sum(covered_lines(block) for block in blocks.values()) == 0:

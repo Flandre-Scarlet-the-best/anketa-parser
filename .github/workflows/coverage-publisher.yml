@@ -84,7 +84,21 @@ jobs:
           hooks=$(find "${SOURCE_TREE}/.git/hooks" -maxdepth 1 -type f ! -name '*.sample' 2>/dev/null | wc -l)
           (( hooks == 0 )) || fail "найдены git-хуки: ${hooks}"
           [[ ! -e "${SOURCE_TREE}/.gitmodules" ]] || fail "сабмодули не допускаются"
-          lfs=$(grep -rl --binary-files=without-match 'version https://git-lfs.github.com/spec' "${SOURCE_TREE}" --exclude-dir=.git 2>/dev/null | wc -l)
+          git lfs version >/dev/null || fail "Git LFS недоступен для проверки указателей"
+          lfs=$(
+            find "${SOURCE_TREE}" -path "${SOURCE_TREE}/.git" -prune -o -type f -size -1024c -print0 |
+              while IFS= read -r -d '' file; do
+                [[ -r "$file" ]] || exit 1
+                IFS= read -r header < "$file" || continue
+                case "${header%$'\r'}" in
+                  'version https://git-lfs.github.com/spec/v1'|'version https://hawser.github.com/spec/v1'|'version http://git-media.io/v/2')
+                    if git lfs pointer --check --file="$file"; then
+                      printf '1\n'
+                    fi
+                    ;;
+                esac
+              done | wc -l
+          ) || fail "не удалось проверить LFS-указатели"
           (( lfs == 0 )) || fail "найдены LFS-указатели: ${lfs}"
           root=$(cd "${SOURCE_TREE}" && pwd -P) || fail "не удалось определить корень"
           outside=0
@@ -193,14 +207,32 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
 
+      - name: Сверить измеренную ревизию во всех отчётах
+        env:
+          EXPECTED_COMMIT: ${{ steps.identity.outputs.commit }}
+        run: |
+          set -euo pipefail
+          actual=$(git -C source-tree rev-parse HEAD)
+          if [[ "$actual" != "$EXPECTED_COMMIT" ]]; then
+            echo "::error::Исходники не соответствуют SHA публикации"
+            exit 1
+          fi
+          for report in coverage/{dotnet-unit,dotnet-docker,python-linux,python-windows}; do
+            manifest="$report/measured-commit.txt"
+            if [[ ! -f "$manifest" ]] || ! printf '%s' "$actual" | cmp -s "$manifest" -; then
+              echo "::error::Отчёт $report не подтверждает измерение ревизии $actual"
+              exit 1
+            fi
+          done
+
       # Артефакты и исходники — недоверенные данные: их разбирают валидаторы из
       # default branch, ничего из source-tree не исполняется, а пути к нему
       # передаются только как --repo-root.
       - name: Проверить отчёт unit-покрытия .NET
-        run: python .github/scripts/check_dotnet_coverage.py coverage/dotnet-unit unit --repo-root source-tree
+        run: python .github/scripts/check_dotnet_coverage.py coverage/dotnet-unit unit --repo-root source-tree --require-normalized
 
       - name: Проверить отчёт покрытия Docker-тестов .NET
-        run: python .github/scripts/check_dotnet_coverage.py coverage/dotnet-docker docker --repo-root source-tree
+        run: python .github/scripts/check_dotnet_coverage.py coverage/dotnet-docker docker --repo-root source-tree --require-normalized
 
       - name: Проверить отчёт покрытия Python (Linux)
         run: python .github/scripts/check_python_coverage_report.py --report coverage/python-linux/lcov.info --platform linux --repo-root source-tree

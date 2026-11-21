@@ -34,6 +34,7 @@ DOCKER_TEST_PROJECT = Path(
 DOCKER_EVIDENCE_PREFIX = "src/AnketaParser.Infrastructure/Persistence/"
 ABSOLUTE_PATH = re.compile(r"^(?:[A-Za-z]:/|/)")
 BUILD_OUTPUT = re.compile(r"(?:^|/)(?:obj|bin)/")
+BRANCH_COUNTS = re.compile(r"[0-9]+(?:\.[0-9]+)?% \(([0-9]+)/([0-9]+)\)")
 TYPE_DECLARATION = re.compile(
     r"(?m)^\s*(?:public|internal|file|private|protected|static|sealed|abstract|partial|readonly|unsafe|\s)*(?:class|struct|interface|enum|record|delegate)\b"
 )
@@ -65,6 +66,7 @@ class Arguments(argparse.Namespace):
         self.flavour: str = ""
         self.repo_root: Path = Path()
         self.max_age_hours: float = 24.0
+        self.require_normalized: bool = False
 
 
 def _attribute(element: ElementTree.Element, name: str) -> str:
@@ -262,11 +264,17 @@ def _package_errors(
 
 
 def _class_entries(
-    root: ElementTree.Element, sources: tuple[str, ...], root_posix: str, namespace: str
+    root: ElementTree.Element,
+    sources: tuple[str, ...],
+    root_posix: str,
+    namespace: str,
+    *,
+    require_normalized: bool,
 ) -> tuple[list[ClassEntry], list[str]]:
     entries: list[ClassEntry] = []
     unresolved: list[str] = []
     artifacts: list[str] = []
+    non_normalized: list[str] = []
     unlabelled = 0
     for element in root.iter("class"):
         filename = element.get("filename")
@@ -284,6 +292,8 @@ def _class_entries(
         if BUILD_OUTPUT.search(relative):
             artifacts.append(relative)
             continue
+        if require_normalized and (filename != relative or "." in segments):
+            non_normalized.append(filename)
         entries.append(ClassEntry(relative, element))
     errors: list[str] = []
     if unlabelled:
@@ -294,6 +304,9 @@ def _class_entries(
     if artifacts:
         listed = ", ".join(sorted(set(artifacts))[:LIMIT_LISTED])
         errors.append(f"{namespace}: пути артефактов сборки: {listed}")
+    if non_normalized:
+        listed = ", ".join(sorted(set(non_normalized))[:LIMIT_LISTED])
+        errors.append(f"{namespace}: пути Cobertura не нормализованы: {listed}")
     return entries, errors
 
 
@@ -349,7 +362,7 @@ def _line_errors(
         for line in entry.element.iter("line"):
             number = (line.get("number") or "").strip()
             hits = (line.get("hits") or "").strip()
-            if not number.isdigit() or int(number) < 1:
+            if not number.isascii() or not number.isdigit() or int(number) < 1:
                 errors.append(
                     f"{namespace}: некорректный номер строки в {entry.relative}: {number!r}"
                 )
@@ -359,7 +372,7 @@ def _line_errors(
                     f"{namespace}: строка вне исходника {entry.relative}: {number} при {len(lines)} строках файла"
                 )
 
-            if not hits.isdigit():
+            if not hits.isascii() or not hits.isdigit():
                 errors.append(
                     f"{namespace}: некорректные попадания в {entry.relative}: {hits!r}"
                 )
@@ -370,13 +383,63 @@ def _line_errors(
     return errors
 
 
+def _line_totals_errors(
+    entries: list[ClassEntry], metrics: Metrics, namespace: str
+) -> list[str]:
+    """Сверить итоги MTP по строкам классов. Раздел методов повторяет эти записи."""
+    lines_valid = lines_covered = branches_valid = branches_covered = 0
+    for entry in entries:
+        for line in entry.element.findall("lines/line"):
+            lines_valid += 1
+            hits = (line.get("hits") or "").strip()
+            lines_covered += hits.isascii() and hits.isdigit() and int(hits) > 0
+            coverage = line.get("condition-coverage")
+            if coverage is None and (line.get("branch") or "").lower() != "true":
+                continue
+            counts = BRANCH_COUNTS.fullmatch(coverage or "")
+            if counts is None:
+                return [
+                    f"{namespace}: некорректная condition-coverage в {entry.relative}"
+                ]
+            covered, total = int(counts[1]), int(counts[2])
+            if not 0 <= covered <= total or total == 0:
+                return [
+                    f"{namespace}: некорректная condition-coverage в {entry.relative}"
+                ]
+            branches_covered += covered
+            branches_valid += total
+    errors: list[str] = []
+    for name, covered, total, expected_covered, expected_total in (
+        (
+            "строк",
+            lines_covered,
+            lines_valid,
+            metrics.lines_covered,
+            metrics.lines_valid,
+        ),
+        (
+            "ветвей",
+            branches_covered,
+            branches_valid,
+            metrics.branches_covered,
+            metrics.branches_valid,
+        ),
+    ):
+        if (covered, total) != (expected_covered, expected_total):
+            errors.append(
+                f"{namespace}: сводка {name} {expected_covered}/{expected_total}"
+                + f" не совпадает с данными классов {covered}/{total}"
+            )
+    return errors
+
+
 def _docker_evidence_errors(entries: list[ClassEntry], namespace: str) -> list[str]:
     for entry in entries:
         if not entry.relative.startswith(DOCKER_EVIDENCE_PREFIX):
             continue
-        for line in entry.element.iter("line"):
-            hits = line.get("hits")
-            if hits and int(hits) > 0:
+        for line in entry.element.findall("lines/line"):
+            hits = (line.get("hits") or "").strip()
+            if hits.isascii() and hits.isdigit() and int(hits) > 0:
                 return []
     return [
         (
@@ -454,6 +517,8 @@ def inspect(
     repo_root: Path,
     max_age_hours: float | None = 24.0,
     max_source_bytes: int = MAX_SOURCE_BYTES,
+    *,
+    require_normalized: bool = False,
 ) -> tuple[list[str], str]:
     """Вернуть ошибки проверки и сводку отчёта для журнала."""
     if flavour not in FLAVOURS:
@@ -499,6 +564,10 @@ def inspect(
             metrics.branches_valid,
         )
     )
+    if require_normalized and root.find(".//source") is not None:
+        errors.append(
+            f"{namespace}: нормализованный отчёт не должен содержать <source>"
+        )
     sources = tuple((source.text or "").strip() for source in root.iter("source"))
     sources = tuple(source for source in sources if source)
     filenames = [element.get("filename") or "" for element in root.iter("class")]
@@ -517,11 +586,16 @@ def inspect(
             f"{namespace}: относительные пути без <sources> не указывают на src: {', '.join(sorted(set(outside_src))[:LIMIT_LISTED])}"
         )
     entries, class_errors = _class_entries(
-        root, sources, repo_root.as_posix(), namespace
+        root,
+        sources,
+        repo_root.as_posix(),
+        namespace,
+        require_normalized=require_normalized,
     )
     errors.extend(class_errors)
     errors.extend(_entry_errors(entries, required, repo_root, namespace))
     errors.extend(_line_errors(entries, repo_root, namespace, max_source_bytes))
+    errors.extend(_line_totals_errors(entries, metrics, namespace))
     missing = sorted(
         {
             entry.relative
@@ -553,6 +627,8 @@ def validate(
     repo_root: Path | None = None,
     max_age_hours: float | None = 24.0,
     max_source_bytes: int = MAX_SOURCE_BYTES,
+    *,
+    require_normalized: bool = False,
 ) -> list[str]:
     """Проверить отчёт покрытия .NET и вернуть список ошибок."""
     errors, _ = inspect(
@@ -561,6 +637,7 @@ def validate(
         Path() if repo_root is None else repo_root,
         max_age_hours,
         max_source_bytes,
+        require_normalized=require_normalized,
     )
     return errors
 
@@ -586,6 +663,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=24.0,
         help="предельный возраст отчёта в часах",
     )
+    _ = parser.add_argument(
+        "--require-normalized",
+        action="store_true",
+        help="требовать исходные пути src/... без <sources>",
+    )
     return parser
 
 
@@ -597,6 +679,7 @@ def main() -> int:
         args.repo_root.resolve(),
         args.max_age_hours,
         cast(int, args.max_source_bytes),
+        require_normalized=args.require_normalized,
     )
     if errors:
         for error in errors:

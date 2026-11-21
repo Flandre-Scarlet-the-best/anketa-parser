@@ -57,13 +57,20 @@ jobs:
           zizmor --offline --strict-collection --no-config --persona regular --format plain --color never --render-links never "${workflows[@]}"
 
   contracts:
-    name: Контракты агента
+    # Для PR из этого репозитория основной прогон проверяет результат слияния,
+    # дополнительный собирает публикуемое покрытие на точном SHA головы PR.
+    name: Контракты агента${{ matrix.revision == 'head' && ' (голова PR)' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        revision: ${{ fromJSON(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && '["merge","head"]' || '["merge"]') }}
     runs-on: ubuntu-26.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ matrix.revision == 'head' && github.event.pull_request.head.sha || '' }}
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.15.2'
@@ -104,22 +111,37 @@ jobs:
         run: python .github/scripts/check_skill_contracts.py
       - name: Проверить ссылки во всём отслеживаемом Markdown
         run: python .github/scripts/check_markdown_links.py
+      - name: Записать ревизию отчёта Python (Linux)
+        if: ${{ github.event_name == 'push' || matrix.revision == 'head' }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          printf '%s' "$sha" > "$COVERAGE_DIR/measured-commit.txt"
+        env:
+          COVERAGE_DIR: ${{ runner.temp }}/coverage-python
       - name: Сохранить отчёт покрытия Python (Linux)
+        if: ${{ github.event_name == 'push' || matrix.revision == 'head' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-coverage-linux
-          path: ${{ runner.temp }}/coverage-python/lcov.info
+          path: |
+            ${{ runner.temp }}/coverage-python/lcov.info
+            ${{ runner.temp }}/coverage-python/measured-commit.txt
           if-no-files-found: error
           retention-days: 7
 
   background-wait-windows:
-    name: Фоновое ожидание в Windows
+    name: Фоновое ожидание в Windows${{ matrix.revision == 'head' && ' (голова PR)' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        revision: ${{ fromJSON(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && '["merge","head"]' || '["merge"]') }}
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ matrix.revision == 'head' && github.event.pull_request.head.sha || '' }}
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.15.2'
@@ -135,32 +157,53 @@ jobs:
           COVERAGE_DIR: ${{ runner.temp }}/coverage-python
         run: |
           python -m coverage erase
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m coverage run -m unittest discover -s .github/scripts -p test_background_wait.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m coverage combine
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m coverage report --show-missing
       - name: Нормализовать и проверить LCOV-отчёт
         env:
           COVERAGE_DIR: ${{ runner.temp }}/coverage-python
         run: |
           python -m coverage lcov -o "$env:COVERAGE_DIR/lcov.info"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python .github/scripts/normalize_lcov_paths.py --report "$env:COVERAGE_DIR/lcov.info" --repo-root .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python .github/scripts/check_python_coverage_report.py --report "$env:COVERAGE_DIR/lcov.info" --platform windows --repo-root . --data-dir "$env:COVERAGE_DIR"
+      - name: Записать ревизию отчёта Python (Windows)
+        if: ${{ github.event_name == 'push' || matrix.revision == 'head' }}
+        env:
+          COVERAGE_DIR: ${{ runner.temp }}/coverage-python
+        run: |
+          $revision = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Content -LiteralPath "$env:COVERAGE_DIR/measured-commit.txt" -Value $revision -NoNewline -Encoding ascii
       - name: Сохранить отчёт покрытия Python (Windows)
+        if: ${{ github.event_name == 'push' || matrix.revision == 'head' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-coverage-windows
-          path: ${{ runner.temp }}/coverage-python/lcov.info
+          path: |
+            ${{ runner.temp }}/coverage-python/lcov.info
+            ${{ runner.temp }}/coverage-python/measured-commit.txt
           if-no-files-found: error
           retention-days: 7
 
   build:
-    name: Сборка и покрытие .NET
+    name: Сборка и покрытие .NET${{ matrix.revision == 'head' && ' (голова PR)' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        revision: ${{ fromJSON(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && '["merge","head"]' || '["merge"]') }}
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ matrix.revision == 'head' && github.event.pull_request.head.sha || '' }}
 
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
@@ -195,13 +238,21 @@ jobs:
         run: python .github/scripts/normalize_cobertura_paths.py --report TestResults/dotnet-unit/dotnet.cobertura.xml --repo-root .
 
       - name: Проверить отчёт покрытия unit-тестов
-        run: python .github/scripts/check_dotnet_coverage.py TestResults/dotnet-unit unit
+        run: python .github/scripts/check_dotnet_coverage.py TestResults/dotnet-unit unit --require-normalized
 
+      - name: Записать ревизию отчёта unit-тестов
+        if: ${{ github.event_name == 'push' || matrix.revision == 'head' }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          printf '%s' "$sha" > "TestResults/dotnet-unit/measured-commit.txt"
       - name: Сохранить отчёт покрытия unit-тестов
+        if: ${{ github.event_name == 'push' || matrix.revision == 'head' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dotnet-coverage-unit
-          path: TestResults/dotnet-unit/dotnet.cobertura.xml
+          path: |
+            TestResults/dotnet-unit/dotnet.cobertura.xml
+            TestResults/dotnet-unit/measured-commit.txt
           if-no-files-found: error
           retention-days: 7
 
@@ -221,12 +272,20 @@ jobs:
         run: python .github/scripts/normalize_cobertura_paths.py --report TestResults/dotnet-docker/dotnet.cobertura.xml --repo-root .
 
       - name: Проверить отчёт покрытия Docker-тестов
-        run: python .github/scripts/check_dotnet_coverage.py TestResults/dotnet-docker docker
+        run: python .github/scripts/check_dotnet_coverage.py TestResults/dotnet-docker docker --require-normalized
 
+      - name: Записать ревизию отчёта Docker-тестов
+        if: ${{ github.event_name == 'push' || matrix.revision == 'head' }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          printf '%s' "$sha" > "TestResults/dotnet-docker/measured-commit.txt"
       - name: Сохранить отчёт покрытия Docker-тестов
+        if: ${{ github.event_name == 'push' || matrix.revision == 'head' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dotnet-coverage-docker
-          path: TestResults/dotnet-docker/dotnet.cobertura.xml
+          path: |
+            TestResults/dotnet-docker/dotnet.cobertura.xml
+            TestResults/dotnet-docker/measured-commit.txt
           if-no-files-found: error
           retention-days: 7

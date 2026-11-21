@@ -12,6 +12,9 @@ import unittest
 from pathlib import Path
 from typing import override
 
+from check_python_coverage_report import expected_sources, parse_lcov
+from normalize_lcov_paths import normalize
+
 VALIDATOR = Path(__file__).with_name("check_python_coverage_report.py")
 SCRIPTS = ".github/scripts/"
 SKILL_SCRIPT = ".agents/skills/background-wait/scripts/background_wait.py"
@@ -165,6 +168,58 @@ class ValidReportTests(ReportCase):
         result = self.run_validator(platform="windows")
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_real_lcov_includes_unexecuted_namespace_source_and_respects_exclusions(
+        self,
+    ):
+        config = (VALIDATOR.parents[2] / ".coveragerc").read_text(encoding="utf-8")
+        self.write(".coveragerc", config + "\nexclude_also = skip_measurement\n")
+        candidate = ".agents/skills/example/scripts/never.py"
+        self.write(
+            candidate,
+            """\
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from typing import Any
+flag = False
+if flag:
+    value = 1
+value = 2  # pragma: no cover
+value = 3  # skip_measurement
+print(flag)
+""",
+        )
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("COVERAGE_")
+        }
+        for arguments in (
+            ("run", SCRIPTS + "check_pr_body.py"),
+            ("combine",),
+            ("lcov", "-o", str(self.report)),
+        ):
+            result = subprocess.run(  # noqa: S603
+                [sys.executable, "-m", "coverage", *arguments],
+                cwd=self.root,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # На Windows генератор пишет CRLF и обратные слэши в SF.
+        report, _, errors = normalize(
+            self.report.read_bytes().decode("utf-8"), expected_sources(self.root)
+        )
+        self.assertEqual(errors, [])
+        self.write_report(report)
+        parsed, errors = parse_lcov(report)
+        self.assertEqual(errors, [])
+        self.assertEqual(parsed[candidate].lines, {1: 0, 4: 0, 5: 0, 6: 0, 9: 0})
+        result = self.run_validator()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
 class BrokenDataTests(ReportCase):
     def test_missing_report_is_error(self):
@@ -198,6 +253,35 @@ class BrokenDataTests(ReportCase):
     def test_negative_lf_is_rejected(self):
         self.write_report(self.default_report().replace("LF:4", "LF:три", 1))
         self.assert_error(self.run_validator(), "некорректное значение LF")
+
+    def test_branch_records_and_counters_are_validated(self):
+        report = self.default_report()
+        cases = (
+            ("BRDA:1,0,jump to line 2,1", "BRDA:broken", "некорректная запись BRDA"),
+            (
+                "BRDA:1,0,jump to line 2,1",
+                "BRDA:0,x,branch,-3",
+                "некорректная запись BRDA",
+            ),
+            ("BRF:1", "BRF:2", "BRF=2"),
+            ("BRH:1", "BRH:0", "BRH=0"),
+            ("BRH:1\n", "", "нет записи BRH"),
+        )
+        for original, invalid, message in cases:
+            with self.subTest(invalid=invalid):
+                self.write_report(report.replace(original, invalid, 1))
+                self.assert_error(self.run_validator(), message)
+
+    def test_branch_description_preserves_commas_and_backslashes(self):
+        self.write_report(
+            self.default_report().replace(
+                "BRDA:1,0,jump to line 2,1\nBRF:1\nBRH:1",
+                "BRDA:1,0," + r"ветка, путь\модуль" + ",-\nBRF:1\nBRH:0",
+                1,
+            )
+        )
+        result = self.run_validator()
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class AttributionTests(ReportCase):

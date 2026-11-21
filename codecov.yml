@@ -25,6 +25,18 @@ coverage:
       default:
         target: auto
         informational: true
+      dotnet-unit:
+        informational: true
+        flags: [dotnet-unit]
+      dotnet-docker:
+        informational: true
+        flags: [dotnet-docker]
+      python-linux:
+        informational: true
+        flags: [python-linux]
+      python-windows:
+        informational: true
+        flags: [python-windows]
     patch:
       default:
         target: auto
@@ -47,11 +59,10 @@ comment:
 #
 # Пути .NET-отчёта (Cobertura от Microsoft.Testing.Extensions.CodeCoverage)
 # содержат абсолютные пути без <sources>, поэтому перед публикацией их приводит
-# к виду ``src/...`` шаг `.github/scripts/normalize_cobertura_paths.py`: граница
-# отсечения вычисляется по сегменту ``src``, а не по временному каталогу runner,
-# поэтому отчёт воспроизводим на любой машине. Правило fixes не требуется.
+# к виду ``src/...`` шаг `.github/scripts/normalize_cobertura_paths.py`. Для
+# пути другого раннера требуется однозначное совпадение с файлом внутри src.
 # Фактическое сопоставление файлов и project/patch в Codecov подтверждается
-# только после hosted-загрузки (t15) и до этого не заявляется.
+# после успешной загрузки отчётов в Codecov.
 flags:
   dotnet-unit:
     paths:

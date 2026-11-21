@@ -94,6 +94,27 @@ class CoberturaNormalizerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.filenames(), [SOURCE])
 
+    def test_src_ancestors_do_not_hide_the_repository_source_path(self):
+        nested_root = self.directory / "src" / "repo"
+        source = nested_root / SOURCE
+        source.parent.mkdir(parents=True)
+        _ = source.write_text("class Source {}\n", encoding="utf-8")
+        foreign = f"/foreign/src/repo/{SOURCE}"
+        _ = self.report.write_text(
+            build_report(source.as_posix(), foreign), encoding="utf-8"
+        )
+        result = self.run_normalizer("--repo-root", str(nested_root))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.filenames(), [SOURCE, SOURCE])
+
+        ambiguous = nested_root / "src/repo" / SOURCE
+        ambiguous.parent.mkdir(parents=True)
+        ambiguous.touch()
+        _ = self.report.write_text(build_report(foreign), encoding="utf-8")
+        rejected = self.run_normalizer("--repo-root", str(nested_root))
+        self.assertEqual(rejected.returncode, 1, rejected.stdout)
+        self.assertIn("неоднозначный путь", rejected.stderr)
+
     def test_second_run_is_idempotent(self):
         absolute = f"{ROOT.as_posix()}/{SOURCE}"
         _ = self.report.write_text(build_report(absolute), encoding="utf-8")

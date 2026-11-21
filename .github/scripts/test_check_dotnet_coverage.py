@@ -1,6 +1,7 @@
 """Регрессионные сценарии проверки отчёта покрытия .NET."""
 
 import math
+import re
 import tempfile
 import time
 import unittest
@@ -79,6 +80,17 @@ def make_report(
                 _ = ElementTree.SubElement(
                     lines, "line", {"number": str(number), "hits": str(value)}
                 )
+    if branches_valid:
+        branch_line = next(
+            (line for line in coverage.iter("line") if line.get("hits") != "0"),
+            None,
+        )
+        if branch_line is not None:
+            branch_line.set("branch", "True")
+            branch_line.set(
+                "condition-coverage",
+                f"{100 * branches_covered / branches_valid:g}% ({branches_covered}/{branches_valid})",
+            )
     return ElementTree.tostring(coverage, encoding="unicode")
 
 
@@ -255,6 +267,23 @@ class DotnetCoverageTests(unittest.TestCase):
         errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
         self.assertIn("branch-rate=0", errors)
 
+    def test_inconsistent_class_line_and_branch_counts_are_rejected(self):
+        report = self.report()
+        mutations = (
+            (r"<line [^>]*/>", "", "сводка строк"),
+            (r'hits="[0-9]+"', 'hits="0"', "сводка строк"),
+            (r"60% \(6/10\)", "50% (5/10)", "сводка ветвей"),
+            (r"60% \(6/10\)", "110% (11/10)", "некорректная condition-coverage"),
+        )
+        for pattern, replacement, message in mutations:
+            with self.subTest(
+                message=message, pattern=pattern, replacement=replacement
+            ):
+                self.assertRegex(report, pattern)
+                self.write(re.sub(pattern, replacement, report))
+                errors = validate(self.reports, "unit", self.repo)
+                self.assertTrue(any(message in error for error in errors), errors)
+
     def test_stale_report_is_rejected(self):
         self.write(self.report(timestamp=int(time.time()) - 48 * 3600))
         errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
@@ -383,6 +412,31 @@ class SourceLineTests(DotnetCoverageTests):
         self.assertEqual(
             validate(self.reports, "unit", self.repo, max_age_hours=24.0), []
         )
+
+    def test_publication_requires_normalized_cobertura_paths(self):
+        entries = [
+            (assembly, f"src/{assembly}/Source.cs", {1: 1}) for assembly in ASSEMBLIES
+        ]
+        self.write(make_report(entries))
+        self.assertEqual(
+            validate(self.reports, "unit", self.repo, require_normalized=True), []
+        )
+        for path in (
+            r"src\AnketaParser.Core\Source.cs",
+            self.repo.as_posix() + "/src/AnketaParser.Core/Source.cs",
+        ):
+            with self.subTest(path=path):
+                altered = entries.copy()
+                altered[0] = (CORE, path, {1: 1})
+                self.write(make_report(altered))
+                self.assertEqual(validate(self.reports, "unit", self.repo), [])
+                errors = validate(
+                    self.reports, "unit", self.repo, require_normalized=True
+                )
+                self.assertTrue(
+                    any("пути Cobertura не нормализованы" in error for error in errors),
+                    errors,
+                )
 
     def test_line_outside_source_is_rejected(self):
         entries = self.entries()

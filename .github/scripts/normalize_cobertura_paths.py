@@ -3,8 +3,8 @@
 Отчёт Microsoft.Testing.Extensions.CodeCoverage содержит абсолютные пути
 (``/home/runner/work/<repo>/<repo>/src/...`` или ``C:\\...\\src\\...``) и не
 содержит ``<sources>``. Абсолютный путь раннера в опубликованном отчёте
-недетерминирован, поэтому шаг переводит его в ``src/...``: граница отсечения
-вычисляется по сегменту ``src``, а не по временному каталогу runner.
+недетерминирован, поэтому шаг переводит его в ``src/...`` относительно корня
+репозитория или ищет однозначное совпадение для пути другого раннера.
 Сомнительные пути (без ``src``, с ``..``, несуществующий файл) отвергаются.
 """
 
@@ -47,16 +47,38 @@ def relative_source(path: str, root: Path) -> tuple[str | None, str | None]:
         return None, "пустой путь файла"
     if ".." in normalized.split("/"):
         return None, f"выход за пределы репозитория: {path}"
-    marker = "/" + PREFIX
+    root = root.resolve()
+    root_prefix = root.as_posix().rstrip("/") + "/"
+    local_prefix = normalized[: len(root_prefix)]
+    inside_root = (
+        local_prefix.casefold() == root_prefix.casefold()
+        if root.drive
+        else local_prefix == root_prefix
+    )
     if normalized.startswith(PREFIX):
         candidate = normalized
-    elif marker in normalized:
-        candidate = normalized[normalized.index(marker) + 1 :]
+    elif inside_root:
+        candidate = normalized[len(root_prefix) :]
     else:
+        segments = normalized.split("/")
+        suffixes = [
+            "/".join(segments[index:])
+            for index, segment in enumerate(segments[:-1])
+            if segment == "src"
+        ]
+        if not suffixes:
+            return None, f"путь вне src: {path}"
+        matches = [suffix for suffix in suffixes if (root / suffix).is_file()]
+        if len(matches) != 1:
+            reason = "неоднозначный путь" if matches else "исходник не найден"
+            return None, f"{reason}: {path}"
+        candidate = matches[0]
+    if not candidate.startswith(PREFIX) or any(
+        not segment or segment == "." for segment in candidate.split("/")
+    ):
         return None, f"путь вне src: {path}"
-    if not candidate.startswith(PREFIX) or candidate == PREFIX:
-        return None, f"путь вне src: {path}"
-    if not (root / candidate).is_file():
+    source = root / candidate
+    if not source.is_file() or not source.resolve().is_relative_to(root):
         return None, f"исходник не найден: {candidate}"
     return candidate, None
 

@@ -364,6 +364,61 @@ class ProducerJobTests(unittest.TestCase):
         self.assertIn(f"coverage{pin}", str(install["run"]))
         self.assertNotIn("sed", str(install["run"]))
 
+    @unittest.skipUnless(
+        os.name == "nt", "Проверка шага PowerShell выполняется в Windows"
+    )
+    def test_windows_coverage_stops_at_failed_test_command(self):
+        script = str(
+            find_step(
+                ci_steps("background-wait-windows"), "coverage run -m unittest discover"
+            )["run"]
+        )
+        runner = """\
+$ErrorActionPreference = 'Stop'
+function python {
+    Write-Output $args[2]
+    $global:LASTEXITCODE = 0
+    if ($args[2] -eq 'run') { $global:LASTEXITCODE = 23 }
+}
+"""
+        result = subprocess.run(  # noqa: S603
+            ["pwsh", "-NoProfile", "-NonInteractive", "-Command", runner + script],  # noqa: S607
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(result.returncode, 23, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["erase", "run"])
+
+    def test_only_head_or_push_artifacts_contain_the_checked_out_revision(self):
+        upload_if = "${{ github.event_name == 'push' || matrix.revision == 'head' }}"
+        for job in ("contracts", "background-wait-windows", "build"):
+            with self.subTest(job=job):
+                steps = ci_steps(job)
+                checkout = next(
+                    step
+                    for step in steps
+                    if "actions/checkout@" in str(step.get("uses", ""))
+                )
+                settings = cast(dict[str, str], checkout["with"])
+                self.assertEqual(
+                    settings["ref"],
+                    "${{ matrix.revision == 'head' && github.event.pull_request.head.sha || '' }}",
+                )
+                for index, step in enumerate(steps):
+                    if "actions/upload-artifact@" not in str(step.get("uses", "")):
+                        continue
+                    record = steps[index - 1]
+                    self.assertEqual(record["if"], upload_if)
+                    self.assertIn("git rev-parse HEAD", str(record["run"]))
+                    self.assertEqual(step["if"], upload_if)
+                    self.assertIn(
+                        "measured-commit.txt",
+                        cast(dict[str, str], step["with"])["path"],
+                    )
+
 
 def coverage_pin() -> str:
     requirements = (SCRIPTS / "requirements.txt").read_text(encoding="utf-8")
@@ -472,11 +527,11 @@ class PublisherWorkflowTests(unittest.TestCase):
     def test_source_tree_integrity_guard_rejects_execution_vectors(self):
         script = str(find_step(self.steps, "Проверить целостность source-tree")["run"])
         cases: tuple[tuple[str, dict[str, str], int], ...] = (
-            ("clean", {}, 0),
-            ("symlink-outside", {"outside-link": "symlink"}, 1),
+            ("clean", {"workflow.yml": "literal", "header.md": "header"}, 0),
             ("submodule", {".gitmodules": "file"}, 1),
             ("lfs", {"payload.bin": "lfs"}, 1),
             ("hook", {".git/hooks/pre-commit": "hook"}, 1),
+            ("symlink-outside", {"outside-link": "symlink"}, 1),
         )
         for name, layout, expected in cases:
             with self.subTest(case=name), tempfile.TemporaryDirectory() as temporary:
@@ -499,8 +554,18 @@ class PublisherWorkflowTests(unittest.TestCase):
                             ) from error
                     elif kind == "lfs":
                         _ = target.write_text(
-                            "version https://git-lfs.github.com/spec/v1\n",
+                            "version https://git-lfs.github.com/spec/v1\n"
+                            + f"oid sha256:{'a' * 64}\nsize 5\n",
                             encoding="utf-8",
+                            newline="\n",
+                        )
+                    elif kind in ("literal", "header"):
+                        _ = target.write_text(
+                            'example: "version https://git-lfs.github.com/spec/v1"\n'
+                            if kind == "literal"
+                            else "version https://git-lfs.github.com/spec/v1\nПример из документации\n",
+                            encoding="utf-8",
+                            newline="\n",
                         )
                     else:
                         _ = target.write_text("x", encoding="utf-8")
@@ -512,6 +577,50 @@ class PublisherWorkflowTests(unittest.TestCase):
                 )
                 if expected:
                     self.assertIn("::error::", result.stdout + result.stderr)
+
+    def test_publisher_rejects_missing_or_mismatched_measured_revision(self):
+        script = str(find_step(self.steps, "Сверить измеренную ревизию")["run"])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source-tree"
+            source.mkdir()
+            git = ["git", "-C", str(source)]
+            for arguments in (
+                ["init", "-q"],
+                [
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "-qm",
+                    "Проверка",
+                    "--allow-empty",
+                ],
+            ):
+                _ = subprocess.run([*git, *arguments], check=True, capture_output=True)  # noqa: S603
+            revision = subprocess.check_output(  # noqa: S603
+                [*git, "rev-parse", "HEAD"], text=True
+            ).strip()
+            for flag in EXPECTED_FLAGS:
+                manifest = root / "coverage" / flag / "measured-commit.txt"
+                manifest.parent.mkdir(parents=True)
+                _ = manifest.write_text(revision, encoding="ascii")
+            env = {"EXPECTED_COMMIT": revision}
+            success = run_bash_in(script, root, env)
+            self.assertEqual(success.returncode, 0, success.stdout + success.stderr)
+            wrong_source = run_bash_in(script, root, {"EXPECTED_COMMIT": "a" * 40})
+            self.assertNotEqual(wrong_source.returncode, 0)
+            self.assertIn("Исходники не соответствуют", wrong_source.stdout)
+            windows = root / "coverage/python-windows/measured-commit.txt"
+            _ = windows.write_text("a" * 40, encoding="ascii")
+            for missing in (False, True):
+                with self.subTest(missing=missing):
+                    if missing:
+                        windows.unlink()
+                    result = run_bash_in(script, root, env)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("Отчёт coverage/python-windows", result.stdout)
 
     def test_identity_step_rejects_ambiguous_or_foreign_identity(self):
         script = str(find_step(self.steps, "Проверить идентичность")["run"])
@@ -710,7 +819,8 @@ class PinAndSourceLimitTests(unittest.TestCase):
 
     def test_python_validator_rejects_oversized_and_foreign_source(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            sandbox = Path(temporary)
+            root = sandbox / "repo"
             source = root / ".github/scripts/big.py"
             source.parent.mkdir(parents=True)
             _ = source.write_text("value = 1\n", encoding="utf-8")
@@ -719,9 +829,8 @@ class PinAndSourceLimitTests(unittest.TestCase):
                 root, ".github/scripts/big.py", block, max_bytes=4
             )
             self.assertTrue(any("превышает предел" in error for error in oversized))
-            outside = root.parent / "outside-module.py"
+            outside = sandbox / "outside-module.py"
             _ = outside.write_text("value = 1\n", encoding="utf-8")
-            self.addCleanup(outside.unlink, True)
             escaped = check_source_lines(root, "../outside-module.py", block)
             self.assertTrue(
                 any(
@@ -798,12 +907,17 @@ class CodecovConfigurationTests(unittest.TestCase):
 
     def test_statuses_are_informational_without_fabricated_thresholds(self):
         coverage = cast(dict[str, object], self.config["coverage"])
-        statuses = cast(dict[str, dict[str, dict[str, str]]], coverage["status"])
+        statuses = cast(dict[str, dict[str, dict[str, object]]], coverage["status"])
         for kind in ("project", "patch"):
             check = statuses[kind]["default"]
             self.assertEqual(check["target"], "auto", kind)
             self.assertEqual(check["informational"], "true", kind)
-            self.assertNotRegex(check["target"], r"^\d")
+        flagged = statuses["project"]
+        self.assertEqual(set(flagged), {"default", *EXPECTED_FLAGS})
+        for flag in EXPECTED_FLAGS:
+            self.assertEqual(flagged[flag]["flags"], [flag])
+            self.assertEqual(flagged[flag]["informational"], "true")
+            self.assertNotIn("target", flagged[flag])
         self.assertNotIn("ignore", self.config)
         self.assertNotIn("range", coverage)
 
