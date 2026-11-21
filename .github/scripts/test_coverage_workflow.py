@@ -523,7 +523,7 @@ def coverage_pin() -> str:
 
 
 class PublisherWorkflowTests(unittest.TestCase):
-    """Доверенный издатель: workflow_run, environment secret, без кода PR."""
+    """Доверенный издатель: workflow_run без секретов и исполнения кода PR."""
 
     workflow: dict[str, object]
     steps: list[dict[str, object]]
@@ -550,10 +550,10 @@ class PublisherWorkflowTests(unittest.TestCase):
         self.assertEqual(run["workflows"], ["CI"])
         self.assertEqual(run["types"], ["completed"])
 
-    def test_publish_job_is_gated_and_declares_environment(self):
+    def test_publish_job_is_gated_without_environment(self):
         job = cast(dict[str, dict[str, object]], self.workflow["jobs"])["publish"]
         self.assertEqual(" ".join(str(job["if"]).split()), PUBLISH_GATE)
-        self.assertEqual(cast(dict[str, str], job["environment"]), {"name": "codecov"})
+        self.assertNotIn("environment", job)
         # Проверяются значения прав, а не только имена ключей: издателю нужен
         # только read, а write содержимого или отсутствие actions: read недопустимы.
         self.assertEqual(
@@ -563,7 +563,7 @@ class PublisherWorkflowTests(unittest.TestCase):
         self.assertNotIn("id-token", self.text)
         self.assertNotIn("pull_request_target", self.text)
 
-    def test_environment_secret_has_distinct_name_and_is_guarded(self):
+    def test_uploads_do_not_require_tokens_or_secrets(self):
         uploads = [
             step
             for step in self.steps
@@ -572,28 +572,8 @@ class PublisherWorkflowTests(unittest.TestCase):
         self.assertEqual(len(uploads), 4)
         for step in uploads:
             settings = cast(dict[str, str], step["with"])
-            self.assertEqual(settings["token"], ENV_SECRET)
-        # Отдельное имя: отсутствие настройки не даёт незаметного fallback на
-        # прежний repository secret.
-        self.assertNotIn("secrets.CODECOV_TOKEN", self.text)
-        guard = find_step(self.steps, "Проверить наличие секрета окружения")
-        self.assertEqual(cast(dict[str, str], guard["env"]), {"ENV_TOKEN": ENV_SECRET})
-        body = str(guard["run"])
-        self.assertIn("::error::", body)
-        self.assertIn("Публикация не выполняется", body)
-        self.assertNotIn('echo "${ENV_TOKEN}"', body)
-        # Задание не выдаёт объявление environment за доказательство защиты.
-        self.assertIn("НЕ является доказательством защиты", self.text)
-
-    def test_manual_checklist_is_documented_in_the_workflow(self):
-        for required in (
-            "Создать environment `codecov`",
-            "environment secret `CODECOV_ENV_TOKEN`",
-            "Required reviewers",
-            "УДАЛИТЬ repository-level secret `CODECOV_TOKEN`",
-            "Проверить руками",
-        ):
-            self.assertIn(required, self.text)
+            self.assertNotIn("token", settings)
+        self.assertNotIn("secrets.", self.text)
 
     def test_source_tree_is_fetched_only_as_data(self):
         checkouts = [
@@ -1125,11 +1105,11 @@ class CodecovConfigurationTests(unittest.TestCase):
         self.assertEqual(comment["layout"], "diff, flags, files")
 
     def test_report_age_matches_artifact_retention(self):
-        # Ручное одобрение окружения может задержать публикацию, поэтому срок
-        # приёма отчётов Codecov обязан покрывать хранение артефактов CI.
+        # Повторная публикация может задержаться, поэтому срок приёма отчётов
+        # Codecov обязан покрывать хранение артефактов CI.
         codecov = cast(dict[str, str], self.config["codecov"])
         retention = workflow_artifact_retention_days()
-        self.assertEqual(codecov["max_report_age"], f"{retention}d")
+        self.assertEqual(codecov["max_report_age"], f"{retention}d ago")
 
 
 class ReportDiagnosticsTests(unittest.TestCase):

@@ -3,27 +3,10 @@ name: Публикация покрытия в Codecov
 # Доверенный издатель. Событие workflow_run использует файл из ветки по
 # умолчанию. Она определяет исполняемые валидаторы. Исходники измеренной
 # ревизии читаются как данные из --repo-root source-tree.
-#
-# ОБЛАСТЬ СЕКРЕТА И ПРЕДУСЛОВИЯ (ручные действия, в коде их выполнить нельзя):
-# 1) Создать environment `codecov` (Settings -> Environments).
-# 2) Добавить в него environment secret `CODECOV_ENV_TOKEN` (именно это имя:
-#    отдельное от прежнего repository secret, чтобы отсутствие настройки давало
-#    явный отказ, а не незаметный fallback на repository secret).
-# 3) Включить для environment `codecov` protection rule Required reviewers.
-# 4) УДАЛИТЬ repository-level secret `CODECOV_TOKEN`: пока он существует, GitHub
-#    отдаёт его любому workflow без environment, и объявление `environment:` само
-#    по себе НЕ является доказательством защиты.
-# 5) Проверить руками: repository secrets не содержат CODECOV_TOKEN, а
-#    environment `codecov` содержит CODECOV_ENV_TOKEN; значения не читать.
-# 6) Этот файл должен попасть в ветку по умолчанию: до этого событие workflow_run
-#    не порождается и публикации нет вовсе.
-#
-# Отсутствие секрета в окружении останавливает задание до загрузки.
-#
-# Чеклист выше проверяется тестом по тексту файла, чтобы шаг удаления
-# секрета уровня репозитория нельзя было потерять при правках.
+# Публичный репозиторий и настройки Codecov позволяют загрузку без токена.
+# Издатель должен находиться в ветке по умолчанию для запуска workflow_run.
 on:
-  workflow_run: # zizmor: ignore[dangerous-triggers] Валидаторы исполняются из ветки по умолчанию. Измеренные исходники читаются как данные. Для окружения требуется правило Required reviewers.
+  workflow_run: # zizmor: ignore[dangerous-triggers] Валидаторы исполняются из ветки по умолчанию. Измеренные исходники читаются как данные; секреты не используются.
     workflows: [CI]
     types: [completed]
 
@@ -49,8 +32,6 @@ jobs:
         github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-26.04
     timeout-minutes: 20
-    environment:
-      name: codecov
     permissions:
       contents: read
       actions: read
@@ -123,18 +104,6 @@ jobs:
       # отсутствие `pip install -r` в этом задании проверяются тестом.
       - name: Установить закреплённый coverage
         run: python -m pip install --disable-pip-version-check coverage==7.17.4
-
-      # Отдельное имя секрета даёт явный отказ при отсутствии настройки.
-      - name: Проверить наличие секрета окружения
-        env:
-          ENV_TOKEN: ${{ secrets.CODECOV_ENV_TOKEN }}
-        run: |
-          set -uo pipefail
-          if [[ -z "${ENV_TOKEN}" ]]; then
-            echo "::error::В окружении codecov нет секрета CODECOV_ENV_TOKEN. Создайте окружение, добавьте секрет, включите Required reviewers и удалите секрет CODECOV_TOKEN уровня репозитория. Публикация не выполняется."
-            exit 1
-          fi
-          echo "Секрет окружения доступен"
 
       # Идентичность публикации проверяется явно: событие, ровно один PR,
       # совпадение его head SHA с head_sha запуска, совпадение репозитория.
@@ -267,7 +236,6 @@ jobs:
           override_commit: ${{ steps.identity.outputs.commit }}
           override_branch: ${{ github.event.workflow_run.head_branch }}
           override_pr: ${{ steps.identity.outputs.pr }}
-          token: ${{ secrets.CODECOV_ENV_TOKEN }}
 
       - name: Опубликовать покрытие Docker-тестов .NET
         id: upload-dotnet-docker
@@ -286,7 +254,6 @@ jobs:
           override_commit: ${{ steps.identity.outputs.commit }}
           override_branch: ${{ github.event.workflow_run.head_branch }}
           override_pr: ${{ steps.identity.outputs.pr }}
-          token: ${{ secrets.CODECOV_ENV_TOKEN }}
 
       - name: Опубликовать покрытие Python (Linux)
         id: upload-python-linux
@@ -305,7 +272,6 @@ jobs:
           override_commit: ${{ steps.identity.outputs.commit }}
           override_branch: ${{ github.event.workflow_run.head_branch }}
           override_pr: ${{ steps.identity.outputs.pr }}
-          token: ${{ secrets.CODECOV_ENV_TOKEN }}
 
       - name: Опубликовать покрытие Python (Windows)
         id: upload-python-windows
@@ -324,7 +290,6 @@ jobs:
           override_commit: ${{ steps.identity.outputs.commit }}
           override_branch: ${{ github.event.workflow_run.head_branch }}
           override_pr: ${{ steps.identity.outputs.pr }}
-          token: ${{ secrets.CODECOV_ENV_TOKEN }}
 
       # Четыре загрузки не являются одной транзакцией. Сводка строится по
       # фактическому результату шагов: предупреждение о частичной публикации истинно
