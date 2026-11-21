@@ -59,7 +59,7 @@ EXPECTED_UPLOAD_FILES = {
 CI_JOBS = frozenset(
     ("actions-security", "contracts", "background-wait-windows", "build")
 )
-ENV_SECRET = "${{ secrets.CODECOV_ENV_TOKEN }}"  # noqa: S105 - выражение контекста, не секрет
+REPOSITORY_SECRET = "${{ secrets.CODECOV_TOKEN }}"  # noqa: S105 - выражение контекста, не секрет
 UPLOAD_IDS = (
     "upload-dotnet-unit",
     "upload-dotnet-docker",
@@ -325,7 +325,7 @@ class SecretBoundaryTests(unittest.TestCase):
     def test_secrets_are_rejected_on_untrusted_triggers(self):
         for event in ("pull_request", "merge_group"):
             for secret in (
-                ENV_SECRET,
+                REPOSITORY_SECRET,
                 "${{ secrets['EXAMPLE'] }}",
                 "${{ toJSON(secrets) }}",
                 "  secrets: inherit",
@@ -339,7 +339,7 @@ class SecretBoundaryTests(unittest.TestCase):
     def test_only_publisher_may_receive_secrets_even_on_trusted_trigger(self):
         with self.assertRaisesRegex(AssertionError, "неразрешённый получатель"):
             self.assert_secret_boundary(
-                "independent.yaml", {"workflow_run"}, ENV_SECRET
+                "independent.yaml", {"workflow_run"}, REPOSITORY_SECRET
             )
 
     def test_self_token_is_not_a_repository_secret(self):
@@ -523,7 +523,7 @@ def coverage_pin() -> str:
 
 
 class PublisherWorkflowTests(unittest.TestCase):
-    """Доверенный издатель: workflow_run, environment secret, без кода PR."""
+    """Доверенный издатель: workflow_run с Repository Secret, без исполнения кода PR."""
 
     workflow: dict[str, object]
     steps: list[dict[str, object]]
@@ -550,10 +550,10 @@ class PublisherWorkflowTests(unittest.TestCase):
         self.assertEqual(run["workflows"], ["CI"])
         self.assertEqual(run["types"], ["completed"])
 
-    def test_publish_job_is_gated_and_declares_environment(self):
+    def test_publish_job_is_gated_without_environment(self):
         job = cast(dict[str, dict[str, object]], self.workflow["jobs"])["publish"]
         self.assertEqual(" ".join(str(job["if"]).split()), PUBLISH_GATE)
-        self.assertEqual(cast(dict[str, str], job["environment"]), {"name": "codecov"})
+        self.assertNotIn("environment", job)
         # Проверяются значения прав, а не только имена ключей: издателю нужен
         # только read, а write содержимого или отсутствие actions: read недопустимы.
         self.assertEqual(
@@ -563,37 +563,84 @@ class PublisherWorkflowTests(unittest.TestCase):
         self.assertNotIn("id-token", self.text)
         self.assertNotIn("pull_request_target", self.text)
 
-    def test_environment_secret_has_distinct_name_and_is_guarded(self):
+    def test_repository_secret_is_scoped_to_guard_and_four_uploads(self):
+        self.assert_repository_secret_scope(self.workflow)
+
+    def assert_repository_secret_scope(self, workflow: dict[str, object]) -> None:
+        steps = job_steps(workflow, "publish")
         uploads = [
             step
-            for step in self.steps
+            for step in steps
             if "codecov/codecov-action" in str(step.get("uses", ""))
         ]
         self.assertEqual(len(uploads), 4)
         for step in uploads:
             settings = cast(dict[str, str], step["with"])
-            self.assertEqual(settings["token"], ENV_SECRET)
-        # Отдельное имя: отсутствие настройки не даёт незаметного fallback на
-        # прежний repository secret.
-        self.assertNotIn("secrets.CODECOV_TOKEN", self.text)
-        guard = find_step(self.steps, "Проверить наличие секрета окружения")
-        self.assertEqual(cast(dict[str, str], guard["env"]), {"ENV_TOKEN": ENV_SECRET})
-        body = str(guard["run"])
-        self.assertIn("::error::", body)
-        self.assertIn("Публикация не выполняется", body)
-        self.assertNotIn('echo "${ENV_TOKEN}"', body)
-        # Задание не выдаёт объявление environment за доказательство защиты.
-        self.assertIn("НЕ является доказательством защиты", self.text)
+            self.assertEqual(settings["token"], REPOSITORY_SECRET)
+        guard = find_step(steps, "Проверить наличие CODECOV_TOKEN")
+        self.assertEqual(guard["env"], {"CODECOV_TOKEN": REPOSITORY_SECRET})
+        self.assertEqual(steps[0], guard)
+        self.assertNotIn("if", guard)
+        self.assertNotIn("env", workflow)
+        for job in cast(dict[str, dict[str, object]], workflow["jobs"]).values():
+            self.assertNotIn("env", job)
+            self.assertNotIn("environment", job)
+        expressions = re.finditer(r"\$\{\{(.*?)\}\}", json.dumps(workflow), re.DOTALL)
+        secret_expressions = [
+            expression.group(1).strip()
+            for expression in expressions
+            if re.search(r"(?<![.\w])secrets\b", expression.group(1), re.IGNORECASE)
+        ]
+        self.assertEqual(
+            secret_expressions,
+            ["secrets.CODECOV_TOKEN"] * 5,
+        )
+        for obsolete in ("CODECOV_ENV_TOKEN", "Required reviewers", "ENV_TOKEN"):
+            self.assertNotIn(obsolete, self.text)
 
-    def test_manual_checklist_is_documented_in_the_workflow(self):
-        for required in (
-            "Создать environment `codecov`",
-            "environment secret `CODECOV_ENV_TOKEN`",
-            "Required reviewers",
-            "УДАЛИТЬ repository-level secret `CODECOV_TOKEN`",
-            "Проверить руками",
-        ):
-            self.assertIn(required, self.text)
+    def test_secret_scope_rejects_context_dump_in_guard_and_uploads(self):
+        for step_id in ("guard", *UPLOAD_IDS):
+            with self.subTest(step=step_id):
+                workflow = deepcopy(self.workflow)
+                steps = job_steps(workflow, "publish")
+                step = (
+                    steps[0]
+                    if step_id == "guard"
+                    else next(item for item in steps if item.get("id") == step_id)
+                )
+                if step_id == "guard":
+                    step["run"] = str(step["run"]) + "\necho '${{ toJSON(secrets) }}'\n"
+                else:
+                    step["env"] = {"EXTRA_CONTEXT": "${{ toJSON(secrets) }}"}
+                with self.assertRaises(AssertionError):
+                    self.assert_repository_secret_scope(workflow)
+
+    def test_secret_scope_ignores_yaml_comments(self):
+        workflow = cast(
+            dict[str, object],
+            yaml.load(
+                self.text + "\n# Пример: ${{ secrets.CODECOV_TOKEN }}\n",
+                Loader=yaml.BaseLoader,  # noqa: S506 - BaseLoader не создаёт объекты
+            ),
+        )
+        self.assert_repository_secret_scope(workflow)
+
+    def test_repository_token_guard_fails_closed_without_disclosing_value(self):
+        guard = find_step(self.steps, "Проверить наличие CODECOV_TOKEN")
+        script = str(guard["run"])
+        for token, expected in (("", 1), ("synthetic-codecov-token", 0)):
+            with self.subTest(case="present" if token else "missing"):
+                result = run_bash(script, {"CODECOV_TOKEN": token})
+                self.assertEqual(result.returncode, expected, result.stderr)
+                output = result.stdout + result.stderr
+                if token:
+                    self.assertNotIn(token, output)
+                    self.assertNotIn("::error::", output)
+                else:
+                    self.assertIn("::error::", output)
+                    self.assertIn("CODECOV_TOKEN", output)
+                    self.assertIn("Repository Secrets", output)
+                    self.assertNotIn("Environment", output)
 
     def test_source_tree_is_fetched_only_as_data(self):
         checkouts = [
@@ -629,6 +676,51 @@ class PublisherWorkflowTests(unittest.TestCase):
                 f"--instrumented-report coverage/dotnet-{flavour}/instrumented.xml",
                 str(step["run"]),
             )
+
+    def test_four_artifacts_are_validated_before_any_upload(self):
+        downloads = [
+            step
+            for step in self.steps
+            if "actions/download-artifact@" in str(step.get("uses", ""))
+        ]
+        self.assertEqual(len(downloads), 4)
+        expected = {
+            "dotnet-coverage-unit": "coverage/dotnet-unit",
+            "dotnet-coverage-docker": "coverage/dotnet-docker",
+            "python-coverage-linux": "coverage/python-linux",
+            "python-coverage-windows": "coverage/python-windows",
+        }
+        actual: dict[str, str] = {}
+        identity = index_of(self.steps, "Проверить идентичность")
+        manifest = index_of(self.steps, "Сверить измеренную ревизию")
+        first_upload = next(
+            index
+            for index, step in enumerate(self.steps)
+            if step.get("id") == UPLOAD_IDS[0]
+        )
+        for step in downloads:
+            self.assertEqual(step["uses"], DOWNLOAD_ARTIFACT)
+            settings = cast(dict[str, str], step["with"])
+            actual[settings["name"]] = settings["path"]
+            self.assertEqual(settings["run-id"], "${{ github.event.workflow_run.id }}")
+            self.assertEqual(settings["github-token"], "${{ github.token }}")
+            self.assertLess(identity, self.steps.index(step))
+            self.assertLess(self.steps.index(step), manifest)
+        self.assertEqual(actual, expected)
+        validators = [
+            index
+            for index, step in enumerate(self.steps)
+            if "check_dotnet_coverage.py" in str(step.get("run", ""))
+            or "check_python_coverage_report.py" in str(step.get("run", ""))
+        ]
+        self.assertEqual(len(validators), 4)
+        for index in validators:
+            self.assertLess(manifest, index)
+            self.assertLess(index, first_upload)
+        for step in self.steps[: first_upload + len(UPLOAD_IDS)]:
+            self.assertNotIn("if", step)
+            self.assertNotIn("continue-on-error", step)
+            self.assertNotIn("|| true", str(step.get("run", "")))
 
     def test_source_tree_integrity_guard_rejects_execution_vectors(self):
         script = str(find_step(self.steps, "Проверить целостность source-tree")["run"])
@@ -850,6 +942,10 @@ class PublisherWorkflowTests(unittest.TestCase):
             self.assertEqual(
                 settings["override_pr"], "${{ steps.identity.outputs.pr }}"
             )
+            self.assertEqual(
+                settings["override_branch"],
+                "${{ github.event.workflow_run.head_branch }}",
+            )
             self.assertNotIn("directory", settings)
         self.assertEqual([str(step.get("id")) for step in uploads], list(UPLOAD_IDS))
 
@@ -974,6 +1070,35 @@ class PublisherWorkflowTests(unittest.TestCase):
         self.assertIn("after_n_builds", run)
         self.assertNotIn("не отправит статусы", run)
         self.assertNotIn("атомарн", workflow_text("coverage-publisher.yml"))
+
+    def test_summary_reports_success_partial_failure_and_no_confirmed_upload(self):
+        script = str(find_step(self.steps, "Сводка публикации покрытия")["run"])
+        keys = ("OUTCOME_UNIT", "OUTCOME_DOCKER", "OUTCOME_LINUX", "OUTCOME_WINDOWS")
+        cases = (
+            ("complete", ("success",) * 4, 4),
+            ("partial", ("success", "failure", "skipped", "skipped"), 1),
+            ("upload-failed", ("failure", "skipped", "skipped", "skipped"), 0),
+            ("validation-failed", ("skipped",) * 4, 0),
+        )
+        for name, outcomes, successes in cases:
+            with self.subTest(case=name):
+                result = run_bash(script, dict(zip(keys, outcomes, strict=True)))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"Успешных загрузок: {successes} из 4", result.stdout)
+                for flag, outcome in zip(EXPECTED_FLAGS, outcomes, strict=True):
+                    if outcome != "success":
+                        self.assertIn(f"{flag}({outcome})", result.stdout)
+                if successes == 4:
+                    self.assertIn("Публикация завершена", result.stdout)
+                    self.assertNotIn("::error::", result.stdout)
+                    self.assertNotIn("::warning::", result.stdout)
+                else:
+                    self.assertNotIn("Публикация завершена", result.stdout)
+                    if successes:
+                        self.assertIn("::warning::Частичная публикация", result.stdout)
+                    else:
+                        self.assertIn("::error::", result.stdout)
+                        self.assertIn("Состояние публикации неизвестно", result.stdout)
 
     def test_cancelled_run_is_described_honestly(self):
         step = find_step(self.steps, "Отметить отменённое выполнение")
@@ -1125,11 +1250,11 @@ class CodecovConfigurationTests(unittest.TestCase):
         self.assertEqual(comment["layout"], "diff, flags, files")
 
     def test_report_age_matches_artifact_retention(self):
-        # Ручное одобрение окружения может задержать публикацию, поэтому срок
-        # приёма отчётов Codecov обязан покрывать хранение артефактов CI.
+        # Повторная публикация может задержаться, поэтому срок приёма отчётов
+        # Codecov обязан покрывать хранение артефактов CI.
         codecov = cast(dict[str, str], self.config["codecov"])
         retention = workflow_artifact_retention_days()
-        self.assertEqual(codecov["max_report_age"], f"{retention}d")
+        self.assertEqual(codecov["max_report_age"], f"{retention}d ago")
 
 
 class ReportDiagnosticsTests(unittest.TestCase):
