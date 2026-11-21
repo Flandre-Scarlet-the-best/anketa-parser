@@ -40,8 +40,13 @@ TYPE_DECLARATION = re.compile(
     r"(?m)^\s*(?:public|internal|file|private|protected|static|sealed|abstract|partial|readonly|unsafe|\s)*(?:class|struct|interface|enum|record|delegate)\b"
 )
 COMMENT = re.compile(r"//.*$")
+DOC_COMMENT = re.compile(r"^\s*///.*$")
+BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 USING_DIRECTIVE = re.compile(r"^\s*(?:global\s+)?using\s+.*$")
 PREPROCESSOR = re.compile(r"^\s*#.*$")
+ATTRIBUTE = re.compile(r"^\s*\[")
+NAMESPACE_DECLARATION = re.compile(r"^\s*(?:file\s+)?namespace\b")
+BRACES_ONLY = re.compile(r"^[{}();]*$")
 
 
 @dataclass(frozen=True)
@@ -551,14 +556,28 @@ def _source_completeness_errors(
 
 
 def _has_top_level_statements(text: str) -> bool:
-    """Определить файл с операторами верхнего уровня: у него нет объявления типа."""
-    if TYPE_DECLARATION.search(text):
-        return False
-    for line in text.splitlines():
-        stripped = COMMENT.sub("", PREPROCESSOR.sub("", line)).strip()
-        if not stripped or USING_DIRECTIVE.match(stripped) or stripped == ";":
+    """Определить файл с операторами верхнего уровня.
+
+    Операторы верхнего уровня идут до объявлений типов, поэтому файл, который
+    начинается с объявления типа или пространства имён, точкой входа не является,
+    даже если объявление занимает несколько строк. Атрибуты и директивы ``using``
+    не исполняются, а объявление ``partial class`` после операторов не отменяет
+    точку входа.
+    """
+    for line in BLOCK_COMMENT.sub("", text).splitlines():
+        stripped = COMMENT.sub(
+            "", PREPROCESSOR.sub("", DOC_COMMENT.sub("", line))
+        ).strip()
+        if not stripped:
             continue
-        return True
+        if (
+            USING_DIRECTIVE.match(stripped)
+            or ATTRIBUTE.match(stripped)
+            or NAMESPACE_DECLARATION.match(stripped)
+            or BRACES_ONLY.match(stripped)
+        ):
+            continue
+        return not TYPE_DECLARATION.match(stripped)
     return False
 
 
@@ -575,7 +594,7 @@ def _entry_sources(repo_root: Path) -> tuple[tuple[str, str], ...]:
             relative = path.relative_to(repo_root).as_posix()
             if "/obj/" in relative or "/bin/" in relative:
                 continue
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = path.read_text(encoding="utf-8-sig", errors="replace")
             first = text.splitlines()[0] if text.splitlines() else ""
             if "auto-generated" in first:
                 continue

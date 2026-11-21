@@ -30,22 +30,27 @@ HELPER_SOURCE = """\
 def helper() -> int:
     return 1
 """
+BRANCH_LINE = 5  # строка `if __name__ == "__main__":` в MAIN_SOURCE
+BRANCH_ROWS = ("jump to line 6", "exit the module")
 
 
-def block(path: str, lines: dict[int, int], branches: int = 1) -> str:
-    """Собрать корректный блок LCOV для файла."""
+def block(path: str, lines: dict[int, int], branches: int = 0) -> str:
+    """Собрать корректный блок LCOV для файла.
+
+    Ветви относятся к единственной точке ветвления MAIN_SOURCE, поэтому блоки
+    файлов без этой строки собираются без записей BRDA.
+    """
     rows = [f"SF:{path}"]
     rows.extend(f"DA:{number},{hits}" for number, hits in sorted(lines.items()))
     rows.append(f"LF:{len(lines)}")
     rows.append(f"LH:{sum(1 for hits in lines.values() if hits > 0)}")
     if branches:
         rows.extend(
-            (
-                "BRDA:1,0,jump to line 2,1",
-                f"BRF:{branches}",
-                f"BRH:{branches}",
-            )
+            f"BRDA:{BRANCH_LINE},0,{description},1"
+            for description in BRANCH_ROWS[:branches]
         )
+        rows.append(f"BRF:{branches}")
+        rows.append(f"BRH:{branches}")
     rows.append("end_of_record")
     return "\n".join(rows)
 
@@ -93,8 +98,10 @@ class ReportCase(unittest.TestCase):
         return "\n".join(
             (
                 block(SCRIPTS + "helper.py", {1: 1, 2: 1}),
-                block(SCRIPTS + "check_pr_body.py", {1: 1, 2: 1, 5: 1, 6: 1}),
-                block(SKILL_SCRIPT, {1: 1, 2: 1, 5: 1, 6: 1}),
+                block(
+                    SCRIPTS + "check_pr_body.py", {1: 1, 2: 1, 5: 1, 6: 1}, branches=2
+                ),
+                block(SKILL_SCRIPT, {1: 1, 2: 1, 5: 1, 6: 1}, branches=2),
                 "",
             )
         )
@@ -143,8 +150,12 @@ class ValidReportTests(ReportCase):
             "\n".join(
                 (
                     block(SCRIPTS + "helper.py", {1: 0, 2: 0}),
-                    block(SCRIPTS + "check_pr_body.py", {1: 1, 2: 1, 5: 1, 6: 1}),
-                    block(SKILL_SCRIPT, {1: 1, 2: 1, 5: 1, 6: 1}),
+                    block(
+                        SCRIPTS + "check_pr_body.py",
+                        {1: 1, 2: 1, 5: 1, 6: 1},
+                        branches=2,
+                    ),
+                    block(SKILL_SCRIPT, {1: 1, 2: 1, 5: 1, 6: 1}, branches=2),
                     "",
                 )
             )
@@ -256,16 +267,13 @@ class BrokenDataTests(ReportCase):
 
     def test_branch_records_and_counters_are_validated(self):
         report = self.default_report()
+        first = f"BRDA:{BRANCH_LINE},0,{BRANCH_ROWS[0]},1"
         cases = (
-            ("BRDA:1,0,jump to line 2,1", "BRDA:broken", "некорректная запись BRDA"),
-            (
-                "BRDA:1,0,jump to line 2,1",
-                "BRDA:0,x,branch,-3",
-                "некорректная запись BRDA",
-            ),
-            ("BRF:1", "BRF:2", "BRF=2"),
-            ("BRH:1", "BRH:0", "BRH=0"),
-            ("BRH:1\n", "", "нет записи BRH"),
+            (first, "BRDA:broken", "некорректная запись BRDA"),
+            (first, "BRDA:0,x,branch,-3", "некорректная запись BRDA"),
+            ("BRF:2", "BRF:3", "BRF=3"),
+            ("BRH:2", "BRH:1", "BRH=1"),
+            ("BRH:2\n", "", "нет записи BRH"),
         )
         for original, invalid, message in cases:
             with self.subTest(invalid=invalid):
@@ -273,15 +281,43 @@ class BrokenDataTests(ReportCase):
                 self.assert_error(self.run_validator(), message)
 
     def test_branch_description_preserves_commas_and_backslashes(self):
+        first = f"BRDA:{BRANCH_LINE},0,{BRANCH_ROWS[0]},1"
+        second = f"BRDA:{BRANCH_LINE},0,{BRANCH_ROWS[1]},1"
         self.write_report(
             self.default_report().replace(
-                "BRDA:1,0,jump to line 2,1\nBRF:1\nBRH:1",
-                "BRDA:1,0," + r"ветка, путь\модуль" + ",-\nBRF:1\nBRH:0",
+                f"{first}\n{second}\nBRF:2\nBRH:2",
+                f"BRDA:{BRANCH_LINE},0,"
+                + r"ветка, путь\модуль,-"
+                + f"\n{second}\nBRF:2\nBRH:1",
                 1,
             )
         )
         result = self.run_validator()
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_branch_line_outside_source_is_error(self):
+        report = self.default_report().replace(
+            f"BRDA:{BRANCH_LINE},0,{BRANCH_ROWS[0]},1",
+            "BRDA:999999,0,фиктивная ветвь,1",
+            1,
+        )
+        self.write_report(report)
+        self.assert_error(self.run_validator(), "без точек ветвления")
+
+    def test_hidden_branch_records_are_error(self):
+        report = self.default_report().replace(
+            block(SCRIPTS + "check_pr_body.py", {1: 1, 2: 1, 5: 1, 6: 1}, branches=2),
+            block(SCRIPTS + "check_pr_body.py", {1: 1, 2: 1, 5: 1, 6: 1}),
+        )
+        self.write_report(report)
+        self.assert_error(self.run_validator(), "скрыты точки ветвления")
+
+    def test_incomplete_branch_records_for_a_line_are_error(self):
+        report = self.default_report().replace(
+            f"BRDA:{BRANCH_LINE},0,{BRANCH_ROWS[1]},1\nBRF:2\nBRH:2", "BRF:1\nBRH:1", 1
+        )
+        self.write_report(report)
+        self.assert_error(self.run_validator(), "не совпадает с числом исходов строк")
 
 
 class AttributionTests(ReportCase):
@@ -470,8 +506,8 @@ class SourceLineTests(ReportCase):
 
     def test_hidden_executable_lines_are_error(self):
         report = self.default_report().replace(
-            block(SCRIPTS + "check_pr_body.py", {1: 1, 2: 1, 5: 1, 6: 1}),
-            block(SCRIPTS + "check_pr_body.py", {1: 1, 2: 1, 6: 1}),
+            block(SCRIPTS + "check_pr_body.py", {1: 1, 2: 1, 5: 1, 6: 1}, branches=2),
+            block(SCRIPTS + "check_pr_body.py", {1: 1, 2: 1, 6: 1}, branches=2),
         )
         self.write_report(report)
         self.assert_error(self.run_validator(), "скрыты исполняемые строки")

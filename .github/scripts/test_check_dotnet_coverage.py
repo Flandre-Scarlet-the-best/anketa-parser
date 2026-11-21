@@ -449,6 +449,56 @@ class DotnetCoverageTests(unittest.TestCase):
             validate(self.reports, "unit", self.repo, max_age_hours=24.0), []
         )
 
+    def test_assembly_attributes_alone_do_not_form_an_entry_point(self):
+        _ = (self.repo / "src" / CLI / "AssemblyInfo.cs").write_text(
+            "[assembly: System.CLSCompliant(true)]\n", encoding="utf-8"
+        )
+        self.write(self.report())
+        errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
+        self.assertNotIn("рукописные точки входа исключены", errors)
+
+    def test_top_level_statements_with_partial_class_are_still_required(self):
+        program = self.repo / "src" / CLI / "Program.cs"
+        source = """using System;
+
+Console.WriteLine("start");
+
+internal partial class Program
+{
+}
+"""
+        _ = program.write_text(source, encoding="utf-8")
+        self.write(self.report())
+        errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
+        self.assertIn("рукописные точки входа исключены", errors)
+        self.assertIn("src/AnketaParser.Cli/Program.cs", errors)
+
+    def test_attribute_above_a_type_is_not_an_entry_point(self):
+        _ = (self.repo / "src" / CLI / "Widget.cs").write_text(
+            "[System.Serializable]\ninternal sealed class Widget\n{\n}\n",
+            encoding="utf-8",
+        )
+        self.write(self.report())
+        errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
+        self.assertNotIn("рукописные точки входа исключены", errors)
+
+    def test_bom_prefixed_type_file_is_not_an_entry_point(self):
+        source = """\ufeffusing System;
+
+#nullable disable
+
+namespace Cli
+{
+    public partial class Widget : object
+    {
+    }
+}
+"""
+        _ = (self.repo / "src" / CLI / "Widget.cs").write_bytes(source.encode("utf-8"))
+        self.write(self.report())
+        errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
+        self.assertNotIn("рукописные точки входа исключены", errors)
+
     def test_entry_point_is_not_required_for_unmeasured_assembly(self):
         _ = (self.repo / "src" / HOST / "Program.cs").write_text(
             "using System;\n\nreturn 0;\n", encoding="utf-8"

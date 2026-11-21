@@ -29,7 +29,7 @@ from check_python_coverage_report import (
     Block as CoverageBlock,
 )
 from check_python_coverage_report import (
-    check_source_lines,
+    check_source_errors,
     coverage_version_errors,
 )
 from check_python_coverage_report import (
@@ -81,6 +81,19 @@ def load_workflow(name: str) -> dict[str, object]:
 
 def workflow_text(name: str) -> str:
     return (WORKFLOWS / name).read_text(encoding="utf-8")
+
+
+def workflow_artifact_retention_days() -> int:
+    """Срок хранения артефактов покрытия, объявленный в CI."""
+    text = workflow_text("ci.yml")
+    declared = {
+        int(match.group(1)) for match in re.finditer(r"retention-days:\s*(\d+)", text)
+    }
+    if len(declared) != 1:
+        raise AssertionError(
+            f"ожидался один retention-days, найдено {sorted(declared)}"
+        )
+    return declared.pop()
 
 
 def job_steps(workflow: dict[str, object], job: str) -> list[dict[str, object]]:
@@ -928,14 +941,16 @@ class PinAndSourceLimitTests(unittest.TestCase):
             source = root / ".github/scripts/big.py"
             source.parent.mkdir(parents=True)
             _ = source.write_text("value = 1\n", encoding="utf-8")
-            block = CoverageBlock(lines={1: 1}, statements=1, hits=1, branches=1)
-            oversized = check_source_lines(
+            block = CoverageBlock(
+                lines={1: 1}, statements=1, hits=1, branches=1, branch_lines={1: 1}
+            )
+            oversized = check_source_errors(
                 root, ".github/scripts/big.py", block, max_bytes=4
             )
             self.assertTrue(any("превышает предел" in error for error in oversized))
             outside = sandbox / "outside-module.py"
             _ = outside.write_text("value = 1\n", encoding="utf-8")
-            escaped = check_source_lines(root, "../outside-module.py", block)
+            escaped = check_source_errors(root, "../outside-module.py", block)
             self.assertTrue(
                 any(
                     "вне корня" in error or "Нет исходника" in error
@@ -1031,13 +1046,23 @@ class CodecovConfigurationTests(unittest.TestCase):
         self.assertEqual(comment["require_base"], "false")
         self.assertEqual(comment["layout"], "diff, flags, files")
 
+    def test_report_age_matches_artifact_retention(self):
+        # Ручное одобрение окружения может задержать публикацию, поэтому срок
+        # приёма отчётов Codecov обязан покрывать хранение артефактов CI.
+        codecov = cast(dict[str, str], self.config["codecov"])
+        retention = workflow_artifact_retention_days()
+        self.assertEqual(codecov["max_report_age"], f"{retention}d")
+
 
 class ReportDiagnosticsTests(unittest.TestCase):
     def test_raw_windows_report_is_rejected_until_normalized(self):
-        raw = (FIXTURES / "python-lcov-windows-raw.lcov").read_text(encoding="utf-8")
+        # Копия фикстуры побайтовая: текстовое чтение на Linux превратило бы CRLF
+        # в LF, и проверка перестала бы доказывать нормализацию окончаний строк.
+        raw = (FIXTURES / "python-lcov-windows-raw.lcov").read_bytes()
+        self.assertIn(b"\r\n", raw)
         with tempfile.TemporaryDirectory() as temporary:
             report = Path(temporary) / "lcov.info"
-            _ = report.write_text(raw, encoding="utf-8")
+            _ = report.write_bytes(raw)
             rejected = run_script(
                 PYTHON_VALIDATOR,
                 "--report",
@@ -1053,7 +1078,7 @@ class ReportDiagnosticsTests(unittest.TestCase):
                 NORMALIZER, "--report", str(report), "--repo-root", "."
             )
             self.assertEqual(normalized.returncode, 0, normalized.stderr)
-            self.assertNotIn("\r", report.read_text(encoding="utf-8"))
+            self.assertNotIn(b"\r", report.read_bytes())
 
     def test_empty_report_is_a_measurement_error_not_zero_percent(self):
         with tempfile.TemporaryDirectory() as temporary:

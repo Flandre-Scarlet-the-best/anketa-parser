@@ -5,6 +5,9 @@
 Ожидаемый набор файлов всегда вычисляется из git (отслеживаемые плюс новые
 файлы, ещё не попавшие в индекс), поэтому число файлов не зашивается, а
 неисполненные файлы обязаны присутствовать в отчёте с нулевыми попаданиями.
+Записи ``DA`` и ``BRDA`` сверяются с синтаксисом исходника тем же парсером
+coverage, который породил отчёт: строки и точки ветвления не принимаются на
+веру из отчёта.
 """
 
 from __future__ import annotations
@@ -47,6 +50,7 @@ class Block:
     branches_hit: int = 0
     branches_found: int | None = None
     branches_covered: int | None = None
+    branch_lines: dict[int, int] = field(default_factory=dict)
 
 
 def in_scope(path: str) -> bool:
@@ -144,6 +148,10 @@ def parse_lcov(text: str) -> tuple[dict[str, Block], list[str]]:
                 continue
             current.branches += 1
             current.branches_hit += taken != "-" and int(taken) > 0
+            line_number = int(fields[0])
+            current.branch_lines[line_number] = (
+                current.branch_lines.get(line_number, 0) + 1
+            )
     if current is not None:
         errors.append(f"Блок {current_path} не завершён end_of_record (отчёт обрезан)")
     return blocks, errors
@@ -228,19 +236,43 @@ def check_evidence(root: Path, path: str, blocks: dict[str, Block]) -> list[str]
     return []
 
 
-def statement_lines(path: str, text: str, exclude: str = "") -> set[int]:
-    """Вернуть исполняемые строки исходника достоверным парсером coverage.
+@dataclass(frozen=True)
+class SourceFacts:
+    """Синтаксические факты исходника, которые обязан повторить отчёт."""
+
+    statements: set[int]
+    exits: dict[int, int]
+    partial: set[int]
+
+
+def source_facts(
+    path: str, text: str, exclude: str = "", partial: str = ""
+) -> SourceFacts:
+    """Вернуть исполняемые строки, число исходов и строки частичных ветвей.
 
     Отчёт формирует сам coverage, поэтому набор ``DA`` обязан совпадать с его
-    множеством операторов. Грубый подсчёт по ``ast`` не используется: он даёт
-    ложные отказы на корректных отчётах.
+    множеством операторов, а ``BRDA`` — с числом исходов каждой строки.
+    Грубый подсчёт по ``ast`` не используется: он даёт ложные отказы на
+    корректных отчётах.
     """
     parser = PythonParser(text=text, filename=path, exclude=exclude)
     parser.parse_source()
-    return set(parser.statements)
+    return SourceFacts(
+        statements=set(parser.statements),
+        exits=dict(parser.exit_counts()),
+        partial=set(parser.lines_matching(partial)) if partial else set(),
+    )
 
 
-def report_exclusions(root: Path) -> str:
+@dataclass(frozen=True)
+class ReportSettings:
+    """Настройки отчёта измеренной ревизии, влияющие на состав записей."""
+
+    exclude: str
+    partial: str
+
+
+def report_settings(root: Path) -> ReportSettings:
     """Прочитать настройки отчёта измеренной ревизии без загрузки плагинов."""
     config_file = root / ".coveragerc"
     config = read_coverage_config(
@@ -251,7 +283,10 @@ def report_exclusions(root: Path) -> str:
         raise ValueError(
             "плагины coverage в конфигурации измеренной ревизии не поддерживаются"
         )
-    return join_regex(config.exclude_list)
+    return ReportSettings(
+        exclude=join_regex(config.exclude_list),
+        partial=join_regex([*config.partial_list, *config.partial_always_list]),
+    )
 
 
 def coverage_pin() -> str | None:
@@ -286,48 +321,114 @@ def coverage_version_errors() -> list[str]:
     return []
 
 
-def check_source_lines(
+def read_source_facts(
+    root: Path,
+    path: str,
+    max_bytes: int = MAX_SOURCE_BYTES,
+    *,
+    exclude: str = "",
+    partial: str = "",
+) -> tuple[SourceFacts | None, list[str]]:
+    """Прочитать исходник отчёта и вычислить его синтаксические факты."""
+    source = root / path
+    if not source.is_file():
+        return None, [f"Нет исходника для проверки строк: {path}"]
+    try:
+        resolved = source.resolve(strict=True)
+        base = root.resolve()
+    except OSError as error:
+        return None, [f"Исходник недоступен: {path} ({error})"]
+    if not resolved.is_relative_to(base):
+        return None, [f"Исходник вне корня репозитория: {path}"]
+    size = source.stat().st_size
+    if size > max_bytes:
+        return None, [f"Исходник {path} превышает предел {max_bytes} байт ({size})"]
+    try:
+        return (
+            source_facts(path, source.read_text(encoding="utf-8"), exclude, partial),
+            [],
+        )
+    except (OSError, UnicodeDecodeError, SyntaxError, ValueError, re.error) as error:
+        return None, [f"Не удалось определить исполняемые строки {path}: {error}"]
+
+
+def check_source_lines(path: str, block: Block, facts: SourceFacts) -> list[str]:
+    """Сверить DA с исполняемыми строками исходника и отвергнуть подделку."""
+    if not facts.statements and block.lines:
+        return [f"В {path} нет исполняемых строк, но отчёт содержит записи DA"]
+    reported = set(block.lines)
+    errors: list[str] = []
+    invented = sorted(reported - facts.statements)
+    if invented:
+        errors.append(
+            f"{path}: попадания на неисполняемых строках: "
+            + ", ".join(str(number) for number in invented[:5])
+        )
+    hidden = sorted(facts.statements - reported)
+    if hidden:
+        errors.append(
+            f"{path}: скрыты исполняемые строки отчёта: "
+            + ", ".join(str(number) for number in hidden[:5])
+        )
+    return errors
+
+
+def check_source_branches(path: str, block: Block, facts: SourceFacts) -> list[str]:
+    """Сверить записи BRDA с точками ветвления и числом исходов исходника.
+
+    coverage пишет BRDA только для исполняемых строк с несколькими исходами, а
+    число записей равно числу исходов. Для строк с частичной ветвью
+    (``# pragma: no branch``, ``while True:``) неисполненные исходы не пишутся,
+    поэтому там допускается меньшее число записей.
+    """
+    expected = {line: exits for line, exits in facts.exits.items() if exits > 1}
+    reported = set(block.branch_lines)
+    errors: list[str] = []
+    invented = sorted(reported - set(expected))
+    if invented:
+        errors.append(
+            f"{path}: записи BRDA на строках без точек ветвления: "
+            + ", ".join(str(number) for number in invented[:5])
+        )
+    hidden = sorted(set(expected) - reported)
+    if hidden:
+        errors.append(
+            f"{path}: скрыты точки ветвления отчёта: "
+            + ", ".join(str(number) for number in hidden[:5])
+        )
+    wrong = sorted(
+        line
+        for line, count in block.branch_lines.items()
+        if line in expected
+        and (
+            count > expected[line] if line in facts.partial else count != expected[line]
+        )
+    )
+    if wrong:
+        errors.append(
+            f"{path}: число записей BRDA не совпадает с числом исходов строк: "
+            + ", ".join(str(number) for number in wrong[:5])
+        )
+    return errors
+
+
+def check_source_errors(
     root: Path,
     path: str,
     block: Block,
     max_bytes: int = MAX_SOURCE_BYTES,
     *,
     exclude: str = "",
+    partial: str = "",
 ) -> list[str]:
-    """Сверить DA с исполняемыми строками исходника и отвергнуть подделку."""
-    source = root / path
-    if not source.is_file():
-        return [f"Нет исходника для проверки строк: {path}"]
-    try:
-        resolved = source.resolve(strict=True)
-        base = root.resolve()
-    except OSError as error:
-        return [f"Исходник недоступен: {path} ({error})"]
-    if not resolved.is_relative_to(base):
-        return [f"Исходник вне корня репозитория: {path}"]
-    size = source.stat().st_size
-    if size > max_bytes:
-        return [f"Исходник {path} превышает предел {max_bytes} байт ({size})"]
-    try:
-        statements = statement_lines(path, source.read_text(encoding="utf-8"), exclude)
-    except (OSError, UnicodeDecodeError, SyntaxError, ValueError, re.error) as error:
-        return [f"Не удалось определить исполняемые строки {path}: {error}"]
-    if not statements and block.lines:
-        return [f"В {path} нет исполняемых строк, но отчёт содержит записи DA"]
-    reported = set(block.lines)
-    errors: list[str] = []
-    invented = sorted(reported - statements)
-    if invented:
-        errors.append(
-            f"{path}: попадания на неисполняемых строках: "
-            + ", ".join(str(number) for number in invented[:5])
-        )
-    hidden = sorted(statements - reported)
-    if hidden:
-        errors.append(
-            f"{path}: скрыты исполняемые строки отчёта: "
-            + ", ".join(str(number) for number in hidden[:5])
-        )
+    """Сверить записи отчёта с исходником по строкам и ветвям."""
+    facts, errors = read_source_facts(
+        root, path, max_bytes, exclude=exclude, partial=partial
+    )
+    if facts is None:
+        return errors
+    errors.extend(check_source_lines(path, block, facts))
+    errors.extend(check_source_branches(path, block, facts))
     return errors
 
 
@@ -363,7 +464,13 @@ def check_block(path: str, block: Block) -> list[str]:
 
 
 def check_data_dir(root: Path, data_dir: Path, blocks: dict[str, Block]) -> list[str]:
-    """Проверить, что данные собраны этим прогоном и не устарели."""
+    """Проверить, что объединённые данные не старше измеряемых исходников.
+
+    Сверяется только время изменения: оно отсекает данные, собранные до правки
+    исходников, но не доказывает, что конкретный LCOV построен из этого файла.
+    Происхождение отчёта подтверждают порядок шагов CI и сверка ревизии, поэтому
+    эта проверка не называется подтверждением прогона.
+    """
     if not data_dir.is_dir():
         return [f"Каталог данных отсутствует: {data_dir}"]
     data_file = data_dir / ".coverage"
@@ -388,11 +495,15 @@ def validate_report(
     """Проверить отчёт целиком и вернуть список ошибок."""
     if not report_path.is_file():
         return [f"Отчёт отсутствует: {report_path}"]
-    raw = report_path.read_bytes()
+    try:
+        with report_path.open("rb") as stream:
+            raw = stream.read(MAX_REPORT_BYTES + 1)
+    except OSError as error:
+        return [f"Отчёт недоступен: {report_path} ({error})"]
     if not raw:
         return [f"Отчёт пуст: {report_path}"]
     if len(raw) > MAX_REPORT_BYTES:
-        return [f"Отчёт превышает допустимый размер: {len(raw)} байт"]
+        return [f"Отчёт превышает допустимый размер: больше {MAX_REPORT_BYTES} байт"]
     if b"\r" in raw:
         return [
             "Отчёт не нормализован: обнаружен возврат каретки; выполните нормализацию LCOV перед валидацией"
@@ -413,13 +524,21 @@ def validate_report(
     if extra:
         errors.append("В отчёте есть файлы вне ожидаемого набора: " + ", ".join(extra))
     try:
-        exclude = report_exclusions(root)
+        settings = report_settings(root)
     except (OSError, ValueError, ConfigError) as error:
-        errors.append(f"Не удалось прочитать исключения coverage: {error}")
+        errors.append(f"Не удалось прочитать настройки coverage: {error}")
         return errors
     for path in sorted(present & expected):
         errors.extend(check_block(path, blocks[path]))
-        errors.extend(check_source_lines(root, path, blocks[path], exclude=exclude))
+        errors.extend(
+            check_source_errors(
+                root,
+                path,
+                blocks[path],
+                exclude=settings.exclude,
+                partial=settings.partial,
+            )
+        )
     if not any(block.branches for block in blocks.values()):
         errors.append("В отчёте нет записей BRDA: ветви не измерялись")
     if sum(covered_lines(block) for block in blocks.values()) == 0:

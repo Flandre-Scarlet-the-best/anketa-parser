@@ -165,6 +165,20 @@ class CoberturaNormalizerTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertIn(message, result.stderr)
 
+    def test_class_without_filename_attribute_is_rejected(self):
+        body = build_report(SOURCE).replace('filename="' + SOURCE + '"', "", 1)
+        _ = self.report.write_text(body, encoding="utf-8")
+        result = self.run_normalizer()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("класс без атрибута filename", result.stderr)
+        self.assertEqual(self.report.read_text(encoding="utf-8"), body)
+
+    def test_report_over_size_limit_is_rejected_before_parsing(self):
+        _ = self.report.write_text(build_report(SOURCE), encoding="utf-8")
+        result = self.run_normalizer("--max-bytes", "64")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("превышает допустимый размер", result.stderr)
+
     def test_output_keeps_structure_and_writes_requested_file(self):
         absolute = f"{ROOT.as_posix()}/{SOURCE}"
         _ = self.report.write_text(

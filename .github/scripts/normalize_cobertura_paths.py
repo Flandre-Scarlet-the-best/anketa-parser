@@ -116,6 +116,8 @@ def normalize(text: str, root: Path) -> tuple[bytes | None, Counts, list[str]]:
         for attribute in PATH_ATTRIBUTES:
             value = element.get(attribute)
             if value is None:
+                errors.append(f"класс без атрибута {attribute}")
+                rejected += 1
                 continue
             candidate, problem = relative_source(value, root)
             if candidate is None:
@@ -160,10 +162,12 @@ def main(argv: list[str] | None = None) -> int:
     if not report.is_file():
         print(f"::error::Отчёт отсутствует: {report}", file=sys.stderr)
         return 1
-    raw = report.read_bytes()
-    if len(raw) > cast(int, settings.max_bytes):
+    limit = cast(int, settings.max_bytes)
+    with report.open("rb") as stream:
+        raw = stream.read(limit + 1)
+    if len(raw) > limit:
         print(
-            f"::error::Отчёт превышает допустимый размер: {len(raw)} байт",
+            f"::error::Отчёт превышает допустимый размер: больше {limit} байт",
             file=sys.stderr,
         )
         return 1
