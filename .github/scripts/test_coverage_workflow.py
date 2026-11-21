@@ -50,6 +50,12 @@ CODECOV_ACTION = "codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a
 UPLOAD_ARTIFACT = "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
 DOWNLOAD_ARTIFACT = "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333"
 EXPECTED_FLAGS = ("dotnet-unit", "dotnet-docker", "python-linux", "python-windows")
+EXPECTED_UPLOAD_FILES = {
+    "dotnet-unit": "coverage/dotnet-unit/dotnet.cobertura.xml",
+    "dotnet-docker": "coverage/dotnet-docker/dotnet.cobertura.xml",
+    "python-linux": "coverage/python-linux/lcov.info",
+    "python-windows": "coverage/python-windows/lcov.info",
+}
 CI_JOBS = frozenset(
     ("actions-security", "contracts", "background-wait-windows", "build")
 )
@@ -548,9 +554,11 @@ class PublisherWorkflowTests(unittest.TestCase):
         job = cast(dict[str, dict[str, object]], self.workflow["jobs"])["publish"]
         self.assertEqual(" ".join(str(job["if"]).split()), PUBLISH_GATE)
         self.assertEqual(cast(dict[str, str], job["environment"]), {"name": "codecov"})
-        self.assertLessEqual(
-            set(cast(dict[str, str], job["permissions"])),
-            {"contents", "actions"},
+        # Проверяются значения прав, а не только имена ключей: издателю нужен
+        # только read, а write содержимого или отсутствие actions: read недопустимы.
+        self.assertEqual(
+            cast(dict[str, str], job["permissions"]),
+            {"contents": "read", "actions": "read"},
         )
         self.assertNotIn("id-token", self.text)
         self.assertNotIn("pull_request_target", self.text)
@@ -635,7 +643,9 @@ class PublisherWorkflowTests(unittest.TestCase):
             with self.subTest(case=name), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 tree = root / "source-tree"
-                tree.mkdir(parents=True, exist_ok=True)
+                # Реальный checkout всегда содержит .git/hooks: шаг начинает с
+                # подсчёта хуков, а Bash в GitHub Actions работает с errexit.
+                (tree / ".git/hooks").mkdir(parents=True, exist_ok=True)
                 for relative, kind in layout.items():
                     target = tree / relative
                     target.parent.mkdir(parents=True, exist_ok=True)
@@ -696,6 +706,8 @@ class PublisherWorkflowTests(unittest.TestCase):
                     "user.name=Test",
                     "-c",
                     "user.email=test@example.invalid",
+                    "-c",
+                    "commit.gpgSign=false",
                     "commit",
                     "-qm",
                     "Проверка",
@@ -817,6 +829,11 @@ class PublisherWorkflowTests(unittest.TestCase):
             self.assertEqual(str(step["uses"]), CODECOV_ACTION)
             settings = cast(dict[str, str], step["with"])
             self.assertEqual(settings["disable_search"], "true")
+            # Пара «флаг — файл» фиксируется явно: загрузка Linux-отчёта под
+            # Windows-флагом прошла бы проверку валидаторов, но испортила данные.
+            self.assertEqual(
+                settings["files"], EXPECTED_UPLOAD_FILES[settings["flags"]]
+            )
             # Список файлов network-секции строится из измеренного дерева, а не
             # из checkout ветки по умолчанию, где новых файлов PR ещё нет.
             self.assertEqual(settings["root_dir"], "source-tree")
@@ -1048,7 +1065,7 @@ def run_bash_in(
 ) -> subprocess.CompletedProcess[str]:
     """Выполнить фрагмент workflow в заданном каталоге (как на runner)."""
     return subprocess.run(  # noqa: S603 - команда из проверяемого workflow
-        [bash_command(), "--noprofile", "--norc", "-uo", "pipefail", "-c", script],
+        [bash_command(), "--noprofile", "--norc", "-euo", "pipefail", "-c", script],
         cwd=cwd,
         env={**os.environ, **env},
         capture_output=True,

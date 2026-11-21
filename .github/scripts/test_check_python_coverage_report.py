@@ -127,6 +127,7 @@ class ReportCase(unittest.TestCase):
                 *arguments,
             ],
             cwd=self.root,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -176,8 +177,25 @@ class ValidReportTests(ReportCase):
         self.assertNotIn("test_ignored.py", result.stdout)
 
     def test_windows_platform_accepts_window_only_evidence(self):
-        result = self.run_validator(platform="windows")
-        self.assertEqual(result.returncode, 0, result.stderr)
+        # Windows-профиль требует блок __main__ фонового ожидания, а покрытый
+        # блок Linux-скрипта не должен подменять эту улику.
+        report = "\n".join(
+            (
+                block(SCRIPTS + "helper.py", {1: 1, 2: 1}),
+                block(
+                    SCRIPTS + "check_pr_body.py",
+                    {1: 1, 2: 1, 5: 1, 6: 0},
+                    branches=2,
+                ),
+                block(SKILL_SCRIPT, {1: 1, 2: 1, 5: 1, 6: 1}, branches=2),
+                "",
+            )
+        )
+        self.write_report(report)
+        windows = self.run_validator(platform="windows")
+        self.assertEqual(windows.returncode, 0, windows.stderr)
+        linux = self.run_validator()
+        self.assert_error(linux, "блоке __main__")
 
     def test_real_lcov_includes_unexecuted_namespace_source_and_respects_exclusions(
         self,
@@ -408,20 +426,46 @@ class AttributionTests(ReportCase):
 
 class SubprocessEvidenceTests(ReportCase):
     def test_linux_requires_covered_main_block(self):
-        self.write_report(self.default_report().replace("DA:6,1", "DA:6,0", 1))
+        report = "\n".join(
+            (
+                block(SCRIPTS + "helper.py", {1: 1, 2: 1}),
+                block(
+                    SCRIPTS + "check_pr_body.py",
+                    {1: 1, 2: 1, 5: 1, 6: 0},
+                    branches=2,
+                ),
+                block(SKILL_SCRIPT, {1: 1, 2: 1, 5: 1, 6: 1}, branches=2),
+                "",
+            )
+        )
+        self.write_report(report)
         self.assert_error(self.run_validator(), "блоке __main__")
 
     def test_windows_requires_covered_skill_main_block(self):
-        self.write_report(self.default_report().replace("DA:6,1", "DA:6,0"))
+        report = "\n".join(
+            (
+                block(SCRIPTS + "helper.py", {1: 1, 2: 1}),
+                block(
+                    SCRIPTS + "check_pr_body.py", {1: 1, 2: 1, 5: 1, 6: 1}, branches=2
+                ),
+                block(SKILL_SCRIPT, {1: 1, 2: 1, 5: 1, 6: 0}, branches=2),
+                "",
+            )
+        )
+        self.write_report(report)
         result = self.run_validator(platform="windows")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("блоке __main__", result.stderr)
         self.assertIn("background_wait.py", result.stderr)
 
     def test_missing_evidence_file_is_error(self):
         (self.root / SKILL_SCRIPT).unlink()
         result = self.run_validator(platform="windows")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("background_wait.py", result.stderr)
+        # Отчёт ссылается на удалённый файл: диагностируется именно отсутствие
+        # ожидаемого файла на диске, а не общая ошибка Windows-улики.
+        self.assertIn("Ожидаемый файл отсутствует на диске", result.stderr)
+        self.assertIn(SKILL_SCRIPT, result.stderr)
 
     def test_evidence_without_main_block_is_error(self):
         self.write(SKILL_SCRIPT, "def run() -> int:\n    return 0\n")

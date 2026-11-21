@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 from typing import override
 from xml.etree import ElementTree
+from xml.sax.saxutils import escape, quoteattr
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / ".github/scripts"
@@ -27,7 +28,7 @@ SOURCE = "src/AnketaParser.Core/ExitCodes.cs"
 def build_report(*filenames: str) -> str:
     """Собрать минимальный Cobertura с указанными путями классов."""
     classes = "".join(
-        f'<class name="Type{index}" filename="{name}" line-rate="1" branch-rate="0"><methods/><lines><line number="1" hits="1"/></lines></class>'
+        f'<class name="Type{index}" filename={quoteattr(name)} line-rate="1" branch-rate="0"><methods/><lines><line number="1" hits="1"/></lines></class>'
         for index, name in enumerate(filenames)
     )
     return (
@@ -145,7 +146,9 @@ class CoberturaNormalizerTests(unittest.TestCase):
     def test_document_with_sources_is_rejected(self):
         body = build_report(SOURCE).replace(
             "</coverage>",
-            f"<sources><source>{ROOT.as_posix()}/src/</source></sources></coverage>",
+            "<sources><source>"
+            + escape(ROOT.as_posix() + "/src/")
+            + "</source></sources></coverage>",
         )
         _ = self.report.write_text(body, encoding="utf-8")
         result = self.run_normalizer()
@@ -164,6 +167,29 @@ class CoberturaNormalizerTests(unittest.TestCase):
                 result = self.run_normalizer()
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertIn(message, result.stderr)
+
+    def test_relative_path_outside_src_is_not_remapped(self):
+        body = build_report("tests/fixtures/src/AnketaParser.Core/ExitCodes.cs")
+        _ = self.report.write_text(body, encoding="utf-8")
+        result = self.run_normalizer()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("путь вне src", result.stderr)
+        self.assertEqual(self.report.read_text(encoding="utf-8"), body)
+
+    def test_non_positive_size_limit_is_rejected_before_reading(self):
+        _ = self.report.write_text(build_report(SOURCE), encoding="utf-8")
+        result = self.run_normalizer("--max-bytes", "-2")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("предел размера должен быть больше нуля", result.stderr)
+
+    def test_success_leaves_no_temporary_files(self):
+        absolute = f"{ROOT.as_posix()}/{SOURCE}"
+        _ = self.report.write_text(build_report(absolute), encoding="utf-8")
+        result = self.run_normalizer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [path.name for path in self.directory.iterdir()], [self.report.name]
+        )
 
     def test_class_without_filename_attribute_is_rejected(self):
         body = build_report(SOURCE).replace('filename="' + SOURCE + '"', "", 1)

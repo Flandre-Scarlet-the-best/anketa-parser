@@ -11,7 +11,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -21,6 +23,11 @@ MAX_REPORT_BYTES = 64 * 1024 * 1024
 ROOT_TAG = "coverage"
 PREFIX = "src/"
 PATH_ATTRIBUTES = ("filename",)
+
+
+def _is_absolute(path: str) -> bool:
+    """Отличить абсолютный путь другого раннера от относительного в репозитории."""
+    return path.startswith("/") or (len(path) > 1 and path[1] == ":")
 
 
 @dataclass(frozen=True)
@@ -59,7 +66,9 @@ def relative_source(path: str, root: Path) -> tuple[str | None, str | None]:
         candidate = normalized
     elif inside_root:
         candidate = normalized[len(root_prefix) :]
-    else:
+    elif _is_absolute(normalized):
+        # Поиск по суффиксу допустим только для абсолютных путей другого раннера:
+        # относительный путь вне src принадлежит другому файлу и не переписывается.
         segments = normalized.split("/")
         suffixes = [
             "/".join(segments[index:])
@@ -73,6 +82,8 @@ def relative_source(path: str, root: Path) -> tuple[str | None, str | None]:
             reason = "неоднозначный путь" if matches else "исходник не найден"
             return None, f"{reason}: {path}"
         candidate = matches[0]
+    else:
+        return None, f"путь вне src: {path}"
     if not candidate.startswith(PREFIX) or any(
         not segment or segment == "." for segment in candidate.split("/")
     ):
@@ -136,6 +147,39 @@ def normalize(text: str, root: Path) -> tuple[bytes | None, Counts, list[str]]:
     return body.encode("utf-8"), counts, []
 
 
+def _positive_bytes(value: str) -> int:
+    """Ограничение чтения обязано быть положительным: иначе read(-1) читает всё."""
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("ожидалось целое число байт") from error
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("предел размера должен быть больше нуля")
+    return parsed
+
+
+def _write_atomic(target: Path, data: bytes) -> None:
+    """Записать отчёт через временный файл в том же каталоге.
+
+    Прямая запись поверх входного отчёта усекает его до завершения записи: сбой
+    на середине оставил бы неполный XML вместо исходного отчёта.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(
+        dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
+    )
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            _ = handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _ = temporary.replace(target)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     _ = parser.add_argument("--report", required=True, help="путь к Cobertura XML")
@@ -147,7 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _ = parser.add_argument(
         "--max-bytes",
-        type=int,
+        type=_positive_bytes,
         default=MAX_REPORT_BYTES,
         help="предельный размер входного отчёта",
     )
@@ -183,8 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     output_setting = cast(str | None, settings.output)
     output = report if output_setting is None else Path(output_setting)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    _ = output.write_bytes(normalized)
+    _write_atomic(output, normalized)
     print(counts.describe())
     print(f"Нормализован отчёт {output}")
     return 0

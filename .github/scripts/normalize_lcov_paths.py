@@ -11,7 +11,9 @@ coverage.py на Windows пишет CRLF и обратные слэши в пу�
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -19,6 +21,7 @@ from typing import cast
 from check_python_coverage_report import check_path, expected_sources
 
 MAX_REPORT_BYTES = 64 * 1024 * 1024
+LIMIT_ERRORS = 20
 SF_PREFIX = "SF:"
 CRLF = "\r\n"
 
@@ -85,7 +88,45 @@ def normalize(text: str, expected: set[str]) -> tuple[str, Counts, list[str]]:
         )
     if files == 0 and not errors:
         errors.append("В отчёте нет ни одной строки SF: это не LCOV покрытия")
+    if len(errors) > LIMIT_ERRORS:
+        errors = [
+            *errors[:LIMIT_ERRORS],
+            f"и ещё {len(errors) - LIMIT_ERRORS} диагностических сообщений не показано",
+        ]
     return result, Counts(separators, line_endings, files, rejected), errors
+
+
+def _positive_bytes(value: str) -> int:
+    """Ограничение чтения обязано быть положительным: иначе read(-1) читает всё."""
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("ожидалось целое число байт") from error
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("предел размера должен быть больше нуля")
+    return parsed
+
+
+def _write_atomic(target: Path, data: bytes) -> None:
+    """Записать отчёт через временный файл в том же каталоге.
+
+    Прямая запись поверх входного отчёта усекает его до завершения записи: сбой
+    на середине оставил бы неполный LCOV вместо исходного.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(
+        dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
+    )
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            _ = handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _ = temporary.replace(target)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -99,7 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _ = parser.add_argument(
         "--max-bytes",
-        type=int,
+        type=_positive_bytes,
         default=MAX_REPORT_BYTES,
         help="предельный размер входного отчёта",
     )
@@ -149,8 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     output_setting = cast(str | None, settings.output)
     output = report if output_setting is None else Path(output_setting)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    _ = output.write_bytes(normalized.encode("utf-8"))
+    _write_atomic(output, normalized.encode("utf-8"))
     print(counts.describe())
     print(f"Нормализован отчёт {output}")
     return 0

@@ -133,7 +133,7 @@ def make_instrumented_report(sources: dict[str, list[tuple[str, bool]]]) -> str:
     return ElementTree.tostring(results, encoding="unicode")
 
 
-class DotnetCoverageTests(unittest.TestCase):
+class _CoverageFixture(unittest.TestCase):
     def __init__(self, methodName: str = "runTest") -> None:
         super().__init__(methodName)
         self.temporary: tempfile.TemporaryDirectory[str] | None = None
@@ -197,6 +197,10 @@ class DotnetCoverageTests(unittest.TestCase):
             root_tag=root_tag,
         )
 
+
+class DotnetCoverageTests(_CoverageFixture):
+    """Проверки отчёта .NET на общей фикстуре."""
+
     def test_valid_report_passes_and_keeps_zero_coverage_class(self):
         self.write(self.report())
         self.assertEqual(
@@ -205,6 +209,76 @@ class DotnetCoverageTests(unittest.TestCase):
         # Настоящие 0% допустимы: класс без попаданий не превращает отчёт в ошибку.
         self.write(self.report(), "coverage.cobertura.xml")
         self.assertIn("AnketaParser.Host/Source.cs", self.report())
+
+    def test_duplicate_package_name_is_rejected(self):
+        report = self.report()
+        package = re.search(
+            r'<package name="AnketaParser.Infrastructure">.*?</package>', report
+        )
+        if package is None:
+            self.fail("фикстура не содержит пакета AnketaParser.Infrastructure")
+        duplicated = report.replace(package.group(0), package.group(0) * 2, 1)
+        self.write(duplicated)
+        errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
+        self.assertIn("повторные имена пакетов", errors)
+
+    def test_overlong_numeric_attribute_is_reported_not_raised(self):
+        report = self.report().replace('number="1"', 'number="' + "1" * 5000 + '"', 1)
+        self.write(report)
+        errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
+        self.assertIn("некорректный номер строки", errors)
+
+    def test_oversized_entry_source_is_not_read_unbounded(self):
+        _ = (self.repo / "src" / CLI / "Program.cs").write_text(
+            "Console.WriteLine(1);\n" + "// padding\n" * 40, encoding="utf-8"
+        )
+        self.write(self.report())
+        errors = " ".join(
+            validate(
+                self.reports,
+                "unit",
+                self.repo,
+                max_age_hours=24.0,
+                max_source_bytes=32,
+            )
+        )
+        self.assertIn("точка входа не проверена", errors)
+
+    def test_namespace_declaration_ends_entry_point_scan(self):
+        source = """namespace Cli;
+
+[
+    System.Serializable
+]
+internal sealed class Widget
+{
+}
+"""
+        _ = (self.repo / "src" / CLI / "Widget.cs").write_text(source, encoding="utf-8")
+        self.write(self.report())
+        errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
+        self.assertNotIn("рукописные точки входа исключены", errors)
+
+    def test_entry_point_in_wrong_assembly_is_rejected(self):
+        _ = (self.repo / "src" / CLI / "Program.cs").write_text(
+            "Console.WriteLine(1);\n", encoding="utf-8"
+        )
+        entries = [*self.entries(), (CORE, "AnketaParser.Cli/Program.cs", {1: 1})]
+        self.write(
+            make_report(entries, sources=self.sources, timestamp=int(time.time()))
+        )
+        errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
+        self.assertIn("рукописные точки входа исключены", errors)
+
+    def test_class_outside_packages_is_rejected(self):
+        stray = (
+            '<class name="Stray.Type" filename="src/AnketaParser.Infrastructure/Source.cs">'
+            + '<lines><line number="1" hits="0" /></lines></class>'
+        )
+        report = self.report().replace("</coverage>", stray + "</coverage>", 1)
+        self.write(report)
+        errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
+        self.assertIn("классы вне packages/package/classes", errors)
 
     def test_absolute_filename_inside_repository_is_accepted(self):
         absolute = f"{self.repo.as_posix()}/src/AnketaParser.Core/Source.cs"
@@ -580,7 +654,7 @@ namespace Cli
         self.assertIn("завышено", errors)
 
 
-class SourceLineTests(DotnetCoverageTests):
+class SourceLineTests(_CoverageFixture):
     """Строки отчёта сверяются с фактическим исходником."""
 
     def test_relative_src_paths_without_sources_are_accepted(self):

@@ -36,6 +36,7 @@ BUILD_OUTPUT = re.compile(r"(?:^|/)(?:obj|bin)/")
 BRANCH_COVERAGE = re.compile(
     r"([0-9]{1,3})(?:\.([0-9]{1,2}))?% \(([0-9]{1,10})/([0-9]{1,10})\)"
 )
+MAX_ATTRIBUTE_DIGITS = 9
 TYPE_DECLARATION = re.compile(
     r"(?m)^\s*(?:public|internal|file|private|protected|static|sealed|abstract|partial|readonly|unsafe|\s)*(?:class|struct|interface|enum|record|delegate)\b"
 )
@@ -64,6 +65,7 @@ class Metrics:
 class ClassEntry:
     relative: str
     element: ElementTree.Element
+    assembly: str = ""
 
 
 class Arguments(argparse.Namespace):
@@ -82,6 +84,18 @@ def _attribute(element: ElementTree.Element, name: str) -> str:
     if value is None:
         raise ValueError(f"отсутствует атрибут {name}")
     return value
+
+
+def _decimal(value: str) -> int | None:
+    """Разобрать десятичное число проверенной длины без необработанного исключения.
+
+    ``isascii()`` и ``isdigit()`` пропускают строку длиннее предела преобразования
+    ``int``, где ``int()`` выбрасывает ``ValueError``. Здесь такая строка
+    считается некорректным атрибутом, а не сбоем валидатора.
+    """
+    if not value.isascii() or not value.isdigit() or len(value) > MAX_ATTRIBUTE_DIGITS:
+        return None
+    return int(value)
 
 
 def _metrics(root: ElementTree.Element) -> Metrics:
@@ -280,7 +294,7 @@ def _package_errors(
 
 
 def _class_entries(
-    root: ElementTree.Element,
+    packages: dict[str, ElementTree.Element],
     sources: tuple[str, ...],
     root_posix: str,
     namespace: str,
@@ -292,25 +306,26 @@ def _class_entries(
     artifacts: list[str] = []
     non_normalized: list[str] = []
     unlabelled = 0
-    for element in root.iter("class"):
-        filename = element.get("filename")
-        if not filename:
-            unlabelled += 1
-            continue
-        relative = _resolve_source(filename, sources, root_posix)
-        if relative is None:
-            unresolved.append(filename)
-            continue
-        segments = relative.split("/")
-        if not relative.startswith("src/") or ".." in segments or "" in segments:
-            unresolved.append(filename)
-            continue
-        if BUILD_OUTPUT.search(relative):
-            artifacts.append(relative)
-            continue
-        if require_normalized and (filename != relative or "." in segments):
-            non_normalized.append(filename)
-        entries.append(ClassEntry(relative, element))
+    for assembly, package in sorted(packages.items()):
+        for element in package.findall("classes/class"):
+            filename = element.get("filename")
+            if not filename:
+                unlabelled += 1
+                continue
+            relative = _resolve_source(filename, sources, root_posix)
+            if relative is None:
+                unresolved.append(filename)
+                continue
+            segments = relative.split("/")
+            if not relative.startswith("src/") or ".." in segments or "" in segments:
+                unresolved.append(filename)
+                continue
+            if BUILD_OUTPUT.search(relative):
+                artifacts.append(relative)
+                continue
+            if require_normalized and (filename != relative or "." in segments):
+                non_normalized.append(filename)
+            entries.append(ClassEntry(relative, element, assembly))
     errors: list[str] = []
     if unlabelled:
         errors.append(f"{namespace}: классов без filename: {unlabelled}")
@@ -337,10 +352,9 @@ def _duplicate_line_numbers(element: ElementTree.Element) -> list[str]:
     seen: set[int] = set()
     duplicates: set[int] = set()
     for line in element.findall("lines/line"):
-        number = (line.get("number") or "").strip()
-        if not number.isascii() or not number.isdigit() or int(number) < 1:
+        value = _decimal((line.get("number") or "").strip())
+        if value is None or value < 1:
             continue
-        value = int(number)
         if value in seen:
             duplicates.add(value)
         seen.add(value)
@@ -369,11 +383,12 @@ def _line_errors(
     требует PDB и остаётся вне области этой проверки.
     """
     errors: list[str] = []
+    base = repo_root.resolve()
+    cache: dict[Path, list[str]] = {}
     for entry in entries:
         source = repo_root / entry.relative
         try:
             resolved = source.resolve(strict=True)
-            base = repo_root.resolve()
         except OSError as error:
             errors.append(f"{namespace}: исходник недоступен {entry.relative}: {error}")
             continue
@@ -388,14 +403,18 @@ def _line_errors(
                 f"{namespace}: исходник {entry.relative} превышает предел {max_source_bytes} байт ({size})"
             )
             continue
-        try:
-            text = source.read_text(encoding="utf-8", errors="replace")
-            lines = text.splitlines()
-        except OSError as error:
-            errors.append(
-                f"{namespace}: не удалось прочитать {entry.relative}: {error}"
-            )
-            continue
+        lines = cache.get(resolved)
+        if lines is None:
+            try:
+                lines = source.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
+            except OSError as error:
+                errors.append(
+                    f"{namespace}: не удалось прочитать {entry.relative}: {error}"
+                )
+                continue
+            cache[resolved] = lines
         duplicates = _duplicate_line_numbers(entry.element)
         if duplicates:
             errors.append(
@@ -405,17 +424,18 @@ def _line_errors(
         for line in entry.element.iter("line"):
             number = (line.get("number") or "").strip()
             hits = (line.get("hits") or "").strip()
-            if not number.isascii() or not number.isdigit() or int(number) < 1:
+            row = _decimal(number)
+            if row is None or row < 1:
                 errors.append(
                     f"{namespace}: некорректный номер строки в {entry.relative}: {number!r}"
                 )
                 continue
-            if int(number) > len(lines):
+            if row > len(lines):
                 errors.append(
                     f"{namespace}: строка вне исходника {entry.relative}: {number} при {len(lines)} строках файла"
                 )
 
-            if not hits.isascii() or not hits.isdigit():
+            if _decimal(hits) is None:
                 errors.append(
                     f"{namespace}: некорректные попадания в {entry.relative}: {hits!r}"
                 )
@@ -434,8 +454,8 @@ def _line_totals_errors(
     for entry in entries:
         for line in entry.element.findall("lines/line"):
             lines_valid += 1
-            hits = (line.get("hits") or "").strip()
-            lines_covered += hits.isascii() and hits.isdigit() and int(hits) > 0
+            hits = _decimal((line.get("hits") or "").strip())
+            lines_covered += hits is not None and hits > 0
             coverage = line.get("condition-coverage")
             if coverage is None and (line.get("branch") or "").lower() != "true":
                 continue
@@ -601,10 +621,13 @@ def _has_top_level_statements(text: str) -> bool:
         if USING_STATEMENT.match(stripped):
             # `using var stream = ...;` — исполняемое объявление, а не импорт.
             return True
+        if NAMESPACE_DECLARATION.match(stripped):
+            # Объявление пространства имён завершает область операторов верхнего
+            # уровня, поэтому продолжение файла точкой входа уже не является.
+            return False
         if (
             USING_DIRECTIVE.match(stripped)
             or ATTRIBUTE.match(stripped)
-            or NAMESPACE_DECLARATION.match(stripped)
             or BRACES_ONLY.match(stripped)
         ):
             continue
@@ -612,7 +635,9 @@ def _has_top_level_statements(text: str) -> bool:
     return False
 
 
-def _entry_sources(repo_root: Path) -> tuple[tuple[str, str], ...]:
+def _entry_sources(
+    repo_root: Path, max_bytes: int = MAX_SOURCE_BYTES
+) -> tuple[tuple[str, str], ...]:
     """Найти рукописные точки входа: их синтезированный тип помечается [CompilerGenerated]."""
     projects = {
         project.parent.name: project
@@ -625,6 +650,12 @@ def _entry_sources(repo_root: Path) -> tuple[tuple[str, str], ...]:
             relative = path.relative_to(repo_root).as_posix()
             if "/obj/" in relative or "/bin/" in relative:
                 continue
+            size = path.stat().st_size
+            if size > max_bytes:
+                raise ValueError(
+                    f"{relative} превышает предел {max_bytes} байт: "
+                    + "точка входа не проверена"
+                )
             text = path.read_text(encoding="utf-8-sig", errors="replace")
             first = text.splitlines()[0] if text.splitlines() else ""
             if "auto-generated" in first:
@@ -639,17 +670,18 @@ def _entry_errors(
     required: tuple[str, ...],
     repo_root: Path,
     namespace: str,
+    max_source_bytes: int = MAX_SOURCE_BYTES,
 ) -> list[str]:
     """Потребовать, чтобы рукописные точки входа измеряемого прогона были в отчёте."""
     try:
-        expected = _entry_sources(repo_root)
-    except (ElementTree.ParseError, OSError) as error:
+        expected = _entry_sources(repo_root, max_source_bytes)
+    except (ElementTree.ParseError, OSError, ValueError) as error:
         return [f"{namespace}: не удалось определить точки входа: {error}"]
-    present = {entry.relative for entry in entries}
+    present = {(entry.assembly, entry.relative) for entry in entries}
     missing = sorted(
         relative
         for relative, assembly in expected
-        if assembly in required and relative not in present
+        if assembly in required and (assembly, relative) not in present
     )
     if not missing:
         return []
@@ -726,7 +758,31 @@ def inspect(
         )
     sources = tuple((source.text or "").strip() for source in root.iter("source"))
     sources = tuple(source for source in sources if source)
-    filenames = [element.get("filename") or "" for element in root.iter("class")]
+    package_elements = list(root.findall("packages/package"))
+    package_names = [package.get("name") or "" for package in package_elements]
+    duplicated_names = sorted(
+        name for name in set(package_names) if package_names.count(name) > 1
+    )
+    if duplicated_names:
+        errors.append(
+            f"{namespace}: повторные имена пакетов: "
+            + ", ".join(duplicated_names[:LIMIT_LISTED])
+        )
+    packages = {package.get("name") or "": package for package in package_elements}
+    package_classes = [
+        element
+        for package in package_elements
+        for element in package.findall("classes/class")
+    ]
+    package_ids = {id(element) for element in package_classes}
+    stray_classes = [
+        element for element in root.iter("class") if id(element) not in package_ids
+    ]
+    if stray_classes:
+        errors.append(
+            f"{namespace}: классы вне packages/package/classes: {len(stray_classes)}"
+        )
+    filenames = [element.get("filename") or "" for element in package_classes]
     relative_names = [
         name
         for name in filenames
@@ -742,14 +798,16 @@ def inspect(
             f"{namespace}: относительные пути без <sources> не указывают на src: {', '.join(sorted(set(outside_src))[:LIMIT_LISTED])}"
         )
     entries, class_errors = _class_entries(
-        root,
+        packages,
         sources,
         repo_root.as_posix(),
         namespace,
         require_normalized=require_normalized,
     )
     errors.extend(class_errors)
-    errors.extend(_entry_errors(entries, required, repo_root, namespace))
+    errors.extend(
+        _entry_errors(entries, required, repo_root, namespace, max_source_bytes)
+    )
     errors.extend(_line_errors(entries, repo_root, namespace, max_source_bytes))
     errors.extend(_line_totals_errors(entries, metrics, namespace))
     missing = sorted(
@@ -762,7 +820,6 @@ def inspect(
     if missing:
         listed = ", ".join(missing[:LIMIT_LISTED])
         errors.append(f"{namespace}: отчёт ссылается на отсутствующие файлы: {listed}")
-    packages = {package.get("name") or "": package for package in root.iter("package")}
     errors.extend(_package_errors(packages, required, allowed, namespace))
     if instrumented_report is not None:
         errors.extend(
@@ -796,13 +853,15 @@ def validate(
     """Проверить отчёт покрытия .NET и вернуть список ошибок."""
     root = Path() if repo_root is None else repo_root
     errors, _ = inspect(
-        directory,
+        directory.resolve(),
         flavour,
         root.resolve(),
         max_age_hours,
         max_source_bytes,
         require_normalized=require_normalized,
-        instrumented_report=instrumented_report,
+        instrumented_report=(
+            instrumented_report.resolve() if instrumented_report is not None else None
+        ),
     )
     return errors
 

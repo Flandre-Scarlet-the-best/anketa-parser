@@ -161,6 +161,32 @@ class NormalizerTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertIn(message, result.stderr)
 
+    def test_non_positive_size_limit_is_rejected_before_reading(self):
+        _ = self.copy_fixture(RAW_WINDOWS)
+        result = run_normalizer(
+            "--report", str(self.report), "--repo-root", str(ROOT), "--max-bytes", "0"
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("предел размера должен быть больше нуля", result.stderr)
+
+    def test_diagnostics_are_capped_for_a_long_report(self):
+        body = "\n".join(
+            f"SF:.github/scripts/absent{index}.py\nend_of_record" for index in range(25)
+        )
+        _ = self.report.write_text(body, encoding="utf-8")
+        result = run_normalizer("--report", str(self.report), "--repo-root", str(ROOT))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("диагностических сообщений не показано", result.stderr)
+        self.assertEqual(result.stderr.count("файл отсутствует в git"), 20)
+
+    def test_success_leaves_no_temporary_files(self):
+        _ = self.copy_fixture(RAW_WINDOWS)
+        result = run_normalizer("--report", str(self.report), "--repo-root", str(ROOT))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [path.name for path in self.directory.iterdir()], [self.report.name]
+        )
+
     def test_binary_oversized_and_missing_reports_are_rejected(self):
         _ = self.report.write_bytes(b"SF:\x00\nend_of_record\n")
         binary = run_normalizer("--report", str(self.report), "--repo-root", str(ROOT))
