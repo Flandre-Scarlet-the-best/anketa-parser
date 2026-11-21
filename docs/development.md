@@ -7,9 +7,9 @@
 
 ## Окружение
 
-- [global.json](../global.json) выбирает SDK `10.0.402`, `rollForward: latestPatch`,
-  без предварительных версий. Нужен совместимый патч полосы `10.0.4xx`;
-  произвольный SDK `10.0.x` не гарантирован.
+- Версию SDK берите из [global.json](../global.json). Политика
+  `rollForward: latestPatch` допускает совместимый патч той же полосы,
+  предварительные версии отключены.
 - Проекты SDK-style, `net10.0`; [общие свойства](../Directory.Build.props)
   задают nullable, анализаторы, строгость сборки и файлы фиксации зависимостей.
   [Directory.Packages.props](../Directory.Packages.props) задаёт версии NuGet.
@@ -70,8 +70,9 @@ python3 -m venv .venv
 .venv/bin/basedpyright --project .github/pyrightconfig.json
 ```
 
-Для проверки охвата сохраните JSON-отчёт BasedPyright во временный файл и передайте
-его в `check_python_coverage.py` вместе с `.github/pyrightconfig.json`, как в
+Для проверки охвата статического анализа сохраните JSON-отчёт BasedPyright
+во временный файл и передайте его в `check_python_coverage.py` вместе с
+`.github/pyrightconfig.json`, как в
 [CI](../.github/workflows/ci.yml). Число файлов вычисляется по исходникам,
 поэтому добавление `.py` не требует ручного счётчика. `.venv` и отчёты не коммитятся.
 
@@ -85,6 +86,140 @@ python3 -m venv .venv
 в охват не входят; страницы документации в репозитории используют `.md`.
 После переноса страниц прочитайте обе навигации:
 [человеческую](README.md) и [агентскую](../.codex/context/INDEX.md).
+
+## Покрытие строк и ветвей тестами
+
+В [CI](../.github/workflows/ci.yml) четыре отчёта. У каждого свой набор тестов,
+исходников и исполняемых ветвей, поэтому проценты относятся к своему прогону.
+
+| Флаг Codecov | Что измеряется |
+| --- | --- |
+| `dotnet-unit` | Исполнение производственного кода модульными тестами .NET, включая сборки CLI и Host |
+| `dotnet-docker` | Исполнение кода тестовым процессом интеграционных проверок с изолированной PostgreSQL и проверками восстановления. Покрытие кода внутри запущенного контейнера Host сюда не входит |
+| `python-linux` | Полный набор `test_*.py` на Linux. Область измерения — скрипты из `.github/scripts` и `.agents/skills`, включая исполнение из дочерних процессов |
+| `python-windows` | Та же область скриптов и учёт дочерних процессов, но прогон `test_background_wait.py` на Windows проверяет фоновое ожидание |
+
+### .NET
+
+Из корня репозитория в Bash выполните восстановление и сборку Release из
+раздела выше. Для Docker-прогона нужен работающий Docker с Compose v2.
+[Настройки MTP](../.github/coverage/dotnet/dotnet-coverage.settings.xml) задают
+исключения сгенерированного кода. MTP выпускает два XML за один прогон. В
+Cobertura находятся строки, ветви и попадания. Собственный XML Microsoft Code
+Coverage содержит диапазоны инструментированного кода, по которым
+[валидатор](../.github/scripts/check_dotnet_coverage.py) сверяет состав исходников
+по сборкам, включая файлы с нулевым покрытием. Файл с операторами верхнего уровня
+обязан присутствовать в отчёте своей сборки; атрибуты, директивы `using` и
+объявления типов точкой входа не считаются.
+
+```bash
+set -e
+shopt -s extglob nullglob
+reports=$(mktemp -d)
+for suite in unit docker; do
+  project=AnketaParser.Tests
+  if [[ $suite == docker ]]; then
+    project=AnketaParser.DockerTests
+    export ANKETAPARSER_DOCKER_TESTS=1
+  fi
+  dir="$reports/dotnet-$suite"
+  dotnet test --project "tests/$project/$project.csproj" -c Release --no-build \
+    --results-directory "$dir" -- --coverage \
+    --coverage-settings .github/coverage/dotnet/dotnet-coverage.settings.xml
+  cobertura=("$dir"/*.cobertura.xml)
+  instrumented=("$dir"/!(*.cobertura).xml)
+  (( ${#cobertura[@]} == 1 && ${#instrumented[@]} == 1 ))
+  python3 .github/scripts/normalize_cobertura_paths.py --report "${cobertura[0]}" --repo-root .
+  python3 .github/scripts/check_dotnet_coverage.py "$dir" "$suite" \
+    --require-normalized --max-age-hours 24 --instrumented-report "${instrumented[0]}"
+done
+```
+
+`--max-age-hours` проверяет свежесть только по явному запросу. Для скачанного
+артефакта происхождение устанавливают по запуску CI и измеренной ревизии.
+
+### Python
+
+[.coveragerc](../.coveragerc) задаёт область и режим сбора ветвей. Установите
+закреплённые зависимости из раздела о контрактах и используйте Python из этого
+окружения. На Linux запускайте команды из корня репозитория.
+```bash
+set -e
+COVERAGE_DIR=$(mktemp -d)
+export COVERAGE_DIR
+.venv/bin/python -m coverage run -m unittest discover -s .github/scripts -p 'test_*.py'
+.venv/bin/python -m coverage combine
+.venv/bin/python -m coverage lcov -o "$COVERAGE_DIR/lcov.info"
+.venv/bin/python .github/scripts/normalize_lcov_paths.py --report "$COVERAGE_DIR/lcov.info" --repo-root .
+.venv/bin/python .github/scripts/check_python_coverage_report.py --report "$COVERAGE_DIR/lcov.info" --platform linux --repo-root . --data-dir "$COVERAGE_DIR"
+```
+
+На Windows запускайте команды из корня репозитория в PowerShell 7.4 или новее:
+`$PSNativeCommandUseErrorActionPreference` в более ранних версиях не включает
+обработку ошибок внешних программ, и неудачный `coverage run` не остановит пример.
+
+```powershell
+& {
+  $ErrorActionPreference = 'Stop'
+  $PSNativeCommandUseErrorActionPreference = $true
+  $env:COVERAGE_DIR = [IO.Directory]::CreateTempSubdirectory('anketa-coverage-').FullName
+  .venv/Scripts/python -m coverage run -m unittest discover -s .github/scripts -p test_background_wait.py -v
+  .venv/Scripts/python -m coverage combine
+  .venv/Scripts/python -m coverage lcov -o "$env:COVERAGE_DIR/lcov.info"
+  .venv/Scripts/python .github/scripts/normalize_lcov_paths.py --report "$env:COVERAGE_DIR/lcov.info" --repo-root .
+  .venv/Scripts/python .github/scripts/check_python_coverage_report.py --report "$env:COVERAGE_DIR/lcov.info" --platform windows --repo-root . --data-dir "$env:COVERAGE_DIR"
+}
+```
+
+[Валидатор LCOV](../.github/scripts/check_python_coverage_report.py) сверяет
+исполняемые строки и точки ветвления с исходником тем же парсером закреплённой
+версии `coverage`, поэтому число записей `DA` и `BRDA` не принимается на веру.
+Для строк с частичной ветвью (`# pragma: no branch`, `while True:`) неисполненные
+исходы не пишутся, и там допускается меньшее число записей `BRDA`. Параметр
+`--data-dir` проверяет только, что объединённые данные не старше исходников:
+происхождение отчёта подтверждают порядок шагов CI и сверка измеренной ревизии.
+
+### Артефакты и публикация
+
+Локальный прогон проверяет измерение и содержимое файлов. CI дополнительно
+проверяет результат слияния PR. Для PR из этого репозитория отдельный прогон
+измеряет голову PR и сохраняет четыре артефакта с `measured-commit.txt`.
+При push в `main` артефакты привязаны к SHA проверенного коммита. Артефакты
+хранятся семь дней.
+
+[Доверенный издатель](../.github/workflows/coverage-publisher.yml) получает
+артефакты конкретного запуска CI, сверяет SHA измерения с исходниками и
+запускает валидаторы из ветки по умолчанию. Состоявшуюся публикацию подтверждают
+четыре успешные загрузки на нужный коммит в Codecov. [codecov.yml](../codecov.yml)
+запрашивает информационные статусы и ждёт четыре обработанные загрузки
+(`after_n_builds`). Счётчик считает загрузки, а не флаги: повторная загрузка
+одного отчёта тоже приближает порог, поэтому наличие статусов не доказывает
+полноту четырёх групп.
+
+Срок приёма отчётов задан явно как семь дней от времени самого отчёта. Артефакты
+живут семь дней от запуска CI, а отчёты публикуются позже, поэтому к концу срока
+хранения отчёт может уже не приняться: запас не задаётся, и выравнивание сроков
+не обещает приём в последний день. Серверное ограничение Codecov по умолчанию в
+12 часов для такого сценария слишком мало. Значение `7d ago` задаёт дату в
+прошлом: `7d` парсер сравнения Codecov интерпретирует как будущую дату.
+
+Список файлов для network-секции загрузчик строит из измеренного дерева
+`source-tree`, а его плагины отключены: загружаются ровно четыре проверенных
+файла, и поиск `.coverage` в дереве ревизии не запускается.
+
+Для публикации нужен корректный `CODECOV_TOKEN` в **Repository Secrets** именно
+этого репозитория: `Settings → Secrets and variables → Actions → Repository secrets`.
+Если секрет уже существует, дополнительные действия в настройках не нужны.
+GitHub Environment и ручное одобрение не требуются. Издатель запускается
+автоматически после успешного CI для push в ветку по умолчанию и PR из этого
+репозитория; PR из форков не публикуются и токен не получают. Секрет передаётся
+только проверке его наличия и четырём шагам загрузки. При отсутствии токена
+задание завершается с ошибкой до получения исходников и отчётов.
+До появления издателя в ветке по умолчанию артефакты CI подтверждают только
+измерение и сохранение файлов. Приём отчётов и появление статусов проверяются
+после активации издателя.
+[Настройка Codecov](https://docs.codecov.com/docs/quick-start) ·
+[Токены Codecov](https://docs.codecov.com/docs/codecov-tokens)
 
 ## Проверки GitHub Actions
 

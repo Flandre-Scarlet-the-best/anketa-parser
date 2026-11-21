@@ -1,0 +1,93 @@
+# Публикация покрытия в Codecov.
+#
+# Четыре отчёта загружаются отдельными шагами одного задания CI и относятся к
+# раздельным логическим группам: dotnet-unit и dotnet-docker (исходники .NET),
+# python-linux и python-windows (исполняемые скрипты .github и навыков).
+# Загрузки не являются одной транзакцией: Codecov ждёт четыре обработанные
+# загрузки для коммита (after_n_builds). Счётчик считает загрузки, а не набор
+# флагов, поэтому наличие статусов не доказывает полноту всех четырёх групп;
+# фактический итог запуска сообщает издатель по результатам своих шагов.
+#
+# Численные пороги не вводятся: первый прогон фиксирует фактический baseline, а
+# project/patch работают в информационном режиме. Блокировка PR по проценту —
+# отдельное решение после подтверждённого baseline в main.
+codecov:
+  # Статусы учитывают остальные проверки CI и не отчитываются поверх упавших.
+  require_ci_to_pass: true
+  # Codecov отвергает отчёт старше 12 часов по умолчанию, а повтор публикации
+  # может задержаться: отчёты остаются доступными семь дней.
+  # Срок приёма согласован с retention-days артефактов CI, серверное ограничение
+  # по умолчанию не отключается. Происхождение отчёта по-прежнему подтверждают
+  # run-id и сверка SHA, а не срок хранения.
+  # Парсер Codecov сравнивает время отчёта с датой: суффикс ago обязателен,
+  # иначе 7d интерпретируется как будущая дата и свежие отчёты отклоняются.
+  max_report_age: '7d ago'
+  notify:
+    after_n_builds: 4
+    wait_for_ci: true
+
+coverage:
+  precision: 2
+  round: down
+  status:
+    project:
+      default:
+        target: auto
+        informational: true
+      dotnet-unit:
+        informational: true
+        flags: [dotnet-unit]
+      dotnet-docker:
+        informational: true
+        flags: [dotnet-docker]
+      python-linux:
+        informational: true
+        flags: [python-linux]
+      python-windows:
+        informational: true
+        flags: [python-windows]
+    patch:
+      default:
+        target: auto
+        informational: true
+
+comment:
+  layout: "diff, flags, files"
+  behavior: default
+  require_changes: false
+  # Комментарий требует отчёт head и не требует базу: у первого коммита в main
+  # базового отчёта ещё нет, и это не дефект публикации.
+  require_head: true
+  require_base: false
+  show_carryforward_flags: false
+
+# Флаги описаны явно, потому что каждый отчёт загружается отдельной загрузкой и
+# должен быть виден в отчёте и статусах отдельно. carryforward выключен: все
+# четыре отчёта публикуются одним заданием, и отсутствующий флаг должен
+# обозначать неполную публикацию, а не подставлять исторические данные.
+#
+# Пути .NET-отчёта (Cobertura от Microsoft.Testing.Extensions.CodeCoverage)
+# содержат абсолютные пути без <sources>, поэтому перед публикацией их приводит
+# к виду ``src/...`` шаг `.github/scripts/normalize_cobertura_paths.py`. Для
+# пути другого раннера требуется однозначное совпадение с файлом внутри src.
+# Фактическое сопоставление файлов и project/patch в Codecov подтверждается
+# после успешной загрузки отчётов в Codecov.
+flags:
+  dotnet-unit:
+    paths:
+      - "src/"
+    carryforward: false
+  dotnet-docker:
+    paths:
+      - "src/"
+    carryforward: false
+  python-linux:
+    paths:
+      - ".github/scripts/"
+      - ".agents/skills/"
+    carryforward: false
+  python-windows:
+    paths:
+      - ".github/scripts/"
+      - ".agents/skills/"
+    carryforward: false

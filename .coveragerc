@@ -1,0 +1,13 @@
+[run]
+branch = True
+patch = subprocess
+source = .github/scripts
+         .agents/skills
+relative_files = True
+data_file = ${COVERAGE_DIR-.coverage-data}/.coverage
+
+[report]
+omit = .github/scripts/test_*.py
+include_namespace_packages = True
+show_missing = True
+precision = 2

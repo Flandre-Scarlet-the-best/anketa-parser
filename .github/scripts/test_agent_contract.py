@@ -129,9 +129,11 @@ class AgentContractTests(unittest.TestCase):
             "dotnet restore --locked-mode",
             "dotnet format anketa-parser.slnx --verify-no-changes --no-restore",
             "dotnet build --no-restore -c Release",
-            "dotnet test --no-build -c Release",
+            "dotnet test --project tests/AnketaParser.Tests/AnketaParser.Tests.csproj -c Release --no-build",
+            "dotnet test --project tests/AnketaParser.DockerTests/AnketaParser.DockerTests.csproj -c Release --no-build",
             "docker compose config --quiet",
-            "python -m unittest discover",
+            "python -m coverage run -m unittest discover -s .github/scripts -p 'test_*.py'",
+            "python -m coverage run -m unittest discover -s .github/scripts -p test_background_wait.py -v",
             "python .github/scripts/check_skill_contracts.py",
             "python .github/scripts/check_markdown_links.py",
         ):
