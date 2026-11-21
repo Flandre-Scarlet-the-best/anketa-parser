@@ -62,7 +62,8 @@ UPLOAD_IDS = (
 )
 PUBLISH_GATE = (
     "github.event.workflow_run.conclusion == 'success' && "
-    "(github.event.workflow_run.event == 'push' || "
+    "((github.event.workflow_run.event == 'push' && "
+    "github.event.workflow_run.head_branch == github.event.repository.default_branch) || "
     "(github.event.workflow_run.event == 'pull_request' && "
     "github.event.workflow_run.head_repository.full_name == github.repository))"
 )
@@ -154,6 +155,8 @@ def to_bash(expression: str) -> str:
     result = " ".join(expression.split())
     for source, target in (
         ("github.event.workflow_run.head_repository.full_name", '"${HEAD_REPO}"'),
+        ("github.event.workflow_run.head_branch", '"${HEAD_BRANCH}"'),
+        ("github.event.repository.default_branch", '"${DEFAULT_BRANCH}"'),
         ("github.event.workflow_run.event", '"${RUN_EVENT}"'),
         ("github.event.workflow_run.conclusion", '"${RUN_CONCLUSION}"'),
         ("github.event.pull_request.head.repo.full_name", '"${HEAD_REPO}"'),
@@ -167,7 +170,13 @@ def to_bash(expression: str) -> str:
 
 
 def evaluate(
-    condition: str, *, event: str, conclusion: str = "success", head_repo: str = ""
+    condition: str,
+    *,
+    event: str,
+    conclusion: str = "success",
+    head_repo: str = "",
+    head_branch: str = "main",
+    default_branch: str = "main",
 ) -> str:
     """Выполнить реальное условие шага и вернуть allowed/denied."""
     script = f"if {to_bash(condition)}; then echo allowed; else echo denied; fi"
@@ -178,6 +187,8 @@ def evaluate(
             "RUN_CONCLUSION": conclusion,
             "EVENT_NAME": event,
             "HEAD_REPO": head_repo,
+            "HEAD_BRANCH": head_branch,
+            "DEFAULT_BRANCH": default_branch,
             "REPOSITORY": "Flandre-Scarlet-the-best/anketa-parser",
         },
     )
@@ -441,7 +452,8 @@ class ProducerJobTests(unittest.TestCase):
         self.assertNotIn("sed", str(install["run"]))
 
     @unittest.skipUnless(
-        os.name == "nt", "Проверка шага PowerShell выполняется в Windows"
+        shutil.which("pwsh") is not None,
+        "Проверка шага PowerShell требует установленный pwsh",
     )
     def test_windows_coverage_stops_at_failed_test_command(self):
         script = str(
@@ -825,18 +837,38 @@ class PublisherWorkflowTests(unittest.TestCase):
         self.assertEqual([str(step.get("id")) for step in uploads], list(UPLOAD_IDS))
 
     def test_publish_gate_excludes_fork_merge_group_and_failed_runs(self):
-        for event, conclusion, head_repo, expected in (
-            ("push", "success", "Flandre-Scarlet-the-best/anketa-parser", "allowed"),
-            ("push", "failure", "Flandre-Scarlet-the-best/anketa-parser", "denied"),
+        for event, conclusion, head_repo, head_branch, expected in (
+            (
+                "push",
+                "success",
+                "Flandre-Scarlet-the-best/anketa-parser",
+                "main",
+                "allowed",
+            ),
+            (
+                "push",
+                "success",
+                "Flandre-Scarlet-the-best/anketa-parser",
+                "feature/other",
+                "denied",
+            ),
+            (
+                "push",
+                "failure",
+                "Flandre-Scarlet-the-best/anketa-parser",
+                "main",
+                "denied",
+            ),
             (
                 "pull_request",
                 "success",
                 "Flandre-Scarlet-the-best/anketa-parser",
+                "feature/other",
                 "allowed",
             ),
-            ("pull_request", "success", "external/fork", "denied"),
-            ("merge_group", "success", "", "denied"),
-            ("merge_group", "success", "external/fork", "denied"),
+            ("pull_request", "success", "external/fork", "feature/other", "denied"),
+            ("merge_group", "success", "", "main", "denied"),
+            ("merge_group", "success", "external/fork", "main", "denied"),
         ):
             with self.subTest(event=event, conclusion=conclusion, head=head_repo):
                 self.assertEqual(
@@ -845,6 +877,7 @@ class PublisherWorkflowTests(unittest.TestCase):
                         event=event,
                         conclusion=conclusion,
                         head_repo=head_repo,
+                        head_branch=head_branch,
                     ),
                     expected,
                 )
@@ -855,24 +888,39 @@ class PublisherWorkflowTests(unittest.TestCase):
         skipped = jobs["not-published"]
         condition = " ".join(str(skipped["if"]).split())
         self.assertTrue(condition.startswith("!("), condition)
-        for event, conclusion, head_repo, expected in (
-            ("merge_group", "success", "", "allowed"),
-            ("pull_request", "success", "external/fork", "allowed"),
-            ("push", "success", "Flandre-Scarlet-the-best/anketa-parser", "denied"),
+        for event, conclusion, head_repo, head_branch, expected in (
+            ("merge_group", "success", "", "main", "allowed"),
+            ("pull_request", "success", "external/fork", "main", "allowed"),
+            (
+                "push",
+                "success",
+                "Flandre-Scarlet-the-best/anketa-parser",
+                "feature/other",
+                "allowed",
+            ),
+            (
+                "push",
+                "success",
+                "Flandre-Scarlet-the-best/anketa-parser",
+                "main",
+                "denied",
+            ),
             (
                 "pull_request",
                 "success",
                 "Flandre-Scarlet-the-best/anketa-parser",
+                "feature/other",
                 "denied",
             ),
         ):
-            with self.subTest(event=event, head=head_repo):
+            with self.subTest(event=event, head=head_repo, branch=head_branch):
                 self.assertEqual(
                     evaluate(
                         condition,
                         event=event,
                         conclusion=conclusion,
                         head_repo=head_repo,
+                        head_branch=head_branch,
                     ),
                     expected,
                 )
@@ -901,6 +949,10 @@ class PublisherWorkflowTests(unittest.TestCase):
         self.assertIn("::error::Ни один отчёт не загружен", run)
         self.assertIn("successes > 0", run)
         self.assertIn("successes == 4", run)
+        # after_n_builds считает загрузки, а не уникальные флаги, поэтому сводка
+        # не обещает полноту четырёх групп по наличию статусов.
+        self.assertIn("after_n_builds", run)
+        self.assertNotIn("не отправит статусы", run)
         self.assertNotIn("атомарн", workflow_text("coverage-publisher.yml"))
 
     def test_cancelled_run_is_described_honestly(self):

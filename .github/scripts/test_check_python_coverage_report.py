@@ -295,6 +295,12 @@ class BrokenDataTests(ReportCase):
         result = self.run_validator()
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_duplicate_branch_outcome_is_error(self):
+        first = f"BRDA:{BRANCH_LINE},0,{BRANCH_ROWS[0]},1"
+        second = f"BRDA:{BRANCH_LINE},0,{BRANCH_ROWS[1]},1"
+        self.write_report(self.default_report().replace(second, first, 1))
+        self.assert_error(self.run_validator(), "повторная запись BRDA")
+
     def test_branch_line_outside_source_is_error(self):
         report = self.default_report().replace(
             f"BRDA:{BRANCH_LINE},0,{BRANCH_ROWS[0]},1",

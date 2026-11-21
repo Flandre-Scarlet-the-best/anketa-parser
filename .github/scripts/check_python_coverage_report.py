@@ -51,6 +51,7 @@ class Block:
     branches_found: int | None = None
     branches_covered: int | None = None
     branch_lines: dict[int, int] = field(default_factory=dict)
+    branch_ids: set[tuple[int, str, str]] = field(default_factory=set)
 
 
 def in_scope(path: str) -> bool:
@@ -146,9 +147,14 @@ def parse_lcov(text: str) -> tuple[dict[str, Block], list[str]]:
             ):
                 errors.append(f"Строка {number}: некорректная запись BRDA ({payload})")
                 continue
+            line_number = int(fields[0])
+            identity = (line_number, fields[1], description)
+            if identity in current.branch_ids:
+                errors.append(f"Строка {number}: повторная запись BRDA ({payload})")
+                continue
+            current.branch_ids.add(identity)
             current.branches += 1
             current.branches_hit += taken != "-" and int(taken) > 0
-            line_number = int(fields[0])
             current.branch_lines[line_number] = (
                 current.branch_lines.get(line_number, 0) + 1
             )

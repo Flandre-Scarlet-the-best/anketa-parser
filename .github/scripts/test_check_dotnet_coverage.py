@@ -507,6 +507,28 @@ namespace Cli
         errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
         self.assertNotIn("рукописные точки входа исключены", errors)
 
+    def test_duplicate_line_number_in_class_is_rejected(self):
+        report = self.report()
+        duplicated = report.replace(
+            '<line number="1" hits="1" />',
+            '<line number="1" hits="1" /><line number="1" hits="1" />',
+            1,
+        )
+        self.assertNotEqual(duplicated, report, "фикстура не содержит ожидаемой строки")
+        self.write(duplicated)
+        errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
+        self.assertIn("повтор номера строки", errors)
+
+    def test_using_declaration_is_still_an_entry_point(self):
+        _ = (self.repo / "src" / CLI / "Program.cs").write_text(
+            'using var stream = System.IO.File.OpenRead("input.txt");\n',
+            encoding="utf-8",
+        )
+        self.write(self.report())
+        errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
+        self.assertIn("рукописные точки входа исключены", errors)
+        self.assertIn("src/AnketaParser.Cli/Program.cs", errors)
+
     def test_entry_point_is_not_required_for_unmeasured_assembly(self):
         _ = (self.repo / "src" / HOST / "Program.cs").write_text(
             "using System;\n\nreturn 0;\n", encoding="utf-8"

@@ -34,13 +34,17 @@ permissions:
 jobs:
   publish:
     name: Публикация покрытия
-    # Публикуются только доверенные источники: успешный push в main и успешный PR
-    # из этого же репозитория. fork PR не имеет секретов, а merge_group может
-    # содержать изменения внешнего PR, поэтому там привилегированная загрузка не
-    # выполняется (см. задание not-published).
+    # Публикуются только доверенные источники: успешный push в ветку по умолчанию
+    # и успешный PR из этого же репозитория. Ветка проверяется явно: для события
+    # push GitHub берёт определение CI из запушенной ревизии, поэтому фильтр
+    # `branches` в файле ветки по умолчанию не ограничивает событие из другой
+    # ветки. fork PR не имеет секретов, а merge_group может содержать изменения
+    # внешнего PR, поэтому там привилегированная загрузка не выполняется
+    # (см. задание not-published).
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
-      (github.event.workflow_run.event == 'push' ||
+      ((github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == github.event.repository.default_branch) ||
        (github.event.workflow_run.event == 'pull_request' &&
         github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-26.04
@@ -351,9 +355,9 @@ jobs:
           echo "Успешно:${succeeded:- нет}"
           echo "Неуспешно:${failed:- нет}"
           if (( successes == 4 )); then
-            echo "Публикация завершена: все 4 отчёта приняты Codecov."
+            echo "Публикация завершена: все 4 отчёта этого запуска приняты Codecov."
           elif (( successes > 0 )); then
-            echo "::warning::Частичная публикация: принято ${successes} из 4 отчётов; Codecov не отправит статусы, пока не получит все 4 (after_n_builds), поэтому отсутствие статусов не означает полный успех."
+            echo "::warning::Частичная публикация: принято ${successes} из 4 отчётов этого запуска. after_n_builds считает обработанные загрузки для коммита, а не уникальные флаги, поэтому наличие статусов не доказывает полноту четырёх групп, а их отсутствие не означает провал."
           else
             echo "::error::Ни один отчёт не загружен: ошибка возникла до первой успешной публикации (измерение, валидация или сеть). Покрытие не опубликовано."
           fi
@@ -366,10 +370,12 @@ jobs:
   not-published:
     name: Публикация покрытия не выполнялась
     # Диагностический статус для всех остальных случаев: fork PR, merge_group,
-    # неуспешный или отменённый запуск CI. Он не выдаёт пропуск за успех.
+    # push не в ветку по умолчанию, неуспешный или отменённый запуск CI. Он не
+    # выдаёт пропуск за успех.
     if: >-
       !(github.event.workflow_run.conclusion == 'success' &&
-        (github.event.workflow_run.event == 'push' ||
+        ((github.event.workflow_run.event == 'push' &&
+          github.event.workflow_run.head_branch == github.event.repository.default_branch) ||
          (github.event.workflow_run.event == 'pull_request' &&
           github.event.workflow_run.head_repository.full_name == github.repository)))
     runs-on: ubuntu-26.04
@@ -388,4 +394,4 @@ jobs:
           echo "Итог запуска: ${RUN_CONCLUSION}"
           echo "Репозиторий измеренной ревизии: ${HEAD_REPO}"
           echo "Основной репозиторий: ${REPOSITORY}"
-          echo "::notice::Покрытие не публиковалось. Причины: публикуются только успешный push в main и успешный PR из этого же репозитория; fork PR не имеет доступа к секретам, merge_group может содержать изменения внешнего PR, а неуспешный запуск не даёт доверенных отчётов."
+          echo "::notice::Покрытие не публиковалось. Причины: публикуются только успешный push в ветку по умолчанию и успешный PR из этого же репозитория; fork PR не имеет доступа к секретам, merge_group может содержать изменения внешнего PR, push в другую ветку не относится к опубликованной ревизии, а неуспешный запуск не даёт доверенных отчётов."

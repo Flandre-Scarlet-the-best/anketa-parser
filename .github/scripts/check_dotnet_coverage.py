@@ -43,6 +43,7 @@ COMMENT = re.compile(r"//.*$")
 DOC_COMMENT = re.compile(r"^\s*///.*$")
 BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 USING_DIRECTIVE = re.compile(r"^\s*(?:global\s+)?using\s+.*$")
+USING_STATEMENT = re.compile(r"^\s*(?:await\s+)?using\s+(?:\(|var\b)")
 PREPROCESSOR = re.compile(r"^\s*#.*$")
 ATTRIBUTE = re.compile(r"^\s*\[")
 NAMESPACE_DECLARATION = re.compile(r"^\s*(?:file\s+)?namespace\b")
@@ -325,6 +326,23 @@ def _class_entries(
     return entries, errors
 
 
+def _duplicate_line_numbers(element: ElementTree.Element) -> list[str]:
+    """Найти повторные номера строк в разделе классов.
+
+    Раздел ``methods`` повторяет записи классов, поэтому уникальность
+    проверяется только по ``lines/line``. Дубликат в самом разделе завышает
+    итоги и позволяет подменить сводку согласованными числами.
+    """
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for line in element.findall("lines/line"):
+        number = (line.get("number") or "").strip()
+        if number in seen:
+            duplicates.add(number)
+        seen.add(number)
+    return sorted(duplicates)
+
+
 def _line_errors(
     entries: list[ClassEntry],
     repo_root: Path,
@@ -374,6 +392,12 @@ def _line_errors(
                 f"{namespace}: не удалось прочитать {entry.relative}: {error}"
             )
             continue
+        duplicates = _duplicate_line_numbers(entry.element)
+        if duplicates:
+            errors.append(
+                f"{namespace}: повтор номера строки в {entry.relative}: "
+                + ", ".join(duplicates[:LIMIT_LISTED])
+            )
         for line in entry.element.iter("line"):
             number = (line.get("number") or "").strip()
             hits = (line.get("hits") or "").strip()
@@ -570,6 +594,9 @@ def _has_top_level_statements(text: str) -> bool:
         ).strip()
         if not stripped:
             continue
+        if USING_STATEMENT.match(stripped):
+            # `using var stream = ...;` — исполняемое объявление, а не импорт.
+            return True
         if (
             USING_DIRECTIVE.match(stripped)
             or ATTRIBUTE.match(stripped)
