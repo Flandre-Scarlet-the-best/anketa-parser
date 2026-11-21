@@ -946,7 +946,10 @@ class PublisherWorkflowTests(unittest.TestCase):
             self.assertIn(f"steps.{step_id}.outcome", " ".join(env.values()))
         run = str(summary["run"])
         self.assertIn("::warning::Частичная публикация", run)
-        self.assertIn("::error::Ни один отчёт не загружен", run)
+        self.assertIn("::error::Ни один шаг не подтвердил успешную загрузку", run)
+        # Потерянный ответ не доказывает отсутствие публикации на сервере.
+        self.assertIn("Состояние публикации неизвестно", run)
+        self.assertNotIn("Покрытие не опубликовано", run)
         self.assertIn("successes > 0", run)
         self.assertIn("successes == 4", run)
         # after_n_builds считает загрузки, а не уникальные флаги, поэтому сводка

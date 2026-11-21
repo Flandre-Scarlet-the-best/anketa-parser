@@ -509,15 +509,24 @@ namespace Cli
 
     def test_duplicate_line_number_in_class_is_rejected(self):
         report = self.report()
-        duplicated = report.replace(
-            '<line number="1" hits="1" />',
+        cases = (
             '<line number="1" hits="1" /><line number="1" hits="1" />',
-            1,
+            # Номера сравниваются численно: 01 обозначает ту же строку.
+            '<line number="1" hits="1" /><line number="01" hits="1" />',
         )
-        self.assertNotEqual(duplicated, report, "фикстура не содержит ожидаемой строки")
-        self.write(duplicated)
-        errors = " ".join(validate(self.reports, "unit", self.repo, max_age_hours=24.0))
-        self.assertIn("повтор номера строки", errors)
+        for duplicated_lines in cases:
+            with self.subTest(duplicated=duplicated_lines):
+                duplicated = report.replace(
+                    '<line number="1" hits="1" />', duplicated_lines, 1
+                )
+                self.assertNotEqual(
+                    duplicated, report, "фикстура не содержит ожидаемой строки"
+                )
+                self.write(duplicated)
+                errors = " ".join(
+                    validate(self.reports, "unit", self.repo, max_age_hours=24.0)
+                )
+                self.assertIn("повтор номера строки", errors)
 
     def test_using_declaration_is_still_an_entry_point(self):
         _ = (self.repo / "src" / CLI / "Program.cs").write_text(

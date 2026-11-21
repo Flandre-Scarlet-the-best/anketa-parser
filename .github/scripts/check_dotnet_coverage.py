@@ -330,17 +330,21 @@ def _duplicate_line_numbers(element: ElementTree.Element) -> list[str]:
     """Найти повторные номера строк в разделе классов.
 
     Раздел ``methods`` повторяет записи классов, поэтому уникальность
-    проверяется только по ``lines/line``. Дубликат в самом разделе завышает
+    проверяется только по ``lines/line``. Номера сравниваются численно:
+    ``1`` и ``01`` обозначают одну строку. Дубликат в самом разделе завышает
     итоги и позволяет подменить сводку согласованными числами.
     """
-    seen: set[str] = set()
-    duplicates: set[str] = set()
+    seen: set[int] = set()
+    duplicates: set[int] = set()
     for line in element.findall("lines/line"):
         number = (line.get("number") or "").strip()
-        if number in seen:
-            duplicates.add(number)
-        seen.add(number)
-    return sorted(duplicates)
+        if not number.isascii() or not number.isdigit() or int(number) < 1:
+            continue
+        value = int(number)
+        if value in seen:
+            duplicates.add(value)
+        seen.add(value)
+    return [str(value) for value in sorted(duplicates)]
 
 
 def _line_errors(
